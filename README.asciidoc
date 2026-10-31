@@ -1,4 +1,8 @@
-= kitty - the fast, feature-rich, cross-platform, GPU based terminal
+= agenttty - Kitty-based macOS terminal with native tab bar and deep integration with AI Agent.
+
+image:./docs/_static/agentty.jpg["preview", link="https://github.com/anhoder/agenttty"]
+
+---
 
 If you live in the terminal, *kitty* is made for **you**!
 
