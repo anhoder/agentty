@@ -36,7 +36,7 @@ from .utils import log_error
 
 MANIFEST_DIR = os.path.join(kitty_base_dir, 'kitty', 'agent_manifests')
 SESSION_PLACEHOLDER = '{session}'
-session_id_pat = re.compile(r'[A-Za-z0-9][A-Za-z0-9_.-]{0,511}')
+session_id_pat = re.compile(r'[A-Za-z0-9][A-Za-z0-9_.-]{0,127}')
 
 
 def is_valid_session_id(session_id: str) -> bool:

@@ -170,7 +170,7 @@ class TestAgents(BaseTest):
             # A rule dropped for an unsupported region or an uncompilable
             # regex would silently weaken detection, so assert none are lost.
             m = parse_manifest(raw, fn)
-            self.ae(len(m.rules), len(raw['rules']), f'{fn} lost rules')
+            self.ae(len(m.rules), len(raw.get('rules', [])), f'{fn} lost rules')
             self.ae(m.id, fn[:-5])
             seen += 1
         self.assertGreater(seen, 20)

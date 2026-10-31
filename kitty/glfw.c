@@ -2510,6 +2510,10 @@ create_os_window(PyObject UNUSED *self, PyObject *args, PyObject *kw) {
         OSWindow *parent_w = os_window_for_id(tab_group_parent_os_window_id);
         if (parent_w && parent_w->handle) glfwCocoaMergeWindowIntoTabs(glfw_window, parent_w->handle);
     }
+#else
+    // Native tab merging is macOS only, so on other platforms the kwarg is
+    // parsed for API compatibility and deliberately unused.
+    (void)tab_group_parent_os_window_id;
 #endif
 #undef glfw_failure
     // Set titlebar-only mode before the window becomes visible

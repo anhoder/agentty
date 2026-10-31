@@ -152,6 +152,10 @@ def arbitrate(
         # what it is doing. Claiming idle would be a guess that reads as fact;
         # unknown is the truth.
         return reported or AgentState.unknown, False
+    if not match.manifest.rules:
+        # The manifest identifies the agent but carries no screen rules to
+        # evaluate, so the screen is not evidence either way.
+        return reported or AgentState.unknown, False
     if match.skipped:
         # A transcript viewer or menu overlay has replaced the live UI; it says
         # nothing about what the agent is doing, so hold what we had.
