@@ -1,6 +1,6 @@
 = agenttty - Kitty-based macOS terminal with native tab bar and deep integration with AI Agent.
 
-image:./docs/_static/agentty.jpg["preview", link="https://github.com/anhoder/agenttty"]
+image:./docs/_static/agentty.jpg["preview", link="https://github.com/anhoder/agentty"]
 
 ---
 
