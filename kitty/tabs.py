@@ -14,6 +14,7 @@ from functools import wraps
 from gettext import gettext as _
 from typing import TYPE_CHECKING, Any, Concatenate, Deque, Literal, NamedTuple, Optional, ParamSpec, TypeVar, cast
 
+from .agents import AgentSidebarRow, state_code
 from .borders import Border, Borders
 from .child import Child
 from .cli_stub import CLIOptions, SaveAsSessionOptions
@@ -40,7 +41,7 @@ from .fast_data_types import (
     get_tab_being_dragged,
     get_window_being_dragged,
     is_tab_bar_visible,
-    set_agents_sidebar,
+    last_focused_os_window_id,
     mark_tab_bar_dirty,
     monotonic,
     next_window_id,
@@ -52,6 +53,7 @@ from .fast_data_types import (
     ring_bell,
     set_active_tab,
     set_active_window,
+    set_agents_sidebar,
     set_redirect_keys_to_overlay,
     set_tab_being_dragged,
     set_tab_layout_name,
@@ -65,8 +67,6 @@ from .layout.interface import all_layouts, create_layout_object_for, evict_cache
 from .layout.splits import Splits
 from .progress import ProgressState
 from .tab_bar import TabBar, TabBarData, WindowDropTarget, apply_title_template
-from .agents import AgentSidebarRow, state_code
-
 from .types import DockSpec, ac
 from .typing_compat import EdgeLiteral, SessionTab, SessionType, TypedDict
 from .utils import cmdline_for_hold, color_as_int, log_error, natsort_key, platform_window_id, resolved_shell, shlex_split, which
@@ -404,6 +404,7 @@ class Tab:  # {{{
             if launched_window is not None:
                 if window.font_size_override is not None:
                     from .fast_data_types import set_window_font_size
+
                     if set_window_font_size(launched_window.id, window.font_size_override):
                         launched_window.font_size_override = window.font_size_override
             if launched_window is not None:
@@ -1715,12 +1716,8 @@ class TabManager:  # {{{
             self.agent_sidebar_enabled,
             self.agent_sidebar_cols,
             get_options().agents_sidebar_grouping,
-            tuple(
-                (row.window_id, row.group, row.agent, row.title, row.detail, state_code(row.state), row.is_active)
-                for row in self.agent_sidebar_rows
-            ),
+            tuple((row.window_id, row.group, row.agent, row.title, row.detail, state_code(row.state), row.is_active) for row in self.agent_sidebar_rows),
         )
-
 
     def title_changed(self, tab: Tab) -> None:
         self.mark_tab_bar_dirty()

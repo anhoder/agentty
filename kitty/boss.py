@@ -27,10 +27,9 @@ from typing import (
 )
 from weakref import WeakValueDictionary
 
-from .agents import AgentSidebarRow, AgentState, AgentTracker, group_sidebar_rows, session_group_for_window
-
 from kitty.types import WindowResizeDrag
 
+from .agents import AgentSidebarRow, AgentState, AgentTracker, group_sidebar_rows, session_group_for_window
 from .child import cached_process_data, default_env, process_data_cache, set_default_env
 from .cli import create_opts, green, parse_args
 from .cli_stub import CLIOptions, SaveAsSessionOptions
@@ -117,6 +116,7 @@ from .fast_data_types import (
     os_window_focus_counters,
     os_window_font_size,
     redirect_mouse_handling,
+    remove_timer,
     request_callback_with_thumbnail,
     ring_bell,
     run_with_activation_token,
@@ -125,7 +125,7 @@ from .fast_data_types import (
     set_application_quit_request,
     set_background_image,
     set_boss,
-    remove_timer,
+    set_options,
     set_os_window_chrome,
     set_os_window_size,
     set_os_window_title,
@@ -483,7 +483,6 @@ class Boss:
             self.atexit.unlink(effective_config_path)
         if effective_config_error:
             self.misc_config_errors.append(effective_config_error)
-
 
     def native_tabs_enabled(self) -> bool:
         return is_macos and get_options().macos_native_tabs
@@ -1787,6 +1786,7 @@ class Boss:
                 return
             if amt == 0:
                 from .fast_data_types import set_window_font_size
+
                 if not set_window_font_size(w.id, 0):
                     return
                 w.font_size_override = None
@@ -1799,6 +1799,7 @@ class Boss:
             new_size = calc_new_size(current_size)
             if new_size != current_size:
                 from .fast_data_types import set_window_font_size
+
                 if not set_window_font_size(w.id, new_size):
                     return
                 w.font_size_override = new_size
@@ -1915,6 +1916,7 @@ class Boss:
             tm.mark_tab_bar_dirty()
             return True
         return False
+
     def agent_sidebar_scope(self, tab_manager: TabManager) -> tuple[TabManager, ...]:
         if not self.native_tabs_enabled():
             return (tab_manager,)
@@ -1974,9 +1976,10 @@ class Boss:
             if after is not None and after.state is AgentState.done and (before is None or before.state is not AgentState.done):
                 self.notify_agent_done(after)
             tab = window.tabref()
-            if tab is not None:
-                scope = self.agent_sidebar_scope(tab.tab_manager_ref())
-                scopes[tuple(tm.os_window_id for tm in scope)] = scope
+            tm_ref = tab.tab_manager_ref() if tab is not None else None
+            if tm_ref is not None:
+                scope = self.agent_sidebar_scope(tm_ref)
+                scopes[tuple(t.os_window_id for t in scope)] = scope
         for scope in scopes.values():
             if any(tm.agent_sidebar_enabled for tm in scope):
                 self._refresh_agent_sidebar_scope(scope)
@@ -2030,6 +2033,7 @@ class Boss:
                 tm.resize(only_tabs=True)
                 tm.update_tab_bar_data()
                 tm.mark_tab_bar_dirty()
+
     def agents_sidebar_click(self, data: str) -> None:
         os_window_id, _, row_text = data.partition(':')
         try:

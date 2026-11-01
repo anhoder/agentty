@@ -2,7 +2,6 @@
 # License: GPL v3 Copyright: 2016, Kovid Goyal <kovid at kovidgoyal.net>
 
 import json
-from math import isfinite
 import os
 import re
 import shlex
@@ -11,6 +10,7 @@ from collections.abc import Callable, Generator, Iterator, Mapping, Sequence
 from contextlib import suppress
 from functools import partial
 from gettext import gettext as _
+from math import isfinite
 from typing import TYPE_CHECKING, Any, Optional, Union
 
 from .cli_stub import CLIOptions, GotoSessionOptions, SaveAsSessionOptions

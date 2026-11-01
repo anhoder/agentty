@@ -170,7 +170,7 @@ class TestAgents(BaseTest):
             # A rule dropped for an unsupported region or an uncompilable
             # regex would silently weaken detection, so assert none are lost.
             m = parse_manifest(raw, fn)
-            self.ae(len(m.rules), len(raw['rules']), f'{fn} lost rules')
+            self.ae(len(m.rules), len(raw.get('rules', [])), f'{fn} lost rules')
             self.ae(m.id, fn[:-5])
             seen += 1
         self.assertGreater(seen, 20)
@@ -319,9 +319,7 @@ class TestAgents(BaseTest):
         tabs[0].append(windows[10])
         scope = (TabManager(tabs[:1]), TabManager(tabs[1:]))
         tracker = AgentTracker()
-        tracker.snapshots = {
-            w.id: AgentSnapshot(w.id, 'omp', AgentState.idle, 'omp', '/tmp') for w in windows
-        }
+        tracker.snapshots = {w.id: AgentSnapshot(w.id, 'omp', AgentState.idle, 'omp', '/tmp') for w in windows}
         boss = SimpleNamespace(active_window=windows[1], agent_tracker=tracker)
         with patch('kitty.boss.get_options', return_value=SimpleNamespace(agents_sidebar_grouping='tab')):
             Boss._refresh_agent_sidebar_scope(boss, scope)
@@ -340,7 +338,6 @@ class TestAgents(BaseTest):
             rows = scope[1].agent_sidebar_rows
             self.ae([r.window_id for r in rows], list(range(10, 1, -1)))
             self.ae(len({r.group for r in rows}), 9)
-
 
     def test_empty_sidebar_has_no_group(self):
         from types import SimpleNamespace
@@ -362,6 +359,7 @@ class TestAgents(BaseTest):
         rows = scope[0].agent_sidebar_rows
         self.ae(len(rows), 1)
         self.ae((rows[0].group, rows[0].agent, rows[0].title), ('', '', 'No AI agents'))
+
 
 class FakeWindow:
     id = 7
@@ -557,6 +555,7 @@ class TestAgentResume(BaseTest):
         self.ae((snapshot.agent, snapshot.session_id), ('claude', self.SESSION_ID))
         snapshot, _ = snapshot_for_window(self.window())
         self.ae(snapshot.session_id, '')
+
     def test_pi_omp_accept_session_paths(self):
         from kitty.agents import AGENT_ID_VAR, AGENT_SESSION_PATH_VAR, resume_argv_for, session_ref_of_window
 
@@ -567,7 +566,6 @@ class TestAgentResume(BaseTest):
         self.ae(resume_argv_for('pi', path), ('pi', '--session', path))
         self.ae(resume_argv_for('claude', path), ())
         self.ae(session_ref_of_window(self.window(**{AGENT_SESSION_PATH_VAR: 'relative/path'}), 'omp'), '')
-
 
     def test_herdr_integration_capabilities(self):
         from kitty.agent_integration import AGENTS
@@ -583,6 +581,7 @@ class TestAgentResume(BaseTest):
             self.ae(agents[agent].integration_kind, 'adapter-required')
         for agent in ('copilot', 'devin', 'droid', 'qodercli', 'qwen', 'letta', 'cursor', 'grok', 'agy', 'mastracode'):
             self.ae(agents[agent].integration_kind, 'adapter-required')
+
     def test_herdr_source_identity(self):
         from kitty.agents import AGENT_SOURCE_VAR, session_ref_of_window
 

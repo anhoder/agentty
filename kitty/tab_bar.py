@@ -35,7 +35,6 @@ from .fast_data_types import (
     viewport_for_window,
     wcswidth,
 )
-
 from .progress import ProgressState
 from .rgb import alpha_blend, color_as_sgr, color_from_int, to_color
 from .types import WindowGeometry, run_once
@@ -1053,7 +1052,6 @@ class TabBar:
                 return True
         return False
 
-
     def update(self, data: Sequence[TabBarData]) -> bool:
         if not self.laid_out_once:
             return False
@@ -1061,8 +1059,6 @@ class TabBar:
             if self.is_vertical:
                 return self.update_vertical(data)
             return self.update_horizontal(data)
-
-
 
     def update_horizontal(self, data: Sequence[TabBarData]) -> bool:
         s = self.screen

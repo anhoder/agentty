@@ -4,8 +4,8 @@
 
 import shlex
 
-from kitty.fast_data_types import Screen
 from kitty.constants import unserialize_launch_flag
+from kitty.fast_data_types import Screen
 from kitty.os_window_size import WindowSize, WindowSizes, initial_window_size_func
 from kitty.session import get_os_window_sizing_data, parse_session
 

@@ -36,7 +36,7 @@ from .utils import log_error
 
 MANIFEST_DIR = os.path.join(kitty_base_dir, 'kitty', 'agent_manifests')
 SESSION_PLACEHOLDER = '{session}'
-session_id_pat = re.compile(r'[A-Za-z0-9][A-Za-z0-9_.-]{0,511}')
+session_id_pat = re.compile(r'[A-Za-z0-9][A-Za-z0-9_.-]{0,127}')
 
 
 def is_valid_session_id(session_id: str) -> bool:
@@ -44,12 +44,7 @@ def is_valid_session_id(session_id: str) -> bool:
 
 
 def is_valid_session_path(session_path: str) -> bool:
-    return (
-        bool(session_path)
-        and len(session_path) <= 4096
-        and os.path.isabs(session_path)
-        and not any(ord(c) < 32 or ord(c) == 127 for c in session_path)
-    )
+    return bool(session_path) and len(session_path) <= 4096 and os.path.isabs(session_path) and not any(ord(c) < 32 or ord(c) == 127 for c in session_path)
 
 
 class ManifestState(Enum):
@@ -73,13 +68,15 @@ class StateAuthority(Enum):
     identity_only = 'identity_only'
 
 
-# The manifests are written for Rust's regex crate. Three of its constructs
-# have no Python spelling and must be rewritten; the rest of what the
-# manifests use (inline flags, \z, character classes) is already compatible,
-# and the crate has no backreferences or lookaround so nothing else can
-# appear.
+# The manifests are written for Rust's regex crate. A few of its constructs
+# have no Python spelling and must be rewritten; the rest of what the manifests
+# use (inline flags, character classes) is already compatible, and the crate has
+# no backreferences or lookaround so nothing else can appear.
 _rust_codepoint = re.compile(r'\\(?:x|u)\{([0-9A-Fa-f]{1,6})\}')
 _rust_short_u = re.compile(r'\\u([0-9A-Fa-f]{4})')
+# \z is end-of-text in Rust's crate; Python's spelling is \Z and until 3.14 re
+# rejected \z outright.
+_rust_end_of_text = r'\z'
 # \p{Alphabetic} has no equivalent in re. [^\W\d_] covers every alphabetic
 # code point; it additionally admits numeric-category symbols such as ² and ½,
 # which cannot change the outcome of the rules that use it (they require an
@@ -97,6 +94,7 @@ def translate_regex(pattern: str) -> str:
 
     for rust, py in _rust_classes.items():
         pattern = pattern.replace(rust, py)
+    pattern = pattern.replace(_rust_end_of_text, r'\Z')
     pattern = _rust_codepoint.sub(codepoint, pattern)
     return _rust_short_u.sub(codepoint, pattern)
 

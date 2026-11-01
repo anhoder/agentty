@@ -20,7 +20,7 @@ from .constants import config_dir
 
 HOOK_DIR_NAME = 'agent-integration'
 # Written by the hook, read by kitty/window.py's OSC 1337 handler
-HOOK_SCRIPT = r'''#!/bin/sh
+HOOK_SCRIPT = r"""#!/bin/sh
 # Installed by kitty, see kitty/agent_integration.py. Tells kitty which agent conversation this window is in, so that kitty can
 # resume it after a restart. Does nothing outside kitty and never fails in a way the agent can see.
 set -u
@@ -38,7 +38,7 @@ printf '\033]1337;SetUserVar=%(session_var)s=%%s\007' "$encoded" > "$tty_path" 2
 printf '\033]1337;SetUserVar=%(agent_var)s=%%s\007' "$(printf %%s '%(agent)s' | base64 | tr -d '\n')" > "$tty_path" 2>/dev/null || exit 0
 printf '\033]1337;SetUserVar=%(source_var)s=%%s\007' "$(printf %%s 'kitty:%(agent)s' | base64 | tr -d '\n')" > "$tty_path" 2>/dev/null || exit 0
 exit 0
-'''
+"""
 
 
 class Agent(NamedTuple):
@@ -104,7 +104,6 @@ def write_json(path: str, data: dict[str, Any]) -> None:
 
 def is_kitty_hook(entry: Any) -> bool:
     return isinstance(entry, dict) and 'kitty' in str(entry.get('command', ''))
-
 
 
 def claude_settings_path() -> str:

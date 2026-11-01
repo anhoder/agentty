@@ -327,9 +327,7 @@ def _macos_login_shell_command(argv: Sequence[str], cwd: str, user: str, home: s
     login_argv = ['/usr/bin/login']
     if os.path.isfile(os.path.join(home, '.hushlogin')):
         login_argv.append('-q')
-    login_argv.extend(
-        ('-flp', user, '/bin/bash', '--noprofile', '--norc', '-c', f'exec -l {shlex.join(argv)}')
-    )
+    login_argv.extend(('-flp', user, '/bin/bash', '--noprofile', '--norc', '-c', f'exec -l {shlex.join(argv)}'))
     return login_argv, cwd
 
 
@@ -378,8 +376,6 @@ class Child:
         self.hold = hold
 
     def get_final_env(self) -> tuple[dict[str, str], bool]:
-        from kitty.options.utils import DELETE_ENV_VAR
-
         env = default_env().copy()
         opts = fast_data_types.get_options()
         boss = fast_data_types.get_boss()
