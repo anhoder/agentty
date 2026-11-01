@@ -64,6 +64,7 @@ Add a deep module, tentatively `kitty/workspaces.py`, owned by `Boss`:
 ```python
 WorkspaceId = str
 
+
 @dataclass
 class Workspace:
     id: WorkspaceId

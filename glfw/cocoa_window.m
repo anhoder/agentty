@@ -4233,7 +4233,7 @@ glfwCocoaGetTabGroupWindowOrder(GLFWwindow *w, GLFWwindow **out, size_t out_sz) 
         for (NSWindow *tab in tabbedWindows) {
             for (_GLFWwindow *q = _glfw.windowListHead; q; q = q->next) {
                 if (q->ns.object == tab) {
-                    if (out && count < out_sz) out[count] = (GLFWwindow*)q;
+                    if (out && count < out_sz) out[count] = (GLFWwindow *)q;
                     count++;
                     break;
                 }

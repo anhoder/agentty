@@ -1282,6 +1282,7 @@ class Window:
         )
         text = render_watermark_text(data, progress_percent, layout_name)
         from .fast_data_types import set_window_watermark_text
+
         set_window_watermark_text(self.os_window_id, self.tab_id, self.id, text)
 
     def close(self) -> None:

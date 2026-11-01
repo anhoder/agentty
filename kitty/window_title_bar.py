@@ -115,7 +115,6 @@ def _get_custom_draw_result(data: WindowTitleData) -> str | None:
         return None
 
 
-
 def render_watermark_text(data: WindowTitleData, progress_percent: str, layout_name: str) -> str:
     """Evaluate window_title_watermark_template and strip SGR sequences.
 
@@ -153,6 +152,7 @@ def render_watermark_text(data: WindowTitleData, progress_percent: str, layout_n
     except Exception as e:
         _report_template_failure(template, str(e))
         return ''
+
 
 def clear_caches() -> None:
     load_custom_window_title_bar_module.clear_cached()

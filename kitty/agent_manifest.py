@@ -44,12 +44,7 @@ def is_valid_session_id(session_id: str) -> bool:
 
 
 def is_valid_session_path(session_path: str) -> bool:
-    return (
-        bool(session_path)
-        and len(session_path) <= 4096
-        and os.path.isabs(session_path)
-        and not any(ord(c) < 32 or ord(c) == 127 for c in session_path)
-    )
+    return bool(session_path) and len(session_path) <= 4096 and os.path.isabs(session_path) and not any(ord(c) < 32 or ord(c) == 127 for c in session_path)
 
 
 class ManifestState(Enum):

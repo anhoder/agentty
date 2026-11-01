@@ -109,7 +109,7 @@ persist_session  no|on-exit|always
 def save_session_if_needed(self, reason: str) -> None:
     mode = get_options().persist_session
     if mode == 'no':
-        if is_logout_in_progress():   # 保留旧行为
+        if is_logout_in_progress():  # 保留旧行为
             self.save_session_snapshot()
         return
     self.save_session_snapshot()

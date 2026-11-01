@@ -404,6 +404,7 @@ class Tab:  # {{{
             if launched_window is not None:
                 if window.font_size_override is not None:
                     from .fast_data_types import set_window_font_size
+
                     if set_window_font_size(launched_window.id, window.font_size_override):
                         launched_window.font_size_override = window.font_size_override
             if launched_window is not None:
@@ -1715,12 +1716,8 @@ class TabManager:  # {{{
             self.agent_sidebar_enabled,
             self.agent_sidebar_cols,
             get_options().agents_sidebar_grouping,
-            tuple(
-                (row.window_id, row.group, row.agent, row.title, row.detail, state_code(row.state), row.is_active)
-                for row in self.agent_sidebar_rows
-            ),
+            tuple((row.window_id, row.group, row.agent, row.title, row.detail, state_code(row.state), row.is_active) for row in self.agent_sidebar_rows),
         )
-
 
     def title_changed(self, tab: Tab) -> None:
         self.mark_tab_bar_dirty()

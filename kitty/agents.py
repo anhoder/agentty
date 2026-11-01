@@ -57,6 +57,7 @@ class AgentSidebarRow:
     state: AgentState
     is_active: bool
 
+
 # Maps a foreground executable name to a manifest id. The value side must match
 # the manifest `id` field, because that is the key the rule tables are looked
 # up under. An unrecognized foreground process is still a normal terminal, not
@@ -224,9 +225,7 @@ def resume_argv_for(agent: str, session_ref: str) -> tuple[str, ...]:
     return manifest.resume.command_for(session_ref)
 
 
-def snapshot_for_window(
-    window: Any, screen: Screen | None = None, previous: AgentState | None = None
-) -> tuple[AgentSnapshot | None, bool]:
+def snapshot_for_window(window: Any, screen: Screen | None = None, previous: AgentState | None = None) -> tuple[AgentSnapshot | None, bool]:
     agent = detect_agent(window.child.foreground_processes)
     if agent is None:
         return None, False
@@ -330,7 +329,6 @@ class AgentTracker:
         return self.snapshots.get(window_id)
 
 
-
 def state_icon(state: AgentState) -> str:
     return {
         AgentState.blocked: '●',
@@ -339,6 +337,7 @@ def state_icon(state: AgentState) -> str:
         AgentState.idle: '·',
         AgentState.unknown: '?',
     }[state]
+
 
 def state_code(state: AgentState) -> int:
     return {
@@ -349,6 +348,7 @@ def state_code(state: AgentState) -> int:
         AgentState.done: 4,
     }[state]
 
+
 def session_group_for_window(window: Any) -> str:
     age_ns = max(0, time.time_ns() - int(window.created_at))
     if age_ns < 24 * 60 * 60 * 1_000_000_000:
@@ -356,6 +356,7 @@ def session_group_for_window(window: Any) -> str:
     if age_ns < 48 * 60 * 60 * 1_000_000_000:
         return 'Yesterday'
     return 'Earlier'
+
 
 def group_sidebar_rows(rows: Sequence[AgentSidebarRow], strategy: str) -> tuple[AgentSidebarRow, ...]:
     """Keep each configured group contiguous, preserving row order within it."""

@@ -3127,7 +3127,7 @@ native_tab_group_order(PyObject *self UNUSED, PyObject *os_window_id) {
     if (count == 0) Py_RETURN_NONE;
 
     // Allocate buffer and get the GLFWwindow handles
-    GLFWwindow **handles = PyMem_Malloc(count * sizeof(GLFWwindow*));
+    GLFWwindow **handles = PyMem_Malloc(count * sizeof(GLFWwindow *));
     if (!handles) return PyErr_NoMemory();
 
     size_t actual = glfwCocoaGetTabGroupWindowOrder(osw->handle, handles, count);
@@ -3205,9 +3205,8 @@ set_agents_sidebar(PyObject *self UNUSED, PyObject *args) {
     }
     for (Py_ssize_t i = 0; i < count; i++) {
         PyObject *item = PySequence_Fast_GET_ITEM(fast, i);
-        if (!PyTuple_Check(item) || PyTuple_GET_SIZE(item) != 7 || !PyLong_Check(PyTuple_GET_ITEM(item, 0)) ||
-            !PyUnicode_Check(PyTuple_GET_ITEM(item, 1)) || !PyUnicode_Check(PyTuple_GET_ITEM(item, 2)) ||
-            !PyUnicode_Check(PyTuple_GET_ITEM(item, 3)) || !PyUnicode_Check(PyTuple_GET_ITEM(item, 4))) {
+        if (!PyTuple_Check(item) || PyTuple_GET_SIZE(item) != 7 || !PyLong_Check(PyTuple_GET_ITEM(item, 0)) || !PyUnicode_Check(PyTuple_GET_ITEM(item, 1)) ||
+            !PyUnicode_Check(PyTuple_GET_ITEM(item, 2)) || !PyUnicode_Check(PyTuple_GET_ITEM(item, 3)) || !PyUnicode_Check(PyTuple_GET_ITEM(item, 4))) {
             PyErr_SetString(PyExc_TypeError, "sidebar rows must contain (window_id, group, agent, title, detail, state, active) tuples");
             goto cleanup;
         }
@@ -3229,8 +3228,20 @@ set_agents_sidebar(PyObject *self UNUSED, PyObject *args) {
     osw->agents_sidebar_cols = enabled ? cols : 0;
     cell_width = osw->fonts_data ? osw->fonts_data->fcm.cell_width : 0;
     cocoa_set_agents_sidebar(
-        glfwGetCocoaWindow(osw->handle), (unsigned)osw_id, enabled != 0, cols * cell_width, cell_width, grouping, window_ids, groups, agents, labels,
-        details, states, active, (size_t)count);
+        glfwGetCocoaWindow(osw->handle),
+        (unsigned)osw_id,
+        enabled != 0,
+        cols * cell_width,
+        cell_width,
+        grouping,
+        window_ids,
+        groups,
+        agents,
+        labels,
+        details,
+        states,
+        active,
+        (size_t)count);
     wakeup_main_loop();
     ret = Py_NewRef(Py_None);
 cleanup:

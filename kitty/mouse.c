@@ -744,8 +744,7 @@ HANDLER(handle_move_event) {
 
 static double
 radius_for_multiclick(const Window *w) {
-    FONTS_DATA_HANDLE fonts_data = w && w->fonts_data ? w->fonts_data :
-        (global_state.callback_os_window ? global_state.callback_os_window->fonts_data : NULL);
+    FONTS_DATA_HANDLE fonts_data = w && w->fonts_data ? w->fonts_data : (global_state.callback_os_window ? global_state.callback_os_window->fonts_data : NULL);
     return 0.5 * (fonts_data ? fonts_data->fcm.cell_height : 8);
 }
 

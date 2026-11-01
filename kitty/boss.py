@@ -484,7 +484,6 @@ class Boss:
         if effective_config_error:
             self.misc_config_errors.append(effective_config_error)
 
-
     def native_tabs_enabled(self) -> bool:
         return is_macos and get_options().macos_native_tabs
 
@@ -1787,6 +1786,7 @@ class Boss:
                 return
             if amt == 0:
                 from .fast_data_types import set_window_font_size
+
                 if not set_window_font_size(w.id, 0):
                     return
                 w.font_size_override = None
@@ -1799,6 +1799,7 @@ class Boss:
             new_size = calc_new_size(current_size)
             if new_size != current_size:
                 from .fast_data_types import set_window_font_size
+
                 if not set_window_font_size(w.id, new_size):
                     return
                 w.font_size_override = new_size
@@ -1915,6 +1916,7 @@ class Boss:
             tm.mark_tab_bar_dirty()
             return True
         return False
+
     def agent_sidebar_scope(self, tab_manager: TabManager) -> tuple[TabManager, ...]:
         if not self.native_tabs_enabled():
             return (tab_manager,)
@@ -2030,6 +2032,7 @@ class Boss:
                 tm.resize(only_tabs=True)
                 tm.update_tab_bar_data()
                 tm.mark_tab_bar_dirty()
+
     def agents_sidebar_click(self, data: str) -> None:
         os_window_id, _, row_text = data.partition(':')
         try:

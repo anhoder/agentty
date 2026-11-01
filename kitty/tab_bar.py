@@ -1052,7 +1052,6 @@ class TabBar:
                 return True
         return False
 
-
     def update(self, data: Sequence[TabBarData]) -> bool:
         if not self.laid_out_once:
             return False
@@ -1060,8 +1059,6 @@ class TabBar:
             if self.is_vertical:
                 return self.update_vertical(data)
             return self.update_horizontal(data)
-
-
 
     def update_horizontal(self, data: Sequence[TabBarData]) -> bool:
         s = self.screen

@@ -327,9 +327,7 @@ def _macos_login_shell_command(argv: Sequence[str], cwd: str, user: str, home: s
     login_argv = ['/usr/bin/login']
     if os.path.isfile(os.path.join(home, '.hushlogin')):
         login_argv.append('-q')
-    login_argv.extend(
-        ('-flp', user, '/bin/bash', '--noprofile', '--norc', '-c', f'exec -l {shlex.join(argv)}')
-    )
+    login_argv.extend(('-flp', user, '/bin/bash', '--noprofile', '--norc', '-c', f'exec -l {shlex.join(argv)}'))
     return login_argv, cwd
 
 
