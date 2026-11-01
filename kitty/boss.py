@@ -27,10 +27,9 @@ from typing import (
 )
 from weakref import WeakValueDictionary
 
-from .agents import AgentSidebarRow, AgentState, AgentTracker, group_sidebar_rows, session_group_for_window
-
 from kitty.types import WindowResizeDrag
 
+from .agents import AgentSidebarRow, AgentState, AgentTracker, group_sidebar_rows, session_group_for_window
 from .child import cached_process_data, default_env, process_data_cache, set_default_env
 from .cli import create_opts, green, parse_args
 from .cli_stub import CLIOptions, SaveAsSessionOptions
@@ -117,6 +116,7 @@ from .fast_data_types import (
     os_window_focus_counters,
     os_window_font_size,
     redirect_mouse_handling,
+    remove_timer,
     request_callback_with_thumbnail,
     ring_bell,
     run_with_activation_token,
@@ -125,7 +125,7 @@ from .fast_data_types import (
     set_application_quit_request,
     set_background_image,
     set_boss,
-    remove_timer,
+    set_options,
     set_os_window_chrome,
     set_os_window_size,
     set_os_window_title,

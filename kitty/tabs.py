@@ -14,6 +14,7 @@ from functools import wraps
 from gettext import gettext as _
 from typing import TYPE_CHECKING, Any, Concatenate, Deque, Literal, NamedTuple, Optional, ParamSpec, TypeVar, cast
 
+from .agents import AgentSidebarRow, state_code
 from .borders import Border, Borders
 from .child import Child
 from .cli_stub import CLIOptions, SaveAsSessionOptions
@@ -40,7 +41,7 @@ from .fast_data_types import (
     get_tab_being_dragged,
     get_window_being_dragged,
     is_tab_bar_visible,
-    set_agents_sidebar,
+    last_focused_os_window_id,
     mark_tab_bar_dirty,
     monotonic,
     next_window_id,
@@ -52,6 +53,7 @@ from .fast_data_types import (
     ring_bell,
     set_active_tab,
     set_active_window,
+    set_agents_sidebar,
     set_redirect_keys_to_overlay,
     set_tab_being_dragged,
     set_tab_layout_name,
@@ -65,8 +67,6 @@ from .layout.interface import all_layouts, create_layout_object_for, evict_cache
 from .layout.splits import Splits
 from .progress import ProgressState
 from .tab_bar import TabBar, TabBarData, WindowDropTarget, apply_title_template
-from .agents import AgentSidebarRow, state_code
-
 from .types import DockSpec, ac
 from .typing_compat import EdgeLiteral, SessionTab, SessionType, TypedDict
 from .utils import cmdline_for_hold, color_as_int, log_error, natsort_key, platform_window_id, resolved_shell, shlex_split, which

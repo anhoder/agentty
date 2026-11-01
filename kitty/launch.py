@@ -14,7 +14,15 @@ from .cli import parse_args
 from .cli_stub import LaunchCLIOptions
 from .clipboard import set_clipboard_string, set_primary_selection
 from .constants import is_wayland
-from .fast_data_types import add_timer, current_focused_os_window_id, get_boss, get_options, get_os_window_title, last_focused_os_window_id, patch_color_profiles
+from .fast_data_types import (
+    add_timer,
+    current_focused_os_window_id,
+    get_boss,
+    get_options,
+    get_os_window_title,
+    last_focused_os_window_id,
+    patch_color_profiles,
+)
 from .options.utils import env as parse_env
 from .tabs import Tab, TabManager
 from .types import DockSpec, LayerShellConfig, OverlayType, dock_edges, parse_dock_spec, run_once

@@ -378,8 +378,6 @@ class Child:
         self.hold = hold
 
     def get_final_env(self) -> tuple[dict[str, str], bool]:
-        from kitty.options.utils import DELETE_ENV_VAR
-
         env = default_env().copy()
         opts = fast_data_types.get_options()
         boss = fast_data_types.get_boss()

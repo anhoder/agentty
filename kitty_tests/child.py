@@ -9,9 +9,11 @@ from unittest.mock import patch
 
 from kitty import child as child_mod
 from kitty.child import _macos_login_shell_command
+from kitty.constants import is_macos
 
 
 class TestChild(unittest.TestCase):
+    @unittest.skipUnless(is_macos, 'only macOS forks the default shell through login')
     def test_default_macos_shell_fork_skips_kitten(self):
         opts = type('Options', (), {'forward_stdio': False, 'shell_integration': {'enabled'}})()
         seen = {}
@@ -23,7 +25,10 @@ class TestChild(unittest.TestCase):
 
         child = child_mod.Child([child_mod.shell_path], os.getcwd())
         child.get_final_env = lambda: ({}, False)
-        with patch.object(child_mod.fast_data_types, 'get_options', return_value=opts), patch.object(child_mod.fast_data_types, 'spawn', side_effect=fake_spawn):
+        with (
+            patch.object(child_mod.fast_data_types, 'get_options', return_value=opts),
+            patch.object(child_mod.fast_data_types, 'spawn', side_effect=fake_spawn),
+        ):
             child.fork()
 
         if child.child_fd is not None:

@@ -35,7 +35,6 @@ from .fast_data_types import (
     viewport_for_window,
     wcswidth,
 )
-
 from .progress import ProgressState
 from .rgb import alpha_blend, color_as_sgr, color_from_int, to_color
 from .types import WindowGeometry, run_once
