@@ -628,6 +628,7 @@ def create_os_window(
     y: Optional[int] = None,
     disallow_override_title: bool = False,
     layer_shell_config: Optional[LayerShellConfig] = None,
+    tab_group_parent_os_window_id: Optional[int] = None,
 ) -> int:
     pass
 

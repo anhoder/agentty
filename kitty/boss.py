@@ -1976,9 +1976,10 @@ class Boss:
             if after is not None and after.state is AgentState.done and (before is None or before.state is not AgentState.done):
                 self.notify_agent_done(after)
             tab = window.tabref()
-            if tab is not None:
-                scope = self.agent_sidebar_scope(tab.tab_manager_ref())
-                scopes[tuple(tm.os_window_id for tm in scope)] = scope
+            tm_ref = tab.tab_manager_ref() if tab is not None else None
+            if tm_ref is not None:
+                scope = self.agent_sidebar_scope(tm_ref)
+                scopes[tuple(t.os_window_id for t in scope)] = scope
         for scope in scopes.values():
             if any(tm.agent_sidebar_enabled for tm in scope):
                 self._refresh_agent_sidebar_scope(scope)
