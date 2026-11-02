@@ -27,9 +27,9 @@ Recent major new features
 - Fix agent resume ignoring path-only session references from OMP and Pi.
 - Add installable native session reporters for OMP, Pi and OpenCode. Integration
   status now distinguishes an installed kitty reporter from a Herdr-only plugin.
-- OpenCode's kitty reporter now publishes the selected root session lifecycle
-  over OSC 7501, scopes status to that session, and clears stale state on
-  session switches and TUI shutdown.
+- OpenCode's kitty reporter now publishes the selected root and descendant
+  session lifecycle over OSC 7501, scopes status to that session tree, and
+  clears stale state on session switches and TUI shutdown.
 - Ensure agent idle debounce transitions are flushed even when the Agents
   sidebar is hidden.
 - macOS: Display brand icons for each AI agent in the Agents sidebar. Icons

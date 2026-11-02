@@ -170,9 +170,13 @@ def arbitrate(
     return STATE_MAP[match.state], match.visible_idle
 
 
+def _is_session_record(record_id: Any, session_id: str) -> bool:
+    return record_id == session_id or (isinstance(record_id, str) and record_id.startswith(session_id + '/'))
+
+
 def _reported_state(program_status: Sequence[Mapping[str, Any]], session_id: str = '') -> AgentState | None:
     if session_id:
-        program_status = tuple(record for record in program_status if record.get('id', '') == session_id)
+        program_status = tuple(record for record in program_status if _is_session_record(record.get('id', ''), session_id))
     states = {str(record.get('state', '')) for record in program_status}
     if 'blocked' in states:
         return AgentState.blocked
@@ -189,8 +193,8 @@ def status_scope(program_status: Sequence[Mapping[str, Any]], session_id: str = 
     records = tuple(program_status)
     if not session_id:
         return {'root_session': '', 'matched_ids': [], 'ignored_ids': [str(r.get('id', '')) for r in records if r.get('id', '')]}
-    matched = [str(r.get('id', '')) for r in records if r.get('id', '') == session_id]
-    ignored = [str(r.get('id', '')) for r in records if r.get('id', '') and r.get('id', '') != session_id]
+    matched = [str(r.get('id', '')) for r in records if _is_session_record(r.get('id', ''), session_id)]
+    ignored = [str(r.get('id', '')) for r in records if r.get('id', '') and not _is_session_record(r.get('id', ''), session_id)]
     return {'root_session': session_id, 'matched_ids': matched, 'ignored_ids': ignored}
 
 def session_ref_of_window(window: Any, agent: str) -> str:

@@ -73,7 +73,8 @@ const SOURCE_KEY = "%(source_var)s";
 const SESSION_KEY = "%(session_var)s";
 const tty = process.env.KITTY_WINDOW_TTY;
 let currentSession;
-let lastState;
+const childSessions = new Set();
+const lastStates = new Map();
 let writeChain = Promise.resolve();
 
 function write(value) {
@@ -93,19 +94,26 @@ function reportIdentity(sessionID) {
   write(userVar(ID_KEY, AGENT) + userVar(SOURCE_KEY, SOURCE) + userVar(SESSION_KEY, sessionID));
 }
 
+function statusRecordID(sessionID) {
+  return sessionID === currentSession ? currentSession : `${currentSession}/${sessionID}`;
+}
+
 function reportStatus(sessionID, state, kind) {
-  if (!sessionID || !tty || (sessionID === currentSession && state === lastState && !kind)) return;
-  currentSession = sessionID;
-  lastState = state;
-  const fields = [`id=${sessionID}`, `state=${state}`, "app=opencode"];
+  if (!sessionID || !tty) return;
+  const recordID = statusRecordID(sessionID);
+  if (lastStates.get(recordID) === state && !kind) return;
+  lastStates.set(recordID, state);
+  const fields = [`id=${recordID}`, `state=${state}`, "app=opencode"];
   if (kind) fields.splice(2, 0, `kind=${kind}`);
   write(`\x1b]7501;${fields.join(":")}\x07`);
 }
 
 function clearStatus(sessionID = currentSession) {
   if (!sessionID) return;
-  write(`\x1b]7501;state=clear:id=${sessionID}\x07`);
-  if (sessionID === currentSession) lastState = undefined;
+  const recordID = sessionID === currentSession ? currentSession : statusRecordID(sessionID);
+  write(`\x1b]7501;state=clear:id=${recordID}\x07`);
+  if (sessionID === currentSession) lastStates.clear();
+  else lastStates.delete(recordID);
 }
 
 function routeSession(api) {
@@ -118,12 +126,17 @@ function statusOf(value) {
   return typeof value === "string" ? value : value?.type;
 }
 
+function isTrackedSession(sessionID) {
+  return sessionID === currentSession || childSessions.has(sessionID);
+}
+
 function sync(api) {
   const sessionID = routeSession(api);
   if (sessionID === currentSession) return;
   clearStatus(currentSession);
+  childSessions.clear();
   currentSession = sessionID;
-  lastState = undefined;
+  lastStates.clear();
   reportIdentity(sessionID);
   const status = sessionID ? statusOf(api.state.session.status(sessionID)) : undefined;
   if (status === "busy" || status === "retry") reportStatus(sessionID, "working");
@@ -133,10 +146,18 @@ function sync(api) {
 export default { id: "kitty.opencode.session", tui: async (api) => {
   if (!tty) return;
   const onStatus = (event) => {
-    const sessionID = event?.properties?.sessionID;
-    if (!sessionID || sessionID !== routeSession(api)) return;
+    const properties = event?.properties ?? {};
+    const info = properties.info;
+    const createdID = info?.id;
+    const parentID = info?.parentID;
+    if (event.type === "session.created" && createdID && (parentID === currentSession || childSessions.has(parentID))) {
+      childSessions.add(createdID);
+      return;
+    }
+    const sessionID = properties.sessionID || createdID;
+    if (!sessionID || !isTrackedSession(sessionID)) return;
     const type = event.type;
-    const status = statusOf(event.properties?.status);
+    const status = statusOf(properties.status);
     if (type === "session.status") {
       if (status === "busy" || status === "retry") reportStatus(sessionID, "working");
       else if (status === "idle") reportStatus(sessionID, "idle");
@@ -145,9 +166,13 @@ export default { id: "kitty.opencode.session", tui: async (api) => {
     else if (type === "question.asked") reportStatus(sessionID, "blocked", "question");
     else if (type === "permission.replied" || type === "question.replied" || type === "question.rejected") reportStatus(sessionID, "working");
     else if (type === "session.error") reportStatus(sessionID, "error");
-    else if (type === "session.deleted") clearStatus(sessionID);
+    else if (type === "session.deleted") {
+      clearStatus(sessionID);
+      if (sessionID === currentSession) childSessions.clear();
+      else childSessions.delete(sessionID);
+    }
   };
-  const off = ["session.status", "session.idle", "permission.asked", "question.asked", "permission.replied", "question.replied", "question.rejected", "session.error", "session.deleted"].map((type) => api.event.on(type, onStatus));
+  const off = ["session.created", "session.status", "session.idle", "permission.asked", "question.asked", "permission.replied", "question.replied", "question.rejected", "session.error", "session.deleted"].map((type) => api.event.on(type, onStatus));
   sync(api);
   const timer = setInterval(() => sync(api), 100);
   api.lifecycle.onDispose(() => { clearInterval(timer); for (const remove of off) remove(); clearStatus(); reportIdentity(undefined); });
