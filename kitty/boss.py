@@ -447,6 +447,7 @@ class Boss:
         self.agent_sidebar_timer = 0
         self.agent_tracker = AgentTracker()
         self.agent_sidebar_flush_timer = 0
+        self._agent_debounce_timer = 0
         self.agent_sidebar_enabled = False
         self.agent_sidebar_cols = 30
         self.session_autosave_timer = 0
@@ -490,12 +491,17 @@ class Boss:
     def startup_first_child(self, os_window_id: int | None, startup_sessions: Iterable[Session] = ()) -> None:
         si = startup_sessions or create_sessions(get_options(), self.args, default_session=get_options().startup_session)
         focused_os_window = wid = 0
+        tab_group_members: dict[str, int] = {}
+        native_tabs = self.native_tabs_enabled()
         token = os.environ.pop('XDG_ACTIVATION_TOKEN', '')
         with Window.set_ignore_focus_changes_for_new_windows():
             for startup_session in si:
                 # The window state from the CLI options will override and apply to every single OS window in startup session
                 wstate = self.args.start_as if self.args.start_as and self.args.start_as != 'normal' else None  # ty: ignore[redundant-condition]
-                wid = self.add_os_window(startup_session, window_state=wstate, os_window_id=os_window_id)
+                parent = tab_group_members.get(startup_session.os_window_tab_group) if native_tabs and startup_session.os_window_tab_group is not None else None
+                wid = self.add_os_window(startup_session, window_state=wstate, os_window_id=os_window_id, tab_group_parent_os_window_id=parent)
+                if native_tabs and startup_session.os_window_tab_group is not None:
+                    tab_group_members[startup_session.os_window_tab_group] = wid
                 if startup_session.focus_os_window:
                     focused_os_window = wid
                 os_window_id = None
@@ -594,13 +600,39 @@ class Boss:
         if ser_opts is None:
             ser_opts = default_save_as_session_opts()
         matched_windows = frozenset(self.match_windows(ser_opts.match)) if ser_opts.match else None
-        s = {current_focused_os_window_id(): 2, last_focused_os_window_id(): 1}
+        focused_os_window = current_focused_os_window_id() or last_focused_os_window_id()
+        ordered_windows: list[tuple[int, str | None]] = []
+        if self.native_tabs_enabled():
+            seen: set[int] = set()
+            group = 0
+            for os_window_id in self.os_window_map:
+                if os_window_id in seen:
+                    continue
+                group += 1
+                # Only AppKit knows group membership. The navigation fallback combines unrelated groups and singletons.
+                members = native_tab_group_order(os_window_id) or (os_window_id,)
+                for member in members:
+                    if member in self.os_window_map and member not in seen:
+                        seen.add(member)
+                        ordered_windows.append((member, str(group)))
+        else:
+            s = {current_focused_os_window_id(): 2, last_focused_os_window_id(): 1}
+            ordered_windows = [(wid, None) for wid in sorted(self.os_window_map, key=lambda wid: s.get(wid, 0))]
         # Serializing reads the foreground processes and working directory of every window, so the per process data the operating
         # system has to be asked for is read once for the whole session rather than once per window
+        is_first = True
         with cached_process_data():
-            for i, os_window_id in enumerate(sorted(self.os_window_map, key=lambda wid: s.get(wid, 0))):
+            for os_window_id, tab_group in ordered_windows:
                 tm = self.os_window_map[os_window_id]
-                yield from tm.serialize_state_as_session(session_path, matched_windows, is_first=i == 0, ser_opts=ser_opts)
+                lines = tm.serialize_state_as_session(session_path, matched_windows, is_first=is_first, ser_opts=ser_opts)
+                if not lines:
+                    continue
+                yield from lines
+                if tab_group is not None:
+                    yield f'os_window_tab_group {tab_group}'
+                if os_window_id == focused_os_window:
+                    yield 'focus_os_window'
+                is_first = False
 
     @property
     def all_tab_managers(self) -> Iterator[TabManager]:
@@ -1188,6 +1220,9 @@ class Boss:
     def on_child_death(self, window_id: int, child_died: bool, exit_status: int) -> None:
         prev_active_window = self.active_window
         window = self.window_id_map.pop(window_id, None)
+        self.agent_tracker.discard(window_id)
+        from .rc.agent_wait import wake_waiters
+        wake_waiters(self, window_id)
         if window is None:
             return
         window.child_died, window.child_exit_status = child_died, exit_status
@@ -1971,17 +2006,22 @@ class Boss:
                 tm.set_agent_sidebar_rows(rows)
 
     def flush_agent_sidebar_updates(self, timer_id: int | None = None) -> None:
-        del timer_id
+        if timer_id is None and self.agent_sidebar_flush_timer:
+            remove_timer(self.agent_sidebar_flush_timer)
         self.agent_sidebar_flush_timer = 0
         scopes: dict[tuple[int, ...], tuple[TabManager, ...]] = {}
         for window_id in self.agent_tracker.drain_dirty():
             window = self.window_id_map.get(window_id)
             if window is None:
                 self.agent_tracker.discard(window_id)
+                from .rc.agent_wait import wake_waiters
+                wake_waiters(self, window_id)
                 continue
             before = self.agent_tracker.snapshot_for(window_id)
-            self.agent_tracker.refresh_window(window)
+            self.agent_tracker.observe(window)
             after = self.agent_tracker.snapshot_for(window_id)
+            from .rc.agent_wait import wake_waiters
+            wake_waiters(self, window_id)
             if after is not None and after.state is AgentState.done and (before is None or before.state is not AgentState.done):
                 self.notify_agent_done(after)
             tab = window.tabref()
@@ -1992,6 +2032,16 @@ class Boss:
         for scope in scopes.values():
             if any(tm.agent_sidebar_enabled for tm in scope):
                 self._refresh_agent_sidebar_scope(scope)
+        delay = self.agent_tracker.next_refresh_delay()
+        if delay is not None and not self._agent_debounce_timer:
+            self._agent_debounce_timer = add_timer(self._flush_agent_debounce, delay, False)
+
+    def _flush_agent_debounce(self, timer_id: int | None = None) -> None:
+        del timer_id
+        self._agent_debounce_timer = 0
+        for window_id in self.agent_tracker.pending_idle_windows():
+            self.agent_tracker.mark_dirty(window_id)
+        self.flush_agent_sidebar_updates()
 
     def notify_agent_done(self, snapshot: Any) -> None:
         """Tell the user an agent finished, and focus it when clicked."""
@@ -2727,6 +2777,9 @@ class Boss:
             tm.destroy()
         for window_id in tuple(w.id for w in self.window_id_map.values() if getattr(w, 'os_window_id', None) == os_window_id):
             self.window_id_map.pop(window_id, None)
+            self.agent_tracker.discard(window_id)
+            from .rc.agent_wait import wake_waiters
+            wake_waiters(self, window_id)
         if not self.os_window_map and is_macos:
             cocoa_set_menubar_title('')
         action = self.os_window_death_actions.pop(os_window_id, None)
@@ -3400,6 +3453,14 @@ class Boss:
         # The session state is not serialized here: every OS window has already been closed by the time this runs, so there is
         # nothing left to serialize. It is saved when the quit is requested or the last OS window is closed.
         self.shutting_down = True
+        from .rc.agent_wait import clear_waiters
+        clear_waiters(self)
+        if getattr(self, '_agent_observe_timer', 0):
+            remove_timer(self._agent_observe_timer)
+            self._agent_observe_timer = 0
+        if self._agent_debounce_timer:
+            remove_timer(self._agent_debounce_timer)
+            self._agent_debounce_timer = 0
         if self.session_autosave_timer:
             remove_timer(self.session_autosave_timer)
             self.session_autosave_timer = 0

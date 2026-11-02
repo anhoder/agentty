@@ -296,6 +296,13 @@ them and a separate kitty instance is started for each of the others, with the
 command line arguments, working directory and environment variables it
 originally had.
 
+On macOS with :opt:`macos_native_tabs` enabled, saved sessions also preserve
+native tab groups and their tab order. Separate OS windows remain separate;
+split layouts are restored within their original tabs. The session directive
+``os_window_tab_group <identifier>`` associates OS windows with the same native
+tab group. It is ignored when native tabs are disabled. Older saved sessions
+without this metadata cannot reconstruct native tab grouping.
+
 The state is saved in the same place, and with the same protections, as the
 state saved at logout, described below. On macOS it is encrypted with a key in
 your login keychain; on Linux it is protected only by its file permissions.

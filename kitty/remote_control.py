@@ -242,15 +242,15 @@ def handle_cmd(
             c.cancel_async_request(boss, self_window or window, PayloadGetter(c, payload))
             return None
         active_async_requests[async_id] = monotonic()
-        if len(active_async_requests) > 32:
-            oldest = next(iter(active_async_requests))
-            del active_async_requests[oldest]
     try:
         ans = c.response_from_kitty(boss, self_window or window, PayloadGetter(c, payload))
     except Exception:
+        active_async_requests.pop(async_id, None)
         if no_response:  # don't report errors if --no-response was used
             return None
         raise
+    if not isinstance(ans, AsyncResponse):
+        active_async_requests.pop(async_id, None)
     if isinstance(ans, NoResponse):
         return None
     if isinstance(ans, AsyncResponse):

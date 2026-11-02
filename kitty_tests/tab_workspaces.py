@@ -8,7 +8,7 @@ from kitty.launch import find_existing, launch, parse_launch_args
 from kitty.options.utils import detach_window_parse
 from kitty.rc.base import MatchError, PayloadGetter
 from kitty.rc.detach_window import detach_window
-from kitty.tabs import index_for_new_tab
+from kitty.tabs import TabManager, index_for_new_tab
 from kitty.utils import natsort_ints, natsort_key
 from kitty.window import Window
 
@@ -82,6 +82,23 @@ class TestTabWorkspaces(BaseTest):
         for title, expected in (('3', 2), ('11', 4), ('0', 0), ('avocado', 5), ('blueberry', 6), ('tab 3', 7), ('tab 11', 8), ('Apple', 4)):
             with self.subTest(title=title):
                 self.ae(index_for_new_tab(titles, 0, 'by-title', title), expected)
+
+
+    def test_switching_tabs_relayouts_new_active_tab(self):
+        tabs = [
+            SimpleNamespace(active_window=None, relayout=Mock(), relayout_borders=Mock()),
+            SimpleNamespace(active_window=None, relayout=Mock(), relayout_borders=Mock()),
+        ]
+        tm = object.__new__(TabManager)
+        tm.tabs = tabs
+        tm._active_tab_idx = 0
+        tm._set_active_tab = Mock(side_effect=lambda idx: setattr(tm, '_active_tab_idx', idx))
+        tm.mark_tab_bar_dirty = Mock()
+
+        TabManager.set_active_tab_idx(tm, 1)
+
+        tabs[1].relayout.assert_called_once_with()
+        tabs[1].relayout_borders.assert_not_called()
 
     def test_natsort(self):
         self.ae(natsort_ints(['10', '9', 'a2', 'a10', 'a1b', '²', '']), ['', '9', '10', 'a1b', 'a2', 'a10', '²'])

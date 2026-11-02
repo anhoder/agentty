@@ -3,8 +3,9 @@
 
 import os
 import time
+from collections import deque
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass, replace
+from dataclasses import asdict, dataclass, replace
 from enum import Enum
 from typing import Any
 
@@ -45,6 +46,7 @@ class AgentSnapshot:
     cwd: str
     # The agent's own conversation id, empty unless the agent reported one
     session_id: str = ''
+    generation: int = 0
 
 
 @dataclass(frozen=True)
@@ -131,9 +133,10 @@ def state_from_signals(
     program_status: Sequence[Mapping[str, Any]],
     screen: Screen | None = None,
     previous: AgentState | None = None,
+    session_id: str = '',
 ) -> AgentState:
     """Arbitrate a semantic report against visible screen evidence."""
-    return arbitrate(agent, program_status, screen, previous)[0]
+    return arbitrate(agent, program_status, screen, previous, session_id)[0]
 
 
 def arbitrate(
@@ -141,42 +144,35 @@ def arbitrate(
     program_status: Sequence[Mapping[str, Any]],
     screen: Screen | None = None,
     previous: AgentState | None = None,
+    session_id: str = '',
 ) -> tuple[AgentState, bool]:
     """Return the state plus whether a visible idle marker backs it.
 
-    A reported state only wins for agents whose integration covers the whole
-    lifecycle. An integration that only reports session identity has no
-    handler for cancellations and interrupts, so its last report goes stale
-    and would otherwise pin the pane to a state the screen contradicts.
+    A lifecycle report is scoped to the window's current root session. Without
+    that identity, the report cannot be attributed safely and screen rules are
+    the fallback.
     """
     if agent is None:
         return AgentState.unknown, False
-    reported = _reported_state(program_status)
+    reported = None if agent == 'opencode' and not session_id else _reported_state(program_status, session_id)
     if reported is not None and authority_for(agent) is StateAuthority.full_lifecycle:
-        return reported, False
+        return reported, reported is AgentState.idle
     match = detect(agent, screen) if screen is not None else None
     if match is None or match.manifest is None:
-        # We recognize the process but ship no rules for it, so we cannot see
-        # what it is doing. Claiming idle would be a guess that reads as fact;
-        # unknown is the truth.
         return reported or AgentState.unknown, False
     if not match.manifest.rules:
-        # The manifest identifies the agent but carries no screen rules to
-        # evaluate, so the screen is not evidence either way.
         return reported or AgentState.unknown, False
     if match.skipped:
-        # A transcript viewer or menu overlay has replaced the live UI; it says
-        # nothing about what the agent is doing, so hold what we had.
         held = previous if previous is not None else (reported or AgentState.unknown)
         return held, False
     if match.rule is None:
-        # Rules exist and none matched. For an identified agent that means at
-        # rest, not working: working requires a visible marker.
         return reported or AgentState.idle, False
     return STATE_MAP[match.state], match.visible_idle
 
 
-def _reported_state(program_status: Sequence[Mapping[str, Any]]) -> AgentState | None:
+def _reported_state(program_status: Sequence[Mapping[str, Any]], session_id: str = '') -> AgentState | None:
+    if session_id:
+        program_status = tuple(record for record in program_status if record.get('id', '') == session_id)
     states = {str(record.get('state', '')) for record in program_status}
     if 'blocked' in states:
         return AgentState.blocked
@@ -188,6 +184,14 @@ def _reported_state(program_status: Sequence[Mapping[str, Any]]) -> AgentState |
         return AgentState.idle
     return None
 
+
+def status_scope(program_status: Sequence[Mapping[str, Any]], session_id: str = '') -> dict[str, Any]:
+    records = tuple(program_status)
+    if not session_id:
+        return {'root_session': '', 'matched_ids': [], 'ignored_ids': [str(r.get('id', '')) for r in records if r.get('id', '')]}
+    matched = [str(r.get('id', '')) for r in records if r.get('id', '') == session_id]
+    ignored = [str(r.get('id', '')) for r in records if r.get('id', '') and r.get('id', '') != session_id]
+    return {'root_session': session_id, 'matched_ids': matched, 'ignored_ids': ignored}
 
 def session_ref_of_window(window: Any, agent: str) -> str:
     """Return the Herdr-compatible id or absolute session path reported by an agent."""
@@ -236,14 +240,15 @@ def snapshot_for_window(window: Any, screen: Screen | None = None, previous: Age
     agent = detect_agent(window.child.foreground_processes)
     if agent is None:
         return None, False
-    state, visible_idle = arbitrate(agent, window.program_status.as_list(), screen, previous)
+    session_id = session_id_of_window(window, agent)
+    state, visible_idle = arbitrate(agent, window.program_status.as_list(), screen, previous, session_id)
     snapshot = AgentSnapshot(
         window_id=window.id,
         agent=agent,
         state=state,
         title=window.title,
         cwd=window.cwd_of_child or window.child.cwd,
-        session_id=session_id_of_window(window, agent),
+        session_id=session_id,
     )
     return snapshot, visible_idle
 
@@ -267,6 +272,38 @@ class AgentTracker:
         self.pending_idle_since: dict[int, float] = {}
         # Windows whose turn finished while the user was looking elsewhere.
         self.unseen_done: set[int] = set()
+        self.event_seq = 0
+        self.events: deque[dict[str, Any]] = deque(maxlen=256)
+        self.identities: dict[int, tuple[Any, ...]] = {}
+        self.generations: dict[int, int] = {}
+
+    def observe(self, window: Any) -> AgentSnapshot | None:
+        before = self.snapshot_for(window.id)
+        self.refresh_window(window)
+        after = self.snapshot_for(window.id)
+        self.record_change(window.id, before, after)
+        return after
+
+    def record_change(self, window_id: int, before: AgentSnapshot | None, after: AgentSnapshot | None) -> None:
+        """Called only by the Boss flush, after tracker arbitration/debounce."""
+        if before != after:
+            self.event_seq += 1
+            self.events.append({'seq': self.event_seq, 'window_id': window_id,
+                                'generation': self.generations.get(window_id, 0),
+                                'identity': self.identities.get(window_id),
+                                'reason': 'changed' if after is not None else 'agent_removed',
+                                'snapshot': asdict(after) if after is not None else None})
+
+    def event_batch(self, window_id: int, after_seq: int, maximum: int) -> dict[str, Any]:
+        if self.events and after_seq < self.events[0]['seq'] - 1:
+            return {'reason': 'truncated', 'resync_required': True, 'next_seq': self.event_seq,
+                    'head_seq': self.event_seq, 'has_more': False, 'resync_cursor': self.event_seq,
+                    'snapshot': asdict(self.snapshots[window_id]) if self.snapshots.get(window_id) else None, 'events': []}
+        events = [e for e in self.events if e['window_id'] == window_id and e['seq'] > after_seq][:maximum]
+        next_seq = events[-1]['seq'] if events else self.event_seq
+        more = any(e['window_id'] == window_id and e['seq'] > next_seq for e in self.events)
+        return {'reason': 'changed' if events else 'timeout', 'next_seq': next_seq,
+                'head_seq': self.event_seq, 'has_more': more, 'events': events}
 
     def mark_dirty(self, window_id: int) -> None:
         self.dirty_windows.add(window_id)
@@ -280,10 +317,19 @@ class AgentTracker:
         return dirty
 
     def refresh_window(self, window: Any, now: float | None = None) -> bool:
+        identity = agent_identity(window)
+        if self.identities.get(window.id) != identity:
+            self.identities[window.id] = identity
+            self.generations[window.id] = self.generations.get(window.id, 0) + 1
+            self.snapshots.pop(window.id, None)
+            self.pending_idle_since.pop(window.id, None)
+            self.unseen_done.discard(window.id)
         previous = self.snapshots.get(window.id)
         previous_state = previous.state if previous is not None else None
         screen = window.agent_detection_snapshot()
         current, visible_idle = snapshot_for_window(window, screen, previous_state)
+        if current is not None:
+            current = replace(current, generation=self.generations[window.id])
         if current is not None and previous is not None:
             current = self._debounce_idle(current, previous, visible_idle, now if now is not None else monotonic())
             current = self._hold_done(current, previous, window)
@@ -303,6 +349,15 @@ class AgentTracker:
             self.pending_idle_since.pop(current.window_id, None)
             return current
         return previous
+
+    def next_refresh_delay(self, now: float | None = None) -> float | None:
+        if not self.pending_idle_since:
+            return None
+        current = monotonic() if now is None else now
+        return max(0.0, min(self.IDLE_DEBOUNCE - (current - since) for since in self.pending_idle_since.values()))
+
+    def pending_idle_windows(self) -> tuple[int, ...]:
+        return tuple(self.pending_idle_since)
 
     def _hold_done(self, current: AgentSnapshot, previous: AgentSnapshot, window: Any) -> AgentSnapshot:
         """Turn a finished turn into done, and keep it until the user looks.
@@ -327,6 +382,13 @@ class AgentTracker:
         return current
 
     def discard(self, window_id: int) -> None:
+        if window_id in self.snapshots or window_id in self.identities:
+            self.event_seq += 1
+            self.events.append({'seq': self.event_seq, 'window_id': window_id, 'snapshot': None,
+                                'generation': self.generations.get(window_id, 0),
+                                'identity': self.identities.get(window_id), 'reason': 'window_closed'})
+        self.identities.pop(window_id, None)
+        self.generations.pop(window_id, None)
         self.dirty_windows.discard(window_id)
         self.snapshots.pop(window_id, None)
         self.pending_idle_since.pop(window_id, None)
@@ -344,6 +406,18 @@ def state_icon(state: AgentState) -> str:
         AgentState.idle: '·',
         AgentState.unknown: '?',
     }[state]
+
+
+def agent_event_cursor(boss: Any) -> int:
+    """Public baseline cursor for future control commands; does not refresh state."""
+    return boss.agent_tracker.event_seq
+
+
+def agent_identity(window: Any) -> tuple[Any, ...]:
+    processes = window.child.foreground_processes
+    agent = detect_agent(processes)
+    pid = next((p.get('pid') for p in processes if detect_agent((p,)) == agent), None) if agent else None
+    return agent, session_id_of_window(window, agent) if agent else '', pid
 
 
 def state_code(state: AgentState) -> int:

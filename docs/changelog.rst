@@ -10,6 +10,7 @@ Recent major new features
 ---------------------------
 
 
+- Fix the terminal content in inactive tabs being partially covered by the tab bar after entering fullscreen.
 - A new option :opt:`persist_session` to save the state of kitty whenever it
   exits and restore it the next time kitty is started, including the layout of
   every tab, the working directory of every window and the scrollback. Set it
@@ -21,6 +22,16 @@ Recent major new features
   :code:`kitty +agent-integration install <agent>`, currently for Claude Code
   and Codex, and the command that resumes it comes from the agent's manifest.
   See :ref:`agent_resume`.
+- macOS: Preserve native tab groups and their order when restoring saved
+  sessions, rather than opening overlapping independent windows.
+- Fix agent resume ignoring path-only session references from OMP and Pi.
+- Add installable native session reporters for OMP, Pi and OpenCode. Integration
+  status now distinguishes an installed kitty reporter from a Herdr-only plugin.
+- OpenCode's kitty reporter now publishes the selected root session lifecycle
+  over OSC 7501, scopes status to that session, and clears stale state on
+  session switches and TUI shutdown.
+- Ensure agent idle debounce transitions are flushed even when the Agents
+  sidebar is hidden.
 - macOS: Display brand icons for each AI agent in the Agents sidebar. Icons
   are loaded from ``kitty/agent_icons/`` and adapt to light/dark appearance
   by substituting ``currentColor`` in SVG sources with the label color. Non-square

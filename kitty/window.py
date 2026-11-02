@@ -1430,8 +1430,12 @@ class Window:
                 val = val.decode('utf-8', 'replace')
             self.user_vars[key] = val = sanitize_control_codes(val).replace('\n', ' ')
             self.call_watchers(self.watchers.on_set_user_var, {'key': key, 'value': val})
+            if key in {'KITTY_AGENT_ID', 'KITTY_AGENT_SOURCE', 'KITTY_AGENT_SESSION', 'KITTY_AGENT_SESSION_PATH'}:
+                get_boss().mark_agent_window_dirty(self.id)
         else:
             self.call_watchers(self.watchers.on_set_user_var, {'key': key, 'value': None})
+            if key in {'KITTY_AGENT_ID', 'KITTY_AGENT_SOURCE', 'KITTY_AGENT_SESSION', 'KITTY_AGENT_SESSION_PATH'}:
+                get_boss().mark_agent_window_dirty(self.id)
 
     # screen callbacks {{{
 

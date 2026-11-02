@@ -1741,7 +1741,9 @@ class TabManager:  # {{{
         self._set_active_tab(idx)
         tab = self.active_tab
         if tab is not None:
-            tab.relayout_borders()
+            # An inactive tab can miss a window resize while the OS window enters fullscreen.
+            # Recompute its geometry before it becomes visible so the tab bar does not overlap it.
+            tab.relayout()
         self.mark_tab_bar_dirty()
 
     @update_tab_bar_visibility

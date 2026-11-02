@@ -11,14 +11,148 @@
 
 import json
 import os
+import re
 import shutil
 from collections.abc import Callable, Sequence
 from typing import Any, NamedTuple
 
-from .agents import AGENT_ID_VAR, AGENT_SESSION_VAR, AGENT_SOURCE_VAR
+from .agents import AGENT_ID_VAR, AGENT_SESSION_PATH_VAR, AGENT_SESSION_VAR, AGENT_SOURCE_VAR
 from .constants import config_dir
 
 HOOK_DIR_NAME = 'agent-integration'
+KITTY_ASSET_MARKER = 'KITTY_AGENT_INTEGRATION_ID=kitty'
+
+# These reporters deliberately use only the current session supplied by the host
+# APIs. They never inspect session databases or infer a session from cwd.
+PI_REPORTER = r'''// KITTY_AGENT_INTEGRATION_ID=kitty
+import fs from "node:fs";
+import path from "node:path";
+
+const AGENT = "%(agent)s";
+const SOURCE = `kitty:${AGENT}`;
+const keys = ["%(id_var)s", "%(source_var)s", "%(session_var)s", "%(path_var)s"];
+function absolute(value) {
+  return typeof value === "string" && (path.posix.isAbsolute(value) || path.win32.isAbsolute(value)) ? value : undefined;
+}
+function emit(id, sessionPath) {
+  const tty = process.env.KITTY_WINDOW_TTY;
+  if (!tty) return;
+  const values = { "%(id_var)s": AGENT, "%(source_var)s": SOURCE, "%(session_var)s": id, "%(path_var)s": sessionPath };
+  const out = keys.map((key) => {
+    const value = values[key];
+    return value ? `\x1b]1337;SetUserVar=${key}=${Buffer.from(value).toString("base64")}\x07` : `\x1b]1337;SetUserVar=${key}\x07`;
+  }).join("");
+  try { fs.writeFileSync(tty, out); } catch {}
+}
+function reportSession(ctx) {
+  if (ctx?.hasUI !== true) return;
+  let sessionPath;
+  let id;
+  try { sessionPath = absolute(ctx?.sessionManager?.getSessionFile?.()); } catch {}
+  try { const value = ctx?.sessionManager?.getSessionId?.(); id = typeof value === "string" && value ? value : undefined; } catch {}
+  // A path is authoritative when available; otherwise use the exact API id.
+  emit(id, sessionPath);
+}
+export default function (pi) {
+  const clear = (_event, ctx) => { if (ctx?.hasUI === true) emit(); };
+  const report = (_event, ctx) => reportSession(ctx);
+  pi.on("session_before_switch", clear);
+  pi.on("session_before_fork", clear);
+  pi.on("session_start", report);
+  pi.on("session_switch", report);
+  pi.on("session_shutdown", clear);
+}
+'''
+
+OPENCODE_REPORTER = r'''// KITTY_AGENT_INTEGRATION_ID=kitty
+import fs from "node:fs";
+const AGENT = "opencode";
+const SOURCE = "kitty:opencode";
+const ID_KEY = "%(id_var)s";
+const SOURCE_KEY = "%(source_var)s";
+const SESSION_KEY = "%(session_var)s";
+const tty = process.env.KITTY_WINDOW_TTY;
+let currentSession;
+let lastState;
+let writeChain = Promise.resolve();
+
+function write(value) {
+  if (!tty) return;
+  writeChain = writeChain.then(() => {
+    try { fs.writeFileSync(tty, value); } catch {}
+  });
+}
+
+function userVar(key, value) {
+  return value === undefined
+    ? `\x1b]1337;SetUserVar=${key}\x07`
+    : `\x1b]1337;SetUserVar=${key}=${Buffer.from(value).toString("base64")}\x07`;
+}
+
+function reportIdentity(sessionID) {
+  write(userVar(ID_KEY, AGENT) + userVar(SOURCE_KEY, SOURCE) + userVar(SESSION_KEY, sessionID));
+}
+
+function reportStatus(sessionID, state, kind) {
+  if (!sessionID || !tty || (sessionID === currentSession && state === lastState && !kind)) return;
+  currentSession = sessionID;
+  lastState = state;
+  const fields = [`id=${sessionID}`, `state=${state}`, "app=opencode"];
+  if (kind) fields.splice(2, 0, `kind=${kind}`);
+  write(`\x1b]7501;${fields.join(":")}\x07`);
+}
+
+function clearStatus(sessionID = currentSession) {
+  if (!sessionID) return;
+  write(`\x1b]7501;state=clear:id=${sessionID}\x07`);
+  if (sessionID === currentSession) lastState = undefined;
+}
+
+function routeSession(api) {
+  const route = api.route.current;
+  return route?.name === "session" && typeof route.params?.sessionID === "string"
+    ? route.params.sessionID : undefined;
+}
+
+function statusOf(value) {
+  return typeof value === "string" ? value : value?.type;
+}
+
+function sync(api) {
+  const sessionID = routeSession(api);
+  if (sessionID === currentSession) return;
+  clearStatus(currentSession);
+  currentSession = sessionID;
+  lastState = undefined;
+  reportIdentity(sessionID);
+  const status = sessionID ? statusOf(api.state.session.status(sessionID)) : undefined;
+  if (status === "busy" || status === "retry") reportStatus(sessionID, "working");
+  else if (status === "idle") reportStatus(sessionID, "idle");
+}
+
+export default { id: "kitty.opencode.session", tui: async (api) => {
+  if (!tty) return;
+  const onStatus = (event) => {
+    const sessionID = event?.properties?.sessionID;
+    if (!sessionID || sessionID !== routeSession(api)) return;
+    const type = event.type;
+    const status = statusOf(event.properties?.status);
+    if (type === "session.status") {
+      if (status === "busy" || status === "retry") reportStatus(sessionID, "working");
+      else if (status === "idle") reportStatus(sessionID, "idle");
+    } else if (type === "session.idle") reportStatus(sessionID, "idle");
+    else if (type === "permission.asked") reportStatus(sessionID, "blocked", "permission");
+    else if (type === "question.asked") reportStatus(sessionID, "blocked", "question");
+    else if (type === "permission.replied" || type === "question.replied" || type === "question.rejected") reportStatus(sessionID, "working");
+    else if (type === "session.error") reportStatus(sessionID, "error");
+    else if (type === "session.deleted") clearStatus(sessionID);
+  };
+  const off = ["session.status", "session.idle", "permission.asked", "question.asked", "permission.replied", "question.replied", "question.rejected", "session.error", "session.deleted"].map((type) => api.event.on(type, onStatus));
+  sync(api);
+  const timer = setInterval(() => sync(api), 100);
+  api.lifecycle.onDispose(() => { clearInterval(timer); for (const remove of off) remove(); clearStatus(); reportIdentity(undefined); });
+}};
+'''
 # Written by the hook, read by kitty/window.py's OSC 1337 handler
 HOOK_SCRIPT = r"""#!/bin/sh
 # Installed by kitty, see kitty/agent_integration.py. Tells kitty which agent conversation this window is in, so that kitty can
@@ -60,6 +194,100 @@ def hook_dir() -> str:
 
 def hook_path(agent: str) -> str:
     return os.path.join(hook_dir(), f'{agent}-session.sh')
+
+
+def reporter_path(agent: Agent) -> str:
+    if agent.integration_kind == 'native':
+        return os.path.join(os.path.dirname(agent.config_path()), 'kitty-agent-state.ts')
+    return os.path.join(os.path.dirname(agent.config_path()), 'kitty-agent-state.js')
+
+
+def reporter_text(agent: Agent) -> str:
+    values = {
+        'agent': agent.id,
+        'id_var': AGENT_ID_VAR,
+        'source_var': AGENT_SOURCE_VAR,
+        'session_var': AGENT_SESSION_VAR,
+        'path_var': AGENT_SESSION_PATH_VAR,
+    }
+    return (PI_REPORTER if agent.integration_kind == 'native' else OPENCODE_REPORTER) % values
+
+
+def write_reporter(agent: Agent) -> str:
+    path = reporter_path(agent)
+    if os.path.exists(path) and not owned_reporter(path):
+        raise SystemExit(f'Refusing to overwrite an unowned reporter: {path}')
+    os.makedirs(os.path.dirname(path), mode=0o700, exist_ok=True)
+    with open(path, 'w') as f:
+        f.write(reporter_text(agent))
+    os.chmod(path, 0o700)
+    return path
+
+
+def owned_reporter(path: str) -> bool:
+    try:
+        with open(path) as f:
+            return KITTY_ASSET_MARKER in f.read(512)
+    except OSError:
+        return False
+
+
+def opencode_plugin_config(agent: Agent) -> tuple[str, str]:
+    base = os.path.dirname(agent.config_path())
+    # OpenCode's TUI loads plugins from tui.json[c], using the singular
+    # `plugin` key. It does not load cli.json plugins in the TUI.
+    for filename in ('tui.json', 'tui.jsonc'):
+        path = os.path.join(base, filename)
+        if os.path.exists(path):
+            return path, 'plugin'
+    return os.path.join(base, 'tui.json'), 'plugin'
+
+
+def read_plugin_config(path: str) -> dict[str, Any]:
+    try:
+        with open(path) as f:
+            text = f.read()
+    except FileNotFoundError:
+        return {}
+    # Keep quoted strings intact while removing JSONC comments and trailing commas.
+    token = r'"(?:\\.|[^"\\])*"|//[^\r\n]*|/\*[\s\S]*?\*/'
+    text = re.sub(token, lambda m: m[0] if m[0].startswith('"') else ' ', text)
+    text = re.sub(r'("(?:\\.|[^"\\])*")|,\s*(?=[}\]])', lambda m: m[1] or '', text)
+    try:
+        data = json.loads(text)
+    except ValueError as err:
+        raise SystemExit(f'Cannot read {path}: {err}') from err
+    if not isinstance(data, dict):
+        raise SystemExit(f'Cannot read {path}: expected a JSON object')
+    return data
+
+
+def register_plugin(agent: Agent, remove: bool = False) -> None:
+    path, key = opencode_plugin_config(agent)
+    data = read_plugin_config(path)
+    entries = data.get(key, [])
+    if not isinstance(entries, list):
+        raise SystemExit(f'Cannot use {path}: {key} is not a list')
+    spec = './kitty-agent-state.js'
+    kept = [entry for entry in entries if entry != spec]
+    if not remove:
+        kept.append(spec)
+    if kept == entries:
+        return
+    data[key] = kept
+    if os.path.basename(path) == 'tui.json' and '$schema' not in data:
+        data['$schema'] = 'https://opencode.ai/tui.json'
+    write_json(path, data)
+
+
+def reporter_is_installed(agent: Agent) -> bool:
+    if not owned_reporter(reporter_path(agent)):
+        return False
+    if agent.integration_kind == 'tui-plugin':
+        path, key = opencode_plugin_config(agent)
+        entries = read_plugin_config(path).get(key, [])
+        return isinstance(entries, list) and './kitty-agent-state.js' in entries
+    return True
 
 
 def write_hook(agent: Agent) -> str:
@@ -198,9 +426,9 @@ AGENTS: tuple[Agent, ...] = (
     Agent('grok', 'Grok CLI', '', home_config_path('GROK_HOME', '~/.grok', 'hooks/herdr.json'), 'adapter-required'),
     Agent('agy', 'Antigravity CLI', '', home_config_path('ANTIGRAVITY_CLI_CONFIG_DIR', '~/.gemini/config', 'hooks.json'), 'adapter-required'),
     Agent('mastracode', 'MastraCode', '', home_config_path('MASTRACODE_HOME', '~/.mastracode', 'hooks.json'), 'adapter-required'),
-    Agent('pi', 'Pi', '', home_config_path('PI_CODING_AGENT_DIR', '~/.pi/agent', 'extensions/herdr-agent-state.ts'), 'native'),
-    Agent('omp', 'OMP', '', home_config_path('PI_CODING_AGENT_DIR', '~/.omp/agent', 'extensions/herdr-omp-agent-state.ts'), 'native'),
-    Agent('opencode', 'OpenCode', '', home_config_path('XDG_CONFIG_HOME', '~/.config', 'opencode/plugins/herdr-agent-state.js'), 'plugin-required'),
+    Agent('pi', 'Pi', '', home_config_path('PI_CODING_AGENT_DIR', '~/.pi/agent', 'extensions/kitty-agent-state.ts'), 'native'),
+    Agent('omp', 'OMP', '', home_config_path('PI_CODING_AGENT_DIR', '~/.omp/agent', 'extensions/kitty-agent-state.ts'), 'native'),
+    Agent('opencode', 'OpenCode', '', home_config_path('XDG_CONFIG_HOME', '~/.config', 'opencode/kitty-agent-state.js'), 'tui-plugin'),
     Agent('kilo', 'Kilo Code CLI', '', home_config_path('XDG_CONFIG_HOME', '~/.config', 'kilo/plugin/herdr-agent-state.js'), 'plugin-required'),
     Agent('hermes', 'Hermes Agent', '', home_config_path('HERMES_HOME', '~/.hermes', 'plugins/herdr-agent-state/plugin.yaml'), 'plugin-required'),
 )
@@ -216,11 +444,15 @@ def agent_by_id(agent_id: str) -> Agent:
 
 def install(agent_id: str) -> str:
     agent = agent_by_id(agent_id)
+    if agent.integration_kind in ('native', 'tui-plugin'):
+        path = agent.config_path()
+        if not path or not os.path.isdir(os.path.dirname(path)):
+            raise SystemExit(f'{agent.name} is not configured on this computer: {os.path.dirname(path) or "no config path"} does not exist')
+        if agent.integration_kind == 'tui-plugin':
+            register_plugin(agent)
+        return f'Installed the kitty session reporter for {agent.name} in {write_reporter(agent)}'
     if agent.integration_kind != 'hook':
-        raise SystemExit(
-            f'{agent.name} requires a native kitty adapter for its official integration ({agent.integration_kind}); '
-            f'kitty will not write a generic hook into {agent.config_path()}.'
-        )
+        raise SystemExit(f'{agent.name} requires its native kitty adapter ({agent.integration_kind})')
     path = agent.config_path()
     if not path or not os.path.isdir(os.path.dirname(path)):
         raise SystemExit(f'{agent.name} is not configured on this computer: {os.path.dirname(path) or "no config path"} does not exist')
@@ -230,6 +462,13 @@ def install(agent_id: str) -> str:
 
 def uninstall(agent_id: str) -> str:
     agent = agent_by_id(agent_id)
+    if agent.integration_kind in ('native', 'tui-plugin'):
+        if agent.integration_kind == 'tui-plugin':
+            register_plugin(agent, remove=True)
+        path = reporter_path(agent)
+        if owned_reporter(path):
+            os.remove(path)
+        return f'Removed the kitty session reporter for {agent.name} from {path}'
     if agent.integration_kind != 'hook':
         return f'{agent.name} requires its native integration adapter; kitty has no generic hook to uninstall'
     path = agent.config_path()
@@ -243,8 +482,9 @@ def uninstall(agent_id: str) -> str:
 def status() -> list[str]:
     ans = []
     for agent in AGENTS:
-        if agent.integration_kind == 'native':
-            ans.append(f'{agent.id:8} native           {agent.config_path()}')
+        if agent.integration_kind in ('native', 'tui-plugin'):
+            state = 'installed' if reporter_is_installed(agent) else 'not installed'
+            ans.append(f'{agent.id:8} {state:14} {reporter_path(agent)}')
             continue
         if agent.integration_kind == 'plugin-required':
             ans.append(f'{agent.id:8} plugin-required {agent.config_path()}')

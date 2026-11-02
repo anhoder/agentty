@@ -255,12 +255,24 @@ class TestAgents(BaseTest):
     def test_unknown_agent_is_unknown(self):
         self.ae(state_from_signals(None, [{'state': 'blocked'}]), AgentState.unknown)
 
+    def test_lifecycle_reports_are_scoped_to_the_current_session(self):
+        statuses = [
+            {'id': 'other', 'state': 'working'},
+            {'id': 'root', 'state': 'idle'},
+        ]
+        self.ae(state_from_signals('opencode', statuses, screen('neutral'), session_id='root'), AgentState.idle)
+        statuses[1] = {'id': 'root', 'state': 'working'}
+        self.ae(state_from_signals('opencode', statuses, screen('neutral'), session_id='root'), AgentState.working)
+        self.ae(state_from_signals('opencode', statuses, screen('neutral'), session_id='missing'), AgentState.idle)
+
     # arbitration
 
     def test_full_lifecycle_report_wins(self):
         working = screen(title='')
-        self.ae(state_from_signals('opencode', [{'state': 'blocked'}], working), AgentState.blocked)
-        self.ae(state_from_signals('opencode', [{'state': 'done'}], working), AgentState.done)
+        statuses = [{'id': 'root', 'state': 'blocked'}]
+        self.ae(state_from_signals('opencode', statuses, working, session_id='root'), AgentState.blocked)
+        statuses[0] = {'id': 'root', 'state': 'done'}
+        self.ae(state_from_signals('opencode', statuses, working, session_id='root'), AgentState.done)
 
     def test_identity_only_report_is_discarded(self):
         # A cancelled Claude turn leaves a stale working report while the
@@ -626,12 +638,20 @@ class TestAgentResume(BaseTest):
         self.ae(agents['codex'].integration_kind, 'hook')
         for agent in ('pi', 'omp'):
             self.ae(agents[agent].integration_kind, 'native')
-        for agent in ('opencode', 'kilo', 'hermes'):
+        self.ae(agents['opencode'].integration_kind, 'tui-plugin')
+        for agent in ('kilo', 'hermes'):
             self.ae(agents[agent].integration_kind, 'plugin-required')
         for agent in ('kimi',):
             self.ae(agents[agent].integration_kind, 'adapter-required')
         for agent in ('copilot', 'devin', 'droid', 'qodercli', 'qwen', 'letta', 'cursor', 'grok', 'agy', 'mastracode'):
             self.ae(agents[agent].integration_kind, 'adapter-required')
+
+    def test_opencode_reporter_tracks_lifecycle(self):
+        from kitty.agent_integration import agent_by_id, reporter_text
+
+        reporter = reporter_text(agent_by_id('opencode'))
+        for marker in ('api.event.on', 'session.status', 'state=${state}', 'kind=${kind}', 'state=clear'):
+            self.assertIn(marker, reporter)
 
     def test_herdr_source_identity(self):
         from kitty.agents import AGENT_SOURCE_VAR, session_ref_of_window

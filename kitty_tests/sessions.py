@@ -55,6 +55,56 @@ class TestSessions(BaseTest):
         for state, name in ((WINDOW_FULLSCREEN, 'fullscreen'), (WINDOW_NORMAL, 'normal')):
             self.ae(os_window_geometry_as_session({**g, 'state': state})[-1], f'os_window_state {name}')
 
+    def test_native_tab_groups_in_saved_session(self) -> None:
+        from types import SimpleNamespace
+        from unittest.mock import Mock, patch
+
+        from kitty.boss import Boss
+        from kitty.tabs import TabManager
+
+        opts = self.set_options()
+        layout_state = {'pairs': [11, 12], 'bias': 0.37}
+
+        def manager(wid: int, empty: bool = False) -> SimpleNamespace:
+            # Use the real TabManager serializer, including its empty-window behavior.
+            tab = SimpleNamespace(serialize_state_as_session=Mock(return_value=[] if empty else [
+                f'new_tab window-{wid}', 'layout splits', f'set_layout_state {__import__("json").dumps(layout_state)}',
+                f'launch --title=window-{wid} /bin/sh', 'launch /bin/sh', 'focus',
+            ]))
+            tm = SimpleNamespace(tabs=[tab], active_tab=tab, wm_class='', wm_name='', serialize_geometry_as_session=lambda: [
+                'os_window_size 1180 760', 'os_window_position 100x80',
+            ])
+            tm.serialize_state_as_session = lambda *a, **kw: TabManager.serialize_state_as_session(tm, *a, **kw)
+            return tm
+
+        # Creation order, native tab order and focus order all differ. All windows have identical geometry.
+        order = {1: (3, 1, 2), 2: (3, 1, 2), 3: (3, 1, 2), 4: (5, 4), 5: (5, 4), 6: None, 7: (7,)}
+        boss = SimpleNamespace(os_window_map={wid: manager(wid) for wid in range(1, 8)}, native_tabs_enabled=lambda: True)
+        with (
+            patch('kitty.boss.native_tab_group_order', side_effect=order.get),
+            patch('kitty.boss.current_focused_os_window_id', return_value=1),
+            patch('kitty.boss.last_focused_os_window_id', return_value=4),
+        ):
+            raw = '\n'.join(Boss.serialize_state_as_session(boss))
+            sessions = tuple(parse_session(raw, opts))
+            self.ae([s.tabs[0].name for s in sessions], [f'window-{wid}' for wid in (3, 1, 2, 5, 4, 6, 7)])
+            self.ae([s.os_window_tab_group for s in sessions], ['1', '1', '1', '2', '2', '3', '4'])
+            self.ae([s.focus_os_window for s in sessions], [False, True, False, False, False, False, False])
+            for s in sessions:
+                self.ae(s.tabs[0].layout, 'splits')
+                self.ae(s.tabs[0].layout_state, layout_state)
+                self.ae(len(s.tabs[0].windows), 2)
+                self.ae(s.tabs[0].active_window_idx, 1)
+
+            # Filtering out the first native member and an entire group must not produce an empty leading OS window.
+            for wid in (3, 4, 5):
+                boss.os_window_map[wid] = manager(wid, empty=True)
+            filtered = tuple(parse_session('\n'.join(Boss.serialize_state_as_session(boss)), opts))
+            self.ae([s.tabs[0].name for s in filtered], [f'window-{wid}' for wid in (1, 2, 6, 7)])
+            self.ae([s.os_window_tab_group for s in filtered], ['1', '1', '3', '4'])
+            self.assertTrue(filtered[0].focus_os_window)
+
+
     def test_scrollback_for_restore(self) -> None:
         from kitty.logout_session import sanitize_restored_output, scrollback_for_restore
         from kitty.window import as_text
@@ -461,3 +511,14 @@ class TestSessions(BaseTest):
         # Sessions saved before this feature have no agent field
         old = unserialize_launch_flag + '{"id": 7}'
         self.ae(window(f'launch {shlex.join((old,))} {session_var}').launch_spec.args, [])
+
+    def test_agent_resume_path_only_in_session(self) -> None:
+        encoded = unserialize_launch_flag + '{"id": 7, "agent": "omp"}'
+        session_path = '/Users/test/.omp/sessions/abc.jsonl'
+        opts = self.set_options({'resume_agents_on_restore': True})
+        (session,) = parse_session(
+            f'launch {shlex.join((encoded,))} --var=KITTY_AGENT_SESSION_PATH={session_path}', opts
+        )
+        window = session.tabs[0].windows[0]
+        self.ae(window.launch_spec.args, ['omp', f'--resume={session_path}'])
+        self.assertTrue(window.launch_spec.opts.hold)

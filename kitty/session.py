@@ -43,19 +43,20 @@ def get_os_window_sizing_data(opts: Options, session: Optional['Session'] = None
 def agent_resume_argv(agent: Any, launch_vars: Sequence[str], enabled: bool) -> tuple[str, ...]:
     """The command that resumes the agent a saved window was running, if any.
 
-    The agent's identity comes from the saved session and the session id from the window's user vars, which the agent set while it
-    was running. The command itself is built from the manifest kitty ships, so a session file cannot make kitty run a command of
-    its choosing.
+    The agent's identity comes from the saved session and the session reference from the window's user vars, which the agent set
+    while it was running. The command itself is built from the manifest kitty ships, so a session file cannot make kitty run a
+    command of its choosing.
     """
-    from .agents import AGENT_SESSION_VAR, resume_argv_for
+    from .agent_manifest import is_valid_session_path
+    from .agents import AGENT_SESSION_PATH_VAR, AGENT_SESSION_VAR, resume_argv_for
 
     if not enabled or not isinstance(agent, str) or not agent:
         return ()
-    for item in launch_vars:
-        key, sep, val = item.partition('=')
-        if sep and key == AGENT_SESSION_VAR:
-            return resume_argv_for(agent, val)
-    return ()
+    user_vars = dict(item.split('=', 1) for item in launch_vars if '=' in item)
+    session_path = user_vars.get(AGENT_SESSION_PATH_VAR, '')
+    if agent in {'pi', 'omp'} and is_valid_session_path(session_path):
+        return resume_argv_for(agent, session_path)
+    return resume_argv_for(agent, user_vars.get(AGENT_SESSION_VAR, ''))
 
 
 ResizeSpec = tuple[str, int]
@@ -116,6 +117,7 @@ class Session:
         self.os_window_name: str | None = None
         self.os_window_state: str | None = None
         self.os_window_title: str | None = None
+        self.os_window_tab_group: str | None = None
         self.focus_os_window: bool = False
 
     @property
@@ -327,6 +329,10 @@ def parse_session(
                 ans.os_window_title = rest
             elif cmd == 'os_window_state':
                 ans.os_window_state = rest
+            elif cmd == 'os_window_tab_group':
+                if not rest:
+                    raise ValueError('os_window_tab_group requires a group identifier')
+                ans.os_window_tab_group = rest
             elif cmd == 'resize_window':
                 ans.resize_window(rest.split())
             elif cmd == 'focus_matching_window':
@@ -435,23 +441,33 @@ seen_session_paths: dict[str, str] = {}
 def create_session(boss: BossType, path: str) -> tuple[str, bool]:
     session_name = ''
     created_new_os_window = False
+    native_tabs = boss.native_tabs_enabled()
+    tab_group_members: dict[str, int] = {}
+    focused_os_window = 0
     for i, s in enumerate(create_sessions(get_options(), default_session=path)):
         if i == 0:
             session_name = s.session_name
             if s.num_of_windows_in_definition == 0:  # leading new_os_window
                 continue
-            tm = boss.active_tab_manager
+            tm = None if native_tabs and s.os_window_tab_group is not None else boss.active_tab_manager
             if tm is None:
-                os_window_id = boss.add_os_window(s)
+                parent = tab_group_members.get(s.os_window_tab_group) if native_tabs and s.os_window_tab_group is not None else None
+                os_window_id = boss.add_os_window(s, tab_group_parent_os_window_id=parent)
                 created_new_os_window = True
             else:
                 os_window_id = tm.os_window_id
                 tm.add_tabs_from_session(s, session_name)
         else:
-            os_window_id = boss.add_os_window(s)
+            parent = tab_group_members.get(s.os_window_tab_group) if native_tabs and s.os_window_tab_group is not None else None
+            os_window_id = boss.add_os_window(s, tab_group_parent_os_window_id=parent)
             created_new_os_window = True
+        if native_tabs and s.os_window_tab_group is not None:
+            # AppKit inserts beside the parent, so chain through the previous member, not the group's first window.
+            tab_group_members[s.os_window_tab_group] = os_window_id
         if s.focus_os_window:
-            boss.focus_os_window(os_window_id)
+            focused_os_window = os_window_id
+    if focused_os_window:
+        boss.focus_os_window(focused_os_window)
     return session_name, created_new_os_window
 
 
