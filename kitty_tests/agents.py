@@ -298,17 +298,17 @@ class TestAgents(BaseTest):
         by_path = group_sidebar_rows(rows, 'path')
         self.ae([r.group for r in by_path], ['/tmp/project', 'Project A', 'Project B'])
 
-    def test_sidebar_title_shows_agent_and_process(self):
+    def test_sidebar_title_shows_agent_and_terminal_title(self):
         from types import SimpleNamespace
         from unittest.mock import patch
 
-        from kitty.agents import AgentSnapshot, detect_agent_process
+        from kitty.agents import AgentSnapshot, detect_agent
         from kitty.boss import Boss
 
-        # The matched executable is the alias the user ran, not the manifest id.
-        self.ae(detect_agent_process([{'cmdline': ['/usr/bin/cursor-agent']}]), ('cursor', 'cursor-agent'))
-        self.ae(detect_agent_process([{'cmdline': ['node', '/opt/x/qoder']}]), ('qodercli', 'qoder'))
-        self.ae(detect_agent_process([{'cmdline': ['/bin/zsh']}]), None)
+        # Matched executable is resolved to the manifest id.
+        self.ae(detect_agent([{'cmdline': ['/usr/bin/cursor-agent']}]), 'cursor')
+        self.ae(detect_agent([{'cmdline': ['node', '/opt/x/qoder']}]), 'qodercli')
+        self.ae(detect_agent([{'cmdline': ['/bin/zsh']}]), None)
 
         class TabManager(list):
             agent_sidebar_rows = ()
@@ -327,16 +327,16 @@ class TestAgents(BaseTest):
         scope = (TabManager(tabs),)
         tracker = AgentTracker()
         tracker.snapshots = {
-            1: AgentSnapshot(1, 'cursor', AgentState.idle, 't', '/tmp', process='cursor-agent'),
-            2: AgentSnapshot(2, 'omp', AgentState.idle, 't', '/tmp'),  # no process recorded
+            1: AgentSnapshot(1, 'opencode', AgentState.idle, 'OC | 你好问候', '/tmp'),
+            2: AgentSnapshot(2, 'omp', AgentState.idle, '', '/tmp'),  # no title yet
         }
         boss = SimpleNamespace(active_window=windows[0], agent_tracker=tracker)
         with patch('kitty.boss.get_options', return_value=SimpleNamespace(agents_sidebar_grouping='tab')):
             Boss._refresh_agent_sidebar_scope(boss, scope)
         by_id = {r.window_id: r for r in scope[0].agent_sidebar_rows}
-        self.ae(by_id[1].title, 'cursor · cursor-agent')
-        self.ae(by_id[1].agent, 'cursor')  # icon lookup keys on the manifest id
-        self.ae(by_id[2].title, 'omp')
+        self.ae(by_id[1].title, 'opencode · OC | 你好问候')
+        self.ae(by_id[1].agent, 'opencode')  # icon lookup keys on the manifest id
+        self.ae(by_id[2].title, 'omp')  # no title → agent name only
 
     def test_sidebar_same_title_tabs(self):
         from types import SimpleNamespace

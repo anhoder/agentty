@@ -45,9 +45,6 @@ class AgentSnapshot:
     cwd: str
     # The agent's own conversation id, empty unless the agent reported one
     session_id: str = ''
-    # Executable name that was matched to recognize the agent, e.g.
-    # ``cursor-agent`` for the ``cursor`` agent.
-    process: str = ''
 
 
 @dataclass(frozen=True)
@@ -118,19 +115,15 @@ def _candidate_names(process: Mapping[str, Any]) -> Sequence[str]:
     return tuple(names)
 
 
-def detect_agent_process(processes: Sequence[Mapping[str, Any]]) -> tuple[str, str] | None:
-    """Return (manifest id, matched executable name) of the first recognized agent."""
-    for process in processes:
-        for candidate in _candidate_names(process):
-            if candidate in AGENT_EXECUTABLES:
-                return AGENT_EXECUTABLES[candidate], candidate
-    return None
 
 
 def detect_agent(processes: Sequence[Mapping[str, Any]]) -> str | None:
     """Return the first recognized foreground agent, if any."""
-    found = detect_agent_process(processes)
-    return found[0] if found else None
+    for process in processes:
+        for candidate in _candidate_names(process):
+            if candidate in AGENT_EXECUTABLES:
+                return AGENT_EXECUTABLES[candidate]
+    return None
 
 
 def state_from_signals(
@@ -240,10 +233,9 @@ def resume_argv_for(agent: str, session_ref: str) -> tuple[str, ...]:
 
 
 def snapshot_for_window(window: Any, screen: Screen | None = None, previous: AgentState | None = None) -> tuple[AgentSnapshot | None, bool]:
-    found = detect_agent_process(window.child.foreground_processes)
-    if found is None:
+    agent = detect_agent(window.child.foreground_processes)
+    if agent is None:
         return None, False
-    agent, process = found
     state, visible_idle = arbitrate(agent, window.program_status.as_list(), screen, previous)
     snapshot = AgentSnapshot(
         window_id=window.id,
@@ -252,7 +244,6 @@ def snapshot_for_window(window: Any, screen: Screen | None = None, previous: Age
         title=window.title,
         cwd=window.cwd_of_child or window.child.cwd,
         session_id=session_id_of_window(window, agent),
-        process=process,
     )
     return snapshot, visible_idle
 

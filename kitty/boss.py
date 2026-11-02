@@ -1958,7 +1958,9 @@ class Boss:
                         group = group_key = snapshot.cwd or cwd
                     else:
                         group = group_key = session_group_for_window(window)
-                    title = f'{snapshot.agent} · {snapshot.process}' if snapshot.process else snapshot.agent
+                    # The agent's own terminal title, which it repaints with
+                    # the task it is on. Empty before the agent sets one.
+                    title = f'{snapshot.agent} · {snapshot.title}' if snapshot.title else snapshot.agent
                     rows.append(AgentSidebarRow(
                         window.id, group, group_key, snapshot.agent, title, detail, snapshot.state, window is active_window))
         rows = list(group_sidebar_rows(rows, strategy))

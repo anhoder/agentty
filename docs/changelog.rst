@@ -27,10 +27,9 @@ Recent major new features
   icons are drawn with aspect-fit scaling to preserve their proportions.
 - macOS: Truncate long Agents sidebar group labels with an ellipsis instead of
   letting them overflow past the sidebar edge into the terminal content.
-- macOS: The Agents sidebar row title now reads ``<agent> · <process>``, where
-  the process is the executable that was recognized, so an agent started
-  through an alias such as ``cursor-agent`` or ``qoder`` shows the name that
-  was actually run.
+- macOS: The Agents sidebar row title now reads ``<agent> · <terminal title>``.
+  The terminal title is what the agent itself sets via OSC codes, such as
+  ``OC | 你好问候`` or the current task it is working on.
 - macOS: Fix Agents sidebar group collapse state being lost when a working agent
   updates its tab title. Groups are now keyed on a stable identifier rather than
   the display label, so renaming a tab no longer discards the user's collapsed
