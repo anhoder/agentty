@@ -1945,18 +1945,25 @@ class Boss:
                     cwd = os.path.basename(snapshot.cwd) or snapshot.cwd
                     detail = f'{cwd} · {snapshot.state.value}'
                     if strategy == 'agent':
-                        group = snapshot.agent
+                        group = group_key = snapshot.agent
                     elif strategy == 'tab':
                         title = tab.effective_title or 'Untitled tab'
                         group = f'{tab_index}: {title}'
+                        # The label carries the tab number and title, both of
+                        # which change as tabs are reordered, renamed, or
+                        # retitled by a working agent. Key the group on the tab
+                        # id so collapsed state survives all of that.
+                        group_key = f'tab:{tab.id}'
                     elif strategy == 'path':
-                        group = snapshot.cwd or cwd
+                        group = group_key = snapshot.cwd or cwd
                     else:
-                        group = session_group_for_window(window)
-                    rows.append(AgentSidebarRow(window.id, group, snapshot.agent, snapshot.agent, detail, snapshot.state, window is active_window))
+                        group = group_key = session_group_for_window(window)
+                    title = f'{snapshot.agent} · {snapshot.process}' if snapshot.process else snapshot.agent
+                    rows.append(AgentSidebarRow(
+                        window.id, group, group_key, snapshot.agent, title, detail, snapshot.state, window is active_window))
         rows = list(group_sidebar_rows(rows, strategy))
         if not rows:
-            rows.append(AgentSidebarRow(0, '', '', 'No AI agents', '', AgentState.unknown, False))
+            rows.append(AgentSidebarRow(0, '', '', '', 'No AI agents', '', AgentState.unknown, False))
         for tm in scope:
             if tuple(rows) != tm.agent_sidebar_rows:
                 tm.set_agent_sidebar_rows(rows)

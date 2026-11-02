@@ -3181,9 +3181,10 @@ set_agents_sidebar(PyObject *self UNUSED, PyObject *args) {
     id_type osw_id;
     int enabled;
     unsigned cols;
-    PyObject *rows;
     const char *grouping;
-    if (!PyArg_ParseTuple(args, "KpIsO", &osw_id, &enabled, &cols, &grouping, &rows)) return NULL;
+    const char *icons_dir;
+    PyObject *rows;
+    if (!PyArg_ParseTuple(args, "KpIssO", &osw_id, &enabled, &cols, &grouping, &icons_dir, &rows)) return NULL;
 #ifdef __APPLE__
     OSWindow *osw = os_window_for_id(osw_id);
     if (!osw || !osw->handle) Py_RETURN_NONE;
@@ -3194,35 +3195,38 @@ set_agents_sidebar(PyObject *self UNUSED, PyObject *args) {
     unsigned cell_width = 0;
     unsigned long long *window_ids = PyMem_Malloc((size_t)count * sizeof(unsigned long long));
     const char **groups = PyMem_Malloc((size_t)count * sizeof(char *));
+    const char **group_keys = PyMem_Malloc((size_t)count * sizeof(char *));
     const char **agents = PyMem_Malloc((size_t)count * sizeof(char *));
     const char **labels = PyMem_Malloc((size_t)count * sizeof(char *));
     const char **details = PyMem_Malloc((size_t)count * sizeof(char *));
     unsigned char *states = PyMem_Malloc((size_t)count * sizeof(unsigned char));
     bool *active = PyMem_Calloc((size_t)count, sizeof(bool));
-    if (count && (!window_ids || !groups || !agents || !labels || !details || !states || !active)) {
+    if (count && (!window_ids || !groups || !group_keys || !agents || !labels || !details || !states || !active)) {
         PyErr_NoMemory();
         goto cleanup;
     }
     for (Py_ssize_t i = 0; i < count; i++) {
         PyObject *item = PySequence_Fast_GET_ITEM(fast, i);
-        if (!PyTuple_Check(item) || PyTuple_GET_SIZE(item) != 7 || !PyLong_Check(PyTuple_GET_ITEM(item, 0)) || !PyUnicode_Check(PyTuple_GET_ITEM(item, 1)) ||
-            !PyUnicode_Check(PyTuple_GET_ITEM(item, 2)) || !PyUnicode_Check(PyTuple_GET_ITEM(item, 3)) || !PyUnicode_Check(PyTuple_GET_ITEM(item, 4))) {
-            PyErr_SetString(PyExc_TypeError, "sidebar rows must contain (window_id, group, agent, title, detail, state, active) tuples");
+        if (!PyTuple_Check(item) || PyTuple_GET_SIZE(item) != 8 || !PyLong_Check(PyTuple_GET_ITEM(item, 0)) || !PyUnicode_Check(PyTuple_GET_ITEM(item, 1)) ||
+            !PyUnicode_Check(PyTuple_GET_ITEM(item, 2)) || !PyUnicode_Check(PyTuple_GET_ITEM(item, 3)) || !PyUnicode_Check(PyTuple_GET_ITEM(item, 4)) ||
+            !PyUnicode_Check(PyTuple_GET_ITEM(item, 5))) {
+            PyErr_SetString(PyExc_TypeError, "sidebar rows must contain (window_id, group, group_key, agent, title, detail, state, active) tuples");
             goto cleanup;
         }
         window_ids[i] = PyLong_AsUnsignedLongLong(PyTuple_GET_ITEM(item, 0));
         groups[i] = PyUnicode_AsUTF8(PyTuple_GET_ITEM(item, 1));
-        agents[i] = PyUnicode_AsUTF8(PyTuple_GET_ITEM(item, 2));
-        labels[i] = PyUnicode_AsUTF8(PyTuple_GET_ITEM(item, 3));
-        details[i] = PyUnicode_AsUTF8(PyTuple_GET_ITEM(item, 4));
-        if (PyErr_Occurred() || !groups[i] || !agents[i] || !labels[i] || !details[i]) goto cleanup;
-        unsigned long state = PyLong_AsUnsignedLong(PyTuple_GET_ITEM(item, 5));
+        group_keys[i] = PyUnicode_AsUTF8(PyTuple_GET_ITEM(item, 2));
+        agents[i] = PyUnicode_AsUTF8(PyTuple_GET_ITEM(item, 3));
+        labels[i] = PyUnicode_AsUTF8(PyTuple_GET_ITEM(item, 4));
+        details[i] = PyUnicode_AsUTF8(PyTuple_GET_ITEM(item, 5));
+        if (PyErr_Occurred() || !groups[i] || !group_keys[i] || !agents[i] || !labels[i] || !details[i]) goto cleanup;
+        unsigned long state = PyLong_AsUnsignedLong(PyTuple_GET_ITEM(item, 6));
         if (PyErr_Occurred() || state > 255) {
             if (!PyErr_Occurred()) PyErr_SetString(PyExc_ValueError, "invalid sidebar state code");
             goto cleanup;
         }
         states[i] = (unsigned char)state;
-        active[i] = PyObject_IsTrue(PyTuple_GET_ITEM(item, 6));
+        active[i] = PyObject_IsTrue(PyTuple_GET_ITEM(item, 7));
     }
     osw->agents_sidebar_enabled = enabled != 0;
     osw->agents_sidebar_cols = enabled ? cols : 0;
@@ -3234,8 +3238,10 @@ set_agents_sidebar(PyObject *self UNUSED, PyObject *args) {
         cols * cell_width,
         cell_width,
         grouping,
+        icons_dir,
         window_ids,
         groups,
+        group_keys,
         agents,
         labels,
         details,
@@ -3247,6 +3253,7 @@ set_agents_sidebar(PyObject *self UNUSED, PyObject *args) {
 cleanup:
     PyMem_Free(window_ids);
     PyMem_Free(groups);
+    PyMem_Free(group_keys);
     PyMem_Free(agents);
     PyMem_Free(labels);
     PyMem_Free(details);

@@ -45,12 +45,20 @@ class AgentSnapshot:
     cwd: str
     # The agent's own conversation id, empty unless the agent reported one
     session_id: str = ''
+    # Executable name that was matched to recognize the agent, e.g.
+    # ``cursor-agent`` for the ``cursor`` agent.
+    process: str = ''
 
 
 @dataclass(frozen=True)
 class AgentSidebarRow:
     window_id: int
     group: str
+    # Identity the UI keys collapse/hover/animation state on. The display label
+    # above is derived from mutable things (tab titles change while an agent
+    # works), so it cannot double as the identity: a renamed group would lose
+    # its collapsed state and spring back open.
+    group_key: str
     agent: str
     title: str
     detail: str
@@ -110,13 +118,19 @@ def _candidate_names(process: Mapping[str, Any]) -> Sequence[str]:
     return tuple(names)
 
 
-def detect_agent(processes: Sequence[Mapping[str, Any]]) -> str | None:
-    """Return the first recognized foreground agent, if any."""
+def detect_agent_process(processes: Sequence[Mapping[str, Any]]) -> tuple[str, str] | None:
+    """Return (manifest id, matched executable name) of the first recognized agent."""
     for process in processes:
         for candidate in _candidate_names(process):
             if candidate in AGENT_EXECUTABLES:
-                return AGENT_EXECUTABLES[candidate]
+                return AGENT_EXECUTABLES[candidate], candidate
     return None
+
+
+def detect_agent(processes: Sequence[Mapping[str, Any]]) -> str | None:
+    """Return the first recognized foreground agent, if any."""
+    found = detect_agent_process(processes)
+    return found[0] if found else None
 
 
 def state_from_signals(
@@ -226,9 +240,10 @@ def resume_argv_for(agent: str, session_ref: str) -> tuple[str, ...]:
 
 
 def snapshot_for_window(window: Any, screen: Screen | None = None, previous: AgentState | None = None) -> tuple[AgentSnapshot | None, bool]:
-    agent = detect_agent(window.child.foreground_processes)
-    if agent is None:
+    found = detect_agent_process(window.child.foreground_processes)
+    if found is None:
         return None, False
+    agent, process = found
     state, visible_idle = arbitrate(agent, window.program_status.as_list(), screen, previous)
     snapshot = AgentSnapshot(
         window_id=window.id,
@@ -237,6 +252,7 @@ def snapshot_for_window(window: Any, screen: Screen | None = None, previous: Age
         title=window.title,
         cwd=window.cwd_of_child or window.child.cwd,
         session_id=session_id_of_window(window, agent),
+        process=process,
     )
     return snapshot, visible_idle
 
@@ -359,15 +375,24 @@ def session_group_for_window(window: Any) -> str:
 
 
 def group_sidebar_rows(rows: Sequence[AgentSidebarRow], strategy: str) -> tuple[AgentSidebarRow, ...]:
-    """Keep each configured group contiguous, preserving row order within it."""
+    """Keep each configured group contiguous, preserving row order within it.
+
+    Rows are bucketed by ``group_key`` rather than by the display label, so two
+    groups that happen to render the same text stay separate and a group whose
+    label changes keeps its identity.
+    """
     groups: dict[str, list[AgentSidebarRow]] = {}
+    labels: dict[str, str] = {}
     for row in rows:
-        group = row.agent if strategy == 'agent' and row.agent else row.group
-        groups.setdefault(group, []).append(replace(row, group=group) if group != row.group else row)
+        if strategy == 'agent' and row.agent:
+            row = replace(row, group=row.agent, group_key=row.agent)
+        groups.setdefault(row.group_key, []).append(row)
+        labels.setdefault(row.group_key, row.group)
     if strategy == 'time':
-        order = ('Today', 'Yesterday', 'Earlier')
+        rank = {'Today': 0, 'Yesterday': 1, 'Earlier': 2}
+        order = tuple(sorted(groups, key=lambda key: (rank.get(labels[key], len(rank)), labels[key].casefold())))
     elif strategy == 'tab':
         order = tuple(groups)
     else:
-        order = tuple(sorted(groups, key=str.casefold))
-    return tuple(row for group in order for row in groups.get(group, ()))
+        order = tuple(sorted(groups, key=lambda key: labels[key].casefold()))
+    return tuple(row for key in order for row in groups[key])

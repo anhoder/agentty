@@ -224,6 +224,10 @@ cocoa_initialize_agents_sidebar_toggle(void *ptr) {
     unsigned os_window_id;
     NSArray<NSNumber *> *window_ids;
     NSArray<NSString *> *groups;
+    // Stable identity per group, parallel to `groups`. Collapse, hover and
+    // animation state is keyed on this, never on the display label, because
+    // the label changes while an agent renames its tab.
+    NSArray<NSString *> *group_keys;
     NSArray<NSString *> *agents;
     NSArray<NSString *> *labels;
     NSArray<NSString *> *details;
@@ -243,12 +247,14 @@ cocoa_initialize_agents_sidebar_toggle(void *ptr) {
     NSMutableSet<NSString *> *collapsed_groups;
     NSMutableDictionary<NSString *, NSNumber *> *group_animation;
     NSInteger hovered_row;
-    NSString *hovered_group;
+    NSString *hovered_group_key;
 }
 @property(copy) NSString *grouping;
+@property(copy) NSString *iconsDir;
 - (instancetype)initWithOSWindowID:(unsigned)window_id width:(CGFloat)width cellWidth:(unsigned)cell_width;
 - (void)setRows:(const unsigned long long *)new_window_ids
          groups:(const char **)new_groups
+      groupKeys:(const char **)new_group_keys
          agents:(const char **)new_agents
          labels:(const char **)new_labels
         details:(const char **)new_details
@@ -259,11 +265,17 @@ cocoa_initialize_agents_sidebar_toggle(void *ptr) {
 - (void)stopAnimating;
 - (void)advanceSpinner:(NSTimer *)timer;
 - (void)advanceGroupAnimation:(NSTimer *)timer;
-- (CGFloat)groupExpansion:(NSString *)group;
-- (void)drawDisclosureForGroup:(NSString *)group atPoint:(NSPoint)point hovered:(BOOL)hovered;
+- (CGFloat)groupExpansion:(NSString *)group_key;
+- (void)drawDisclosureForGroupKey:(NSString *)group_key atPoint:(NSPoint)point hovered:(BOOL)hovered;
 - (BOOL)isAnimating;
-- (NSString *)groupHeaderAtPoint:(NSPoint)p;
+- (NSString *)groupKeyAtPoint:(NSPoint)p;
 - (NSInteger)rowAtPoint:(NSPoint)p;
+// Collapse and animation state is process-wide so every native tab shows the
+// same expanded/collapsed groups.
++ (NSMutableSet<NSString *> *)sharedCollapsedGroups;
++ (NSMutableDictionary<NSString *, NSNumber *> *)sharedGroupAnimation;
+- (void)startGroupAnimationTimer;
+- (void)sharedGroupStateChanged:(NSNotification *)notification;
 @end
 
 @implementation KittyAgentsSidebarView
@@ -276,6 +288,7 @@ cocoa_initialize_agents_sidebar_toggle(void *ptr) {
         resizing_width = NO;
         window_ids = [[NSArray alloc] init];
         groups = [[NSArray alloc] init];
+        group_keys = [[NSArray alloc] init];
         agents = [[NSArray alloc] init];
         labels = [[NSArray alloc] init];
         details = [[NSArray alloc] init];
@@ -288,9 +301,10 @@ cocoa_initialize_agents_sidebar_toggle(void *ptr) {
         group_animation_timer = nil;
         spinner_phase = 0.0;
         hovered_row = -1;
-        hovered_group = nil;
-        collapsed_groups = [[NSMutableSet alloc] init];
-        group_animation = [[NSMutableDictionary alloc] init];
+        hovered_group_key = nil;
+        collapsed_groups = [[KittyAgentsSidebarView sharedCollapsedGroups] retain];
+        group_animation = [[KittyAgentsSidebarView sharedGroupAnimation] retain];
+        [[NSNotificationCenter defaultCenter] addObserver:self selector:@selector(sharedGroupStateChanged:) name:@"KittyAgentsSidebarGroupStateChanged" object:nil];
         // The translucent sidebar material has to sit behind the rows, but a
         // view's own drawRect paints *beneath* its subviews, so hosting the
         // material as a subview here would hide every row we draw. Keep it in
@@ -358,24 +372,52 @@ cocoa_initialize_agents_sidebar_toggle(void *ptr) {
     }
 }
 
-- (CGFloat)groupExpansion:(NSString *)group {
-    NSNumber *value = group_animation[group];
-    return value ? value.doubleValue : ([collapsed_groups containsObject:group] ? 0.0 : 1.0);
+- (CGFloat)groupExpansion:(NSString *)group_key {
+    NSNumber *value = group_animation[group_key];
+    return value ? value.doubleValue : ([collapsed_groups containsObject:group_key] ? 0.0 : 1.0);
+}
+
++ (NSMutableSet<NSString *> *)sharedCollapsedGroups {
+    static NSMutableSet<NSString *> *shared;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{ shared = [[NSMutableSet alloc] init]; });
+    return shared;
+}
+
++ (NSMutableDictionary<NSString *, NSNumber *> *)sharedGroupAnimation {
+    static NSMutableDictionary<NSString *, NSNumber *> *shared;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{ shared = [[NSMutableDictionary alloc] init]; });
+    return shared;
+}
+
+- (void)startGroupAnimationTimer {
+    if (group_animation_timer) return;
+    group_animation_timer = [NSTimer timerWithTimeInterval:(1.0 / 60.0) target:self selector:@selector(advanceGroupAnimation:) userInfo:nil repeats:YES];
+    [[NSRunLoop currentRunLoop] addTimer:group_animation_timer forMode:NSRunLoopCommonModes];
+}
+
+- (void)sharedGroupStateChanged:(NSNotification *)notification {
+    (void)notification;
+    [self startGroupAnimationTimer];
+    [self setNeedsDisplay:YES];
 }
 
 - (void)advanceGroupAnimation:(NSTimer *)timer {
     (void)timer;
     BOOL active = NO;
-    for (NSString *group in [group_animation allKeys]) {
-        CGFloat value = [group_animation[group] doubleValue];
-        CGFloat target = [collapsed_groups containsObject:group] ? 0.0 : 1.0;
+    for (NSString *key in [group_animation allKeys]) {
+        CGFloat value = [group_animation[key] doubleValue];
+        CGFloat target = [collapsed_groups containsObject:key] ? 0.0 : 1.0;
         CGFloat delta = target - value;
-        if (fabs(delta) < 0.08) value = target;
-        else {
-            value += delta * 0.28;
+        if (fabs(delta) < 0.08) {
+            // Settled: groupExpansion falls back to the collapsed set, and
+            // dropping the entry keeps the shared dictionary bounded.
+            [group_animation removeObjectForKey:key];
+        } else {
+            group_animation[key] = @(value + delta * 0.28);
             active = YES;
         }
-        group_animation[group] = @(value);
     }
     [self setNeedsDisplay:YES];
     if (!active) {
@@ -384,8 +426,8 @@ cocoa_initialize_agents_sidebar_toggle(void *ptr) {
     }
 }
 
-- (void)drawDisclosureForGroup:(NSString *)group atPoint:(NSPoint)point hovered:(BOOL)hovered {
-    CGFloat progress = [self groupExpansion:group];
+- (void)drawDisclosureForGroupKey:(NSString *)group_key atPoint:(NSPoint)point hovered:(BOOL)hovered {
+    CGFloat progress = [self groupExpansion:group_key];
     CGFloat angle = (progress - 1.0) * M_PI_2;
     NSBezierPath *chevron = [NSBezierPath bezierPath];
     chevron.lineWidth = 1.8;
@@ -405,16 +447,16 @@ cocoa_initialize_agents_sidebar_toggle(void *ptr) {
     [transform concat];
 }
 
-- (NSString *)groupHeaderAtPoint:(NSPoint)p {
-    NSString *last_group = nil;
+- (NSString *)groupKeyAtPoint:(NSPoint)p {
+    NSString *last_key = nil;
     CGFloat y = header_height;
     for (NSUInteger i = 0; i < labels.count; i++) {
-        NSString *group = groups[i];
-        CGFloat expansion = group.length ? [self groupExpansion:group] : 1.0;
-        if (group.length && (!last_group || ![last_group isEqualToString:group])) {
-            if (p.y >= y && p.y < y + group_height) return group;
+        NSString *key = group_keys[i];
+        CGFloat expansion = key.length ? [self groupExpansion:key] : 1.0;
+        if (key.length && (!last_key || ![last_key isEqualToString:key])) {
+            if (p.y >= y && p.y < y + group_height) return key;
             y += group_height;
-            last_group = group;
+            last_key = key;
         }
         y += row_height * expansion;
     }
@@ -422,14 +464,14 @@ cocoa_initialize_agents_sidebar_toggle(void *ptr) {
 }
 
 - (NSInteger)rowAtPoint:(NSPoint)p {
-    NSString *last_group = nil;
+    NSString *last_key = nil;
     CGFloat y = header_height;
     for (NSUInteger i = 0; i < labels.count; i++) {
-        NSString *group = groups[i];
-        CGFloat expansion = group.length ? [self groupExpansion:group] : 1.0;
-        if (group.length && (!last_group || ![last_group isEqualToString:group])) {
+        NSString *key = group_keys[i];
+        CGFloat expansion = key.length ? [self groupExpansion:key] : 1.0;
+        if (key.length && (!last_key || ![last_key isEqualToString:key])) {
             y += group_height;
-            last_group = group;
+            last_key = key;
         }
         CGFloat current_row_height = row_height * expansion;
         if (current_row_height > 1.0 && p.y >= y && p.y < y + current_row_height) return (NSInteger)i;
@@ -453,20 +495,14 @@ cocoa_initialize_agents_sidebar_toggle(void *ptr) {
         resizing_width = YES;
         return;
     }
-    NSString *group = [self groupHeaderAtPoint:p];
-    if (group) {
-        BOOL collapsing = ![collapsed_groups containsObject:group];
-        if (collapsing) [collapsed_groups addObject:group];
-        else [collapsed_groups removeObject:group];
-        if (!group_animation[group]) group_animation[group] = @(collapsing ? 1.0 : 0.0);
-        if (!group_animation_timer) {
-            group_animation_timer = [NSTimer timerWithTimeInterval:(1.0 / 60.0)
-                                                            target:self
-                                                          selector:@selector(advanceGroupAnimation:)
-                                                          userInfo:nil
-                                                           repeats:YES];
-            [[NSRunLoop currentRunLoop] addTimer:group_animation_timer forMode:NSRunLoopCommonModes];
-        }
+    NSString *group_key = [self groupKeyAtPoint:p];
+    if (group_key) {
+        BOOL collapsing = ![collapsed_groups containsObject:group_key];
+        if (collapsing) [collapsed_groups addObject:group_key];
+        else [collapsed_groups removeObject:group_key];
+        if (!group_animation[group_key]) group_animation[group_key] = @(collapsing ? 1.0 : 0.0);
+        [self startGroupAnimationTimer];
+        [[NSNotificationCenter defaultCenter] postNotificationName:@"KittyAgentsSidebarGroupStateChanged" object:self];
         [self setNeedsDisplay:YES];
         return;
     }
@@ -514,15 +550,15 @@ cocoa_initialize_agents_sidebar_toggle(void *ptr) {
 
 - (void)updateHoverAtPoint:(NSPoint)p {
     NSInteger next_row = -1;
-    NSString *next_group = nil;
+    NSString *next_key = nil;
     if (p.x < self.bounds.size.width - 8.0) {
-        next_group = [self groupHeaderAtPoint:p];
-        if (!next_group) next_row = [self rowAtPoint:p];
+        next_key = [self groupKeyAtPoint:p];
+        if (!next_key) next_row = [self rowAtPoint:p];
     }
-    BOOL group_changed = (hovered_group == nil) != (next_group == nil) || (hovered_group && ![hovered_group isEqualToString:next_group]);
+    BOOL group_changed = (hovered_group_key == nil) != (next_key == nil) || (hovered_group_key && ![hovered_group_key isEqualToString:next_key]);
     if (group_changed) {
-        [hovered_group release];
-        hovered_group = [next_group copy];
+        [hovered_group_key release];
+        hovered_group_key = [next_key copy];
     }
     BOOL row_changed = hovered_row != next_row;
     hovered_row = next_row;
@@ -571,6 +607,7 @@ cocoa_initialize_agents_sidebar_toggle(void *ptr) {
 }
 - (void)setRows:(const unsigned long long *)new_window_ids
          groups:(const char **)new_groups
+      groupKeys:(const char **)new_group_keys
          agents:(const char **)new_agents
          labels:(const char **)new_labels
         details:(const char **)new_details
@@ -579,6 +616,7 @@ cocoa_initialize_agents_sidebar_toggle(void *ptr) {
           count:(size_t)count {
     NSMutableArray *next_window_ids = [NSMutableArray arrayWithCapacity:count];
     NSMutableArray *next_groups = [NSMutableArray arrayWithCapacity:count];
+    NSMutableArray *next_group_keys = [NSMutableArray arrayWithCapacity:count];
     NSMutableArray *next_agents = [NSMutableArray arrayWithCapacity:count];
     NSMutableArray *next_labels = [NSMutableArray arrayWithCapacity:count];
     NSMutableArray *next_details = [NSMutableArray arrayWithCapacity:count];
@@ -587,6 +625,7 @@ cocoa_initialize_agents_sidebar_toggle(void *ptr) {
     for (size_t i = 0; i < count; i++) {
         [next_window_ids addObject:@(new_window_ids ? new_window_ids[i] : 0ULL)];
         [next_groups addObject:[NSString stringWithUTF8String:new_groups[i] ? new_groups[i] : ""]];
+        [next_group_keys addObject:[NSString stringWithUTF8String:new_group_keys[i] ? new_group_keys[i] : ""]];
         [next_agents addObject:[NSString stringWithUTF8String:new_agents[i] ? new_agents[i] : ""]];
         [next_labels addObject:[NSString stringWithUTF8String:new_labels[i] ? new_labels[i] : ""]];
         [next_details addObject:[NSString stringWithUTF8String:new_details[i] ? new_details[i] : ""]];
@@ -595,6 +634,7 @@ cocoa_initialize_agents_sidebar_toggle(void *ptr) {
     }
     [window_ids release];
     [groups release];
+    [group_keys release];
     [agents release];
     [labels release];
     [details release];
@@ -602,14 +642,12 @@ cocoa_initialize_agents_sidebar_toggle(void *ptr) {
     [active_rows release];
     window_ids = [next_window_ids copy];
     groups = [next_groups copy];
+    group_keys = [next_group_keys copy];
     agents = [next_agents copy];
     labels = [next_labels copy];
     details = [next_details copy];
     states = [next_states copy];
     active_rows = [next_active copy];
-    NSMutableSet *valid_groups = [NSMutableSet set];
-    for (NSString *group in groups) [valid_groups addObject:group];
-    [collapsed_groups intersectSet:valid_groups];
     [self updateAnimationState];
     // Everything is painted in drawRect. There used to be a parallel set of
     // NSTextField subviews drawing the same text on top of it, which hid the
@@ -697,6 +735,38 @@ cocoa_initialize_agents_sidebar_toggle(void *ptr) {
     [arc stroke];
 }
 
+- (NSImage *)iconForAgent:(NSString *)agent textColor:(NSColor *)textColor {
+    if (!agent.length || !_iconsDir.length) return nil;
+    // Convert to sRGB before reading components (semantic colors crash otherwise)
+    NSColor *rgb = [textColor colorUsingColorSpace:[NSColorSpace sRGBColorSpace]];
+    if (!rgb) return nil;
+    NSString *hexColor = [NSString stringWithFormat:@"#%02X%02X%02X",
+        (int)(rgb.redComponent * 255.0), (int)(rgb.greenComponent * 255.0), (int)(rgb.blueComponent * 255.0)];
+    NSString *cacheKey = [NSString stringWithFormat:@"%@:%@", agent, hexColor];
+    static NSCache<NSString *, NSImage *> *iconCache = nil;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{ iconCache = [[NSCache alloc] init]; iconCache.countLimit = 100; });
+    NSImage *cached = [iconCache objectForKey:cacheKey];
+    if (cached) return cached;
+    NSString *svgPath = [_iconsDir stringByAppendingPathComponent:[agent stringByAppendingString:@".svg"]];
+    NSString *pngPath = [_iconsDir stringByAppendingPathComponent:[agent stringByAppendingString:@".png"]];
+    NSImage *icon = nil;
+    if ([[NSFileManager defaultManager] fileExistsAtPath:svgPath]) {
+        NSString *svgText = [NSString stringWithContentsOfFile:svgPath encoding:NSUTF8StringEncoding error:nil];
+        if (svgText) {
+            NSString *substituted = [svgText stringByReplacingOccurrencesOfString:@"currentColor" withString:hexColor];
+            NSData *data = [substituted dataUsingEncoding:NSUTF8StringEncoding];
+            icon = [[[NSImage alloc] initWithData:data] autorelease];
+        }
+        if (!icon) icon = [[[NSImage alloc] initWithContentsOfFile:svgPath] autorelease];
+    }
+    if (!icon && [[NSFileManager defaultManager] fileExistsAtPath:pngPath]) {
+        icon = [[[NSImage alloc] initWithContentsOfFile:pngPath] autorelease];
+    }
+    if (icon) [iconCache setObject:icon forKey:cacheKey];
+    return icon;
+}
+
 - (void)drawRect:(NSRect)dirtyRect {
     (void)dirtyRect;
     // No background fill here: the NSVisualEffectView sibling underneath
@@ -707,11 +777,11 @@ cocoa_initialize_agents_sidebar_toggle(void *ptr) {
     for (NSString *agent in agents)
         if (agent.length) visible_count++;
     NSUInteger group_count = 0;
-    NSString *last_group = nil;
-    for (NSString *group in groups) {
-        if (group.length && (!last_group || ![last_group isEqualToString:group])) {
+    NSString *last_key = nil;
+    for (NSString *key in group_keys) {
+        if (key.length && (!last_key || ![last_key isEqualToString:key])) {
             group_count++;
-            last_group = group;
+            last_key = key;
         }
     }
     NSDictionary *header_attrs = @{
@@ -737,26 +807,41 @@ cocoa_initialize_agents_sidebar_toggle(void *ptr) {
     [[NSColor separatorColor] setFill];
     NSRectFill(NSMakeRect(0, header_height - 1.0, self.bounds.size.width, 1.0));
 
-    last_group = nil;
+    last_key = nil;
     CGFloat y = header_height;
     for (NSUInteger i = 0; i < labels.count; i++) {
         NSString *group = groups[i];
-        BOOL grouped = group.length > 0;
-        if (grouped && (!last_group || ![last_group isEqualToString:group])) {
-            BOOL hovered = hovered_group && [hovered_group isEqualToString:group];
+        NSString *group_key = group_keys[i];
+        BOOL grouped = group_key.length > 0;
+        if (grouped && (!last_key || ![last_key isEqualToString:group_key])) {
+            BOOL hovered = hovered_group_key && [hovered_group_key isEqualToString:group_key];
             NSRect group_rect = NSMakeRect(0, y, self.bounds.size.width, group_height);
             [[[NSColor controlBackgroundColor] colorWithAlphaComponent:hovered ? 0.52 : 0.34] setFill];
             NSRectFill(group_rect);
+            // Group names come from tab titles, which are arbitrarily long.
+            // drawAtPoint has no width bound, so a long name used to paint
+            // straight over the sidebar edge and into the terminal content.
+            // Draw into the remaining row width with tail truncation instead;
+            // truncatingTail also keeps it on a single line inside group_height.
+            NSMutableParagraphStyle *group_paragraph = [[[NSMutableParagraphStyle alloc] init] autorelease];
+            group_paragraph.lineBreakMode = NSLineBreakByTruncatingTail;
             NSDictionary *group_attrs = @{
                 NSFontAttributeName : [NSFont boldSystemFontOfSize:11.0],
                 NSForegroundColorAttributeName : [NSColor labelColor],
+                NSParagraphStyleAttributeName : group_paragraph,
             };
-            [self drawDisclosureForGroup:group atPoint:NSMakePoint(16.0, y + 12.0) hovered:hovered];
-            [group drawAtPoint:NSMakePoint(24.0, y + 5.0) withAttributes:group_attrs];
+            [self drawDisclosureForGroupKey:group_key atPoint:NSMakePoint(16.0, y + 12.0) hovered:hovered];
+            const CGFloat group_text_left = 24.0;
+            NSRect group_text_rect = NSMakeRect(group_text_left, y + 5.0,
+                                                MAX(0.0, self.bounds.size.width - group_text_left - 10.0), 14.0);
+            [group drawWithRect:group_text_rect
+                        options:NSStringDrawingUsesLineFragmentOrigin | NSStringDrawingTruncatesLastVisibleLine
+                     attributes:group_attrs
+                        context:nil];
             y += group_height;
-            last_group = group;
+            last_key = group_key;
         }
-        CGFloat expansion = grouped ? [self groupExpansion:group] : 1.0;
+        CGFloat expansion = grouped ? [self groupExpansion:group_key] : 1.0;
         if (expansion <= 0.001) continue;
         BOOL row_hovered = hovered_row == (NSInteger)i;
         BOOL active = [active_rows[i] boolValue];
@@ -780,8 +865,33 @@ cocoa_initialize_agents_sidebar_toggle(void *ptr) {
         NSColor *state_color = [self stateColor:row_state active:active];
         // The "No AI agents" placeholder uses an empty agent id. It is not a
         // state-bearing row, so do not render a misleading unknown-state dot.
-        const CGFloat indicator_center = 14.0, text_left = 26.0;
+        const CGFloat indicator_center = 14.0;
+        CGFloat text_left = 26.0;
         CGFloat row_center = row.origin.y + row_height / 2.0;
+        // Draw agent brand icon between state indicator and text
+        if (has_agent && agents[i].length > 0) {
+            NSImage *icon = [self iconForAgent:agents[i] textColor:primary_color];
+            if (icon) {
+                const CGFloat icon_size = 16.0;
+                const CGFloat icon_left = 26.0;
+                // Aspect-fit: scale icon proportionally to fit within icon slot
+                NSSize img_size = icon.size;
+                if (img_size.width > 0 && img_size.height > 0) {
+                    CGFloat scale = MIN(icon_size / img_size.width, icon_size / img_size.height);
+                    CGFloat scaled_w = img_size.width * scale, scaled_h = img_size.height * scale;
+                    NSRect fit_rect = NSMakeRect(
+                        icon_left + (icon_size - scaled_w) / 2.0,
+                        row_center - scaled_h / 2.0,
+                        scaled_w, scaled_h);
+                    [[NSGraphicsContext currentContext] saveGraphicsState];
+                    [[NSGraphicsContext currentContext] setImageInterpolation:NSImageInterpolationHigh];
+                    [icon drawInRect:fit_rect fromRect:NSZeroRect operation:NSCompositingOperationSourceOver
+                             fraction:1.0 respectFlipped:YES hints:nil];
+                    [[NSGraphicsContext currentContext] restoreGraphicsState];
+                }
+                text_left = icon_left + icon_size + 6.0;  // icon + 6pt gap
+            }
+        }
         if (has_agent) {
             if (row_state == 2) {
                 [self drawSpinnerInRect:NSMakeRect(indicator_center - 5.5, row_center - 5.5, 11.0, 11.0) color:state_color];
@@ -834,10 +944,12 @@ cocoa_initialize_agents_sidebar_toggle(void *ptr) {
 - (void)dealloc {
     [self stopAnimating];
     [group_animation_timer invalidate];
+    [[NSNotificationCenter defaultCenter] removeObserver:self];
     [self removeTrackingArea:sidebar_tracking_area];
     [sidebar_tracking_area release];
     [window_ids release];
     [groups release];
+    [group_keys release];
     [agents release];
     [labels release];
     [details release];
@@ -845,7 +957,8 @@ cocoa_initialize_agents_sidebar_toggle(void *ptr) {
     [active_rows release];
     [collapsed_groups release];
     [group_animation release];
-    [hovered_group release];
+    [_iconsDir release];
+    [hovered_group_key release];
     [_grouping release];
     [super dealloc];
 }
@@ -859,8 +972,10 @@ cocoa_set_agents_sidebar(
     unsigned width_pixels,
     unsigned cell_width,
     const char *grouping,
+    const char *icons_dir,
     const unsigned long long *window_ids,
     const char **groups,
+    const char **group_keys,
     const char **agents,
     const char **labels,
     const char **details,
@@ -894,7 +1009,8 @@ cocoa_set_agents_sidebar(
     [sidebar setFrame:frame];
     [[sidebar backgroundView] setFrame:frame];
     sidebar.grouping = [NSString stringWithUTF8String:grouping];
-    [sidebar setRows:window_ids groups:groups agents:agents labels:labels details:details states:states active:active count:count];
+    sidebar.iconsDir = icons_dir ? [NSString stringWithUTF8String:icons_dir] : nil;
+    [sidebar setRows:window_ids groups:groups groupKeys:group_keys agents:agents labels:labels details:details states:states active:active count:count];
 }
 
 static NSMenuItem *secure_input_title_menu = NULL;

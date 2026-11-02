@@ -21,6 +21,20 @@ Recent major new features
   :code:`kitty +agent-integration install <agent>`, currently for Claude Code
   and Codex, and the command that resumes it comes from the agent's manifest.
   See :ref:`agent_resume`.
+- macOS: Display brand icons for each AI agent in the Agents sidebar. Icons
+  are loaded from ``kitty/agent_icons/`` and adapt to light/dark appearance
+  by substituting ``currentColor`` in SVG sources with the label color. Non-square
+  icons are drawn with aspect-fit scaling to preserve their proportions.
+- macOS: Truncate long Agents sidebar group labels with an ellipsis instead of
+  letting them overflow past the sidebar edge into the terminal content.
+- macOS: The Agents sidebar row title now reads ``<agent> · <process>``, where
+  the process is the executable that was recognized, so an agent started
+  through an alias such as ``cursor-agent`` or ``qoder`` shows the name that
+  was actually run.
+- macOS: Fix Agents sidebar group collapse state being lost when a working agent
+  updates its tab title. Groups are now keyed on a stable identifier rather than
+  the display label, so renaming a tab no longer discards the user's collapsed
+  choice or triggers unbounded animation-dictionary growth.
 - macOS: Do not render a ``Today`` group when the Agents sidebar has no agents;
   the empty state now has no grouping header or disclosure control.
 - macOS: Add hover feedback to the Agents sidebar toggle, group headers,

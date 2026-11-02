@@ -279,9 +279,9 @@ class TestAgents(BaseTest):
 
     def test_sidebar_grouping_strategies(self):
         rows = (
-            AgentSidebarRow(1, 'Today', 'omp', 'omp', 'tmp · idle', AgentState.idle, False),
-            AgentSidebarRow(2, 'Today', 'claude', 'claude', 'tmp · working', AgentState.working, False),
-            AgentSidebarRow(3, 'Yesterday', 'omp', 'omp', 'tmp · done', AgentState.done, False),
+            AgentSidebarRow(1, 'Today', 'Today', 'omp', 'omp', 'tmp · idle', AgentState.idle, False),
+            AgentSidebarRow(2, 'Today', 'Today', 'claude', 'claude', 'tmp · working', AgentState.working, False),
+            AgentSidebarRow(3, 'Yesterday', 'Yesterday', 'omp', 'omp', 'tmp · done', AgentState.done, False),
         )
         by_time = group_sidebar_rows(rows, 'time')
         self.ae([r.window_id for r in by_time], [1, 2, 3])
@@ -291,12 +291,52 @@ class TestAgents(BaseTest):
 
     def test_sidebar_grouping_tab_and_path(self):
         rows = (
-            AgentSidebarRow(1, 'Project A', 'omp', 'omp', 'a', AgentState.idle, False),
-            AgentSidebarRow(2, 'Project B', 'claude', 'claude', 'b', AgentState.working, False),
-            AgentSidebarRow(3, '/tmp/project', 'omp', 'omp', 'c', AgentState.done, False),
+            AgentSidebarRow(1, 'Project A', 'Project A', 'omp', 'omp', 'a', AgentState.idle, False),
+            AgentSidebarRow(2, 'Project B', 'Project B', 'claude', 'claude', 'b', AgentState.working, False),
+            AgentSidebarRow(3, '/tmp/project', '/tmp/project', 'omp', 'omp', 'c', AgentState.done, False),
         )
         by_path = group_sidebar_rows(rows, 'path')
         self.ae([r.group for r in by_path], ['/tmp/project', 'Project A', 'Project B'])
+
+    def test_sidebar_title_shows_agent_and_process(self):
+        from types import SimpleNamespace
+        from unittest.mock import patch
+
+        from kitty.agents import AgentSnapshot, detect_agent_process
+        from kitty.boss import Boss
+
+        # The matched executable is the alias the user ran, not the manifest id.
+        self.ae(detect_agent_process([{'cmdline': ['/usr/bin/cursor-agent']}]), ('cursor', 'cursor-agent'))
+        self.ae(detect_agent_process([{'cmdline': ['node', '/opt/x/qoder']}]), ('qodercli', 'qoder'))
+        self.ae(detect_agent_process([{'cmdline': ['/bin/zsh']}]), None)
+
+        class TabManager(list):
+            agent_sidebar_rows = ()
+
+            def set_agent_sidebar_rows(self, rows):
+                self.agent_sidebar_rows = tuple(rows)
+
+        class Tab(list):
+            pass
+
+        windows = [SimpleNamespace(id=i) for i in (1, 2)]
+        tabs = [Tab([w]) for w in windows]
+        for i, tab in enumerate(tabs, start=1):
+            tab.id = i
+            tab.effective_title = 'T'
+        scope = (TabManager(tabs),)
+        tracker = AgentTracker()
+        tracker.snapshots = {
+            1: AgentSnapshot(1, 'cursor', AgentState.idle, 't', '/tmp', process='cursor-agent'),
+            2: AgentSnapshot(2, 'omp', AgentState.idle, 't', '/tmp'),  # no process recorded
+        }
+        boss = SimpleNamespace(active_window=windows[0], agent_tracker=tracker)
+        with patch('kitty.boss.get_options', return_value=SimpleNamespace(agents_sidebar_grouping='tab')):
+            Boss._refresh_agent_sidebar_scope(boss, scope)
+        by_id = {r.window_id: r for r in scope[0].agent_sidebar_rows}
+        self.ae(by_id[1].title, 'cursor · cursor-agent')
+        self.ae(by_id[1].agent, 'cursor')  # icon lookup keys on the manifest id
+        self.ae(by_id[2].title, 'omp')
 
     def test_sidebar_same_title_tabs(self):
         from types import SimpleNamespace
@@ -316,6 +356,8 @@ class TestAgents(BaseTest):
 
         windows = [SimpleNamespace(id=i) for i in range(1, 12)]
         tabs = [Tab([window]) for window in windows[:10]]
+        for i, tab in enumerate(tabs, start=1):
+            tab.id = i
         tabs[0].append(windows[10])
         scope = (TabManager(tabs[:1]), TabManager(tabs[1:]))
         tracker = AgentTracker()
@@ -338,6 +380,15 @@ class TestAgents(BaseTest):
             rows = scope[1].agent_sidebar_rows
             self.ae([r.window_id for r in rows], list(range(10, 1, -1)))
             self.ae(len({r.group for r in rows}), 9)
+            # A working agent retitles its tab constantly. The label changes
+            # with it, but the identity the UI keys collapsed state on must not.
+            before = {r.window_id: r.group_key for r in rows}
+            for tab in scope[1]:
+                tab.effective_title = 'Renamed by agent'
+            Boss._refresh_agent_sidebar_scope(boss, scope)
+            rows = scope[1].agent_sidebar_rows
+            self.assertTrue(all('Renamed by agent' in r.group for r in rows))
+            self.ae({r.window_id: r.group_key for r in rows}, before)
 
     def test_empty_sidebar_has_no_group(self):
         from types import SimpleNamespace
@@ -358,7 +409,7 @@ class TestAgents(BaseTest):
             Boss._refresh_agent_sidebar_scope(boss, scope)
         rows = scope[0].agent_sidebar_rows
         self.ae(len(rows), 1)
-        self.ae((rows[0].group, rows[0].agent, rows[0].title), ('', '', 'No AI agents'))
+        self.ae((rows[0].group, rows[0].group_key, rows[0].agent, rows[0].title), ('', '', '', 'No AI agents'))
 
 
 class FakeWindow:

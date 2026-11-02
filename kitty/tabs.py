@@ -18,7 +18,7 @@ from .agents import AgentSidebarRow, state_code
 from .borders import Border, Borders
 from .child import Child
 from .cli_stub import CLIOptions, SaveAsSessionOptions
-from .constants import appname, is_macos, is_wayland
+from .constants import agent_icons_dir, appname, is_macos, is_wayland
 from .fast_data_types import (
     GLFW_MOUSE_BUTTON_LEFT,
     GLFW_MOUSE_BUTTON_MIDDLE,
@@ -1716,7 +1716,11 @@ class TabManager:  # {{{
             self.agent_sidebar_enabled,
             self.agent_sidebar_cols,
             get_options().agents_sidebar_grouping,
-            tuple((row.window_id, row.group, row.agent, row.title, row.detail, state_code(row.state), row.is_active) for row in self.agent_sidebar_rows),
+            agent_icons_dir,
+            tuple(
+                (row.window_id, row.group, row.group_key, row.agent, row.title, row.detail, state_code(row.state), row.is_active)
+                for row in self.agent_sidebar_rows
+            ),
         )
 
     def title_changed(self, tab: Tab) -> None:
