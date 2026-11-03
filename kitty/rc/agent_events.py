@@ -1,5 +1,7 @@
 """Bounded service journal reads."""
+
 import json
+from typing import Any
 
 from kitty.agent_service import service_for
 
@@ -8,11 +10,11 @@ from .base import RemoteCommand, RemoteControlErrorWithoutTraceback
 
 class AgentEvents(RemoteCommand):
     short_desc = 'Read a bounded epoch-scoped agent event batch'
-    protocol_spec = '''cursor/str: JSON epoch cursor
+    protocol_spec = """cursor/str: JSON epoch cursor
 max_events/int: Batch size, at most 100
 timeout_ms/int: Long poll timeout
-'''
-    options_spec = '''--cursor
+"""
+    options_spec = """--cursor
 JSON cursor from a previous response.
 
 
@@ -26,14 +28,14 @@ Maximum event count.
 type=int
 default=0
 Long poll duration, at most 10000 milliseconds.
-'''
+"""
 
-    def message_to_kitty(self, global_opts, opts, args):
+    def message_to_kitty(self, global_opts: Any, opts: Any, args: Any) -> dict:
         if args:
             self.fatal('No positional arguments expected')
         return {k: getattr(opts, k) for k in ('cursor', 'max_events', 'timeout_ms')}
 
-    def response_from_kitty(self, boss, window, payload_get):
+    def response_from_kitty(self, boss: Any, window: Any, payload_get: Any) -> Any:
         try:
             service_for(boss).poll()
             cursor = payload_get('cursor')

@@ -13,10 +13,25 @@ from .base import BaseTest
 
 class TestAgentOnboarding(BaseTest):
     def setup_prompt(self, state='missing'):
-        environment = {key: os.environ[key] for key in ('HOME', 'XDG_CONFIG_HOME', 'CLAUDE_CONFIG_DIR', 'CODEX_HOME', 'PI_CODING_AGENT_DIR', 'OPENCODE_CONFIG_DIR') if key in os.environ}
-        window = SimpleNamespace(id=1, is_focused=True, child_is_remote=False, ssh_kitten_cmdline=lambda: [],
-                                 child=SimpleNamespace(foreground_processes=[{'cmdline': ['opencode']}],
-                                                       foreground_environ=environment.copy(), environ=environment.copy()))
+        environment = {
+            key: os.environ[key]
+            for key in (
+                'HOME',
+                'XDG_CONFIG_HOME',
+                'CLAUDE_CONFIG_DIR',
+                'CODEX_HOME',
+                'PI_CODING_AGENT_DIR',
+                'OPENCODE_CONFIG_DIR',
+            )
+            if key in os.environ
+        }
+        window = SimpleNamespace(
+            id=1,
+            is_focused=True,
+            child_is_remote=False,
+            ssh_kitten_cmdline=lambda: [],
+            child=SimpleNamespace(foreground_processes=[{'cmdline': ['opencode']}], foreground_environ=environment.copy(), environ=environment.copy()),
+        )
         self.calls = []
         self.notifications = []
         self.errors = []
@@ -25,10 +40,17 @@ class TestAgentOnboarding(BaseTest):
             self.calls.append((message, callback, choices))
             return SimpleNamespace()
 
-        boss = SimpleNamespace(shutting_down=False, active_window=window, window_id_map={1: window}, cached_values={},
-                               choose=choose, show_error=lambda *args: self.errors.append(args),
-                               notification_manager=SimpleNamespace(create_notification_cmd=lambda: SimpleNamespace(),
-                                   notify_with_command=lambda cmd, wid: self.notifications.append(cmd)))
+        boss = SimpleNamespace(
+            shutting_down=False,
+            active_window=window,
+            window_id_map={1: window},
+            cached_values={},
+            choose=choose,
+            show_error=lambda *args: self.errors.append(args),
+            notification_manager=SimpleNamespace(
+                create_notification_cmd=lambda: SimpleNamespace(), notify_with_command=lambda cmd, wid: self.notifications.append(cmd)
+            ),
+        )
         self.prompts = AgentIntegrationPrompts(boss)
         self.inspection = IntegrationInspection(state, ('/tmp/opencode/config', '/tmp/opencode/reporter'), '')
         return boss, window
@@ -107,7 +129,10 @@ class TestAgentOnboarding(BaseTest):
             self.calls[0][1]('i')
             install.assert_not_called()
         self.setup_prompt()
-        with patch('kitty.agent_onboarding.inspect_integration', return_value=self.inspection), patch('kitty.agent_onboarding.install', side_effect=SystemExit('unowned reporter')):
+        with (
+            patch('kitty.agent_onboarding.inspect_integration', return_value=self.inspection),
+            patch('kitty.agent_onboarding.install', side_effect=SystemExit('unowned reporter')),
+        ):
             self.prompts.poll()
             self.calls[0][1]('i')
             self.ae(self.errors[0][1], 'unowned reporter')

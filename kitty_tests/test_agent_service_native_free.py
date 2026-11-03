@@ -1,8 +1,8 @@
+import ast
+import json
 import sys
 import types
 import unittest
-import ast
-import json
 from pathlib import Path
 from unittest.mock import patch
 
@@ -81,9 +81,13 @@ class ServiceTest(unittest.TestCase):
         self.window.child.foreground_processes[0]['start_time'] = 2
         self.assertNotEqual(first['instance_id'], self.service.binding(self.window)['instance_id'])
         self.service.report(self.window, {'type': 'register'})
-        for event in ({}, {'kind': []}, {'kind': 'child', 'session_id': 1},
-                      {'kind': 'child', 'session_id': 'x', 'parent_session_id': 'x'},
-                      {'kind': 'interaction', 'interaction_id': {}}):
+        for event in (
+            {},
+            {'kind': []},
+            {'kind': 'child', 'session_id': 1},
+            {'kind': 'child', 'session_id': 'x', 'parent_session_id': 'x'},
+            {'kind': 'interaction', 'interaction_id': {}},
+        ):
             with self.subTest(event=event), self.assertRaises(ValueError):
                 self.service.report(self.window, {'type': 'event', 'event': event})
 
@@ -96,8 +100,10 @@ class ServiceTest(unittest.TestCase):
 
     def test_provider_status_children_interactions_and_clones(self):
         self.service.report(self.window, {'type': 'register', 'capabilities': ['session_status']})
+
         def event(kind, **fields):
             return self.service.report(self.window, {'type': 'event', 'event': dict(kind=kind, **fields)})
+
         result = event('session.status', session_id='root', payload={'status': 'busy', 'secret': 'DROP'})
         self.assertEqual(self.service.journal[-1][0]['data']['event']['payload'], {'status': 'busy'})
         result['provider']['capabilities'].append('cancel')
@@ -141,10 +147,12 @@ class SubscriberTest(unittest.TestCase):
     def setUp(self):
         self.timers = {}
         self.active = {}
+
         def add_timer(callback, delay, repeat):
             key = len(self.timers) + 1
             self.timers[key] = callback
             return key
+
         remote = types.ModuleType('kitty.remote_control')
         remote.active_async_requests = self.active
         native = types.ModuleType('kitty.fast_data_types')
@@ -156,19 +164,19 @@ class SubscriberTest(unittest.TestCase):
         self.addCleanup(self.patch.stop)
         self.boss = types.SimpleNamespace(all_windows=[])
         self.service = AgentService(self.boss)
-        self.ns = dict(Any=object, json=json, add_timer=add_timer, remove_timer=native.remove_timer,
-                       service_for=lambda boss: self.service)
+        self.ns = dict(Any=object, json=json, add_timer=add_timer, remove_timer=native.remove_timer, service_for=lambda boss: self.service)
         production_nodes('kitty/rc/agent_wait.py', {'pending', 'Waiter', 'clear_waiters'}, self.ns)
         production_nodes('kitty/rc/agent_subscribe.py', {'JournalWaiter'}, self.ns)
         self.sent = []
 
     def waiter(self):
-        waiter = self.ns['JournalWaiter'](self.boss, 'request', {'window_id': None, 'cursor': self.service.cursor(), 'maximum': 100},
-                                          types.SimpleNamespace(send_data=self.sent.append))
+        waiter = self.ns['JournalWaiter'](
+            self.boss, 'request', {'window_id': None, 'cursor': self.service.cursor(), 'maximum': 100}, types.SimpleNamespace(send_data=self.sent.append)
+        )
         self.ns['pending'](self.boss)['request'] = waiter
         self.active['request'] = object()
         waiter.timer = self.ns['add_timer'](waiter.timeout, 1, False)
-        waiter.poll_timer = self.ns['add_timer'](waiter.poll, .05, True)
+        waiter.poll_timer = self.ns['add_timer'](waiter.poll, 0.05, True)
         return waiter
 
     def test_timeout_cleanup(self):
@@ -210,10 +218,11 @@ class SubscriberTest(unittest.TestCase):
         # Execute the production subscribe handler, not a duplicated limit check.
         class Events:
             protocol_spec = options_spec = ''
+
             def response_from_kitty(inner, *args):
                 return json.dumps(self.service.events())
-        self.ns.update(AgentEvents=Events, RemoteControlErrorWithoutTraceback=ValueError,
-                       AsyncResponder=lambda *args: None, AsyncResponse=lambda: None)
+
+        self.ns.update(AgentEvents=Events, RemoteControlErrorWithoutTraceback=ValueError, AsyncResponder=lambda *args: None, AsyncResponse=lambda: None)
         production_nodes('kitty/rc/agent_subscribe.py', {'AgentSubscribe'}, self.ns)
         self.ns['pending'](self.boss).update({str(i): object() for i in range(16)})
         payload = {'timeout_ms': 100, 'async_id': 'new'}
@@ -223,6 +232,7 @@ class SubscriberTest(unittest.TestCase):
     def test_production_cancel_handler(self):
         class Events:
             protocol_spec = options_spec = ''
+
         self.ns.update(AgentEvents=Events)
         production_nodes('kitty/rc/agent_subscribe.py', {'AgentSubscribe'}, self.ns)
         self.waiter()

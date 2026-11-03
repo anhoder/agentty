@@ -1,16 +1,20 @@
 """Run directly with python3 -m unittest kitty_tests.test_agent_broker_native_free."""
 
-import json
 import ast
-from pathlib import Path
+import json
 import shutil
 import subprocess
 import tempfile
 import unittest
+from pathlib import Path
 
 from kitty.agent_provider import (
-    OPENCODE_CAPABILITIES, OPENCODE_EVENT_TYPES, encode_opencode_event,
-    normalize_opencode_event, opencode_broker_event, parse_opencode_event,
+    OPENCODE_CAPABILITIES,
+    OPENCODE_EVENT_TYPES,
+    encode_opencode_event,
+    normalize_opencode_event,
+    opencode_broker_event,
+    parse_opencode_event,
 )
 
 
@@ -18,10 +22,13 @@ class OpenCodeContractTest(unittest.TestCase):
     @unittest.skipUnless(shutil.which('node'), 'Node is required for reporter integration')
     def test_node_reporter(self):
         tree = ast.parse((Path(__file__).resolve().parents[1] / 'kitty/agent_integration.py').read_text())
-        reporter = next(ast.literal_eval(n.value) for n in tree.body if isinstance(n, ast.Assign)
-                        and any(isinstance(t, ast.Name) and t.id == 'OPENCODE_REPORTER' for t in n.targets))
+        reporter = next(
+            ast.literal_eval(n.value)
+            for n in tree.body
+            if isinstance(n, ast.Assign) and any(isinstance(t, ast.Name) and t.id == 'OPENCODE_REPORTER' for t in n.targets)
+        )
         reporter = reporter % {'id_var': 'agent', 'source_var': 'source', 'session_var': 'session'}
-        script = r'''
+        script = r"""
 import net from 'node:net';
 import assert from 'node:assert/strict';
 import {setTimeout as sleep} from 'node:timers/promises';
@@ -83,32 +90,42 @@ try {
   for (const socket of sockets) socket.destroy();
   await new Promise(resolve => server.close(resolve));
 }
-'''
+"""
         import os
+
         with tempfile.TemporaryDirectory(prefix='provider-') as directory:
             root = Path(directory)
             (root / 'reporter.mjs').write_text(reporter)
             (root / 'test.mjs').write_text(script)
-            result = subprocess.run(['node', str(root / 'test.mjs')], capture_output=True, text=True, timeout=15,
-                                    env=dict(os.environ, KITTY_WINDOW_TTY='/dev/null',
-                                             KITTY_AGENT_BROKER_SOCKET=str(root / 'b.sock'), KITTY_AGENT_BROKER_TOKEN='test-token'))
+            result = subprocess.run(
+                ['node', str(root / 'test.mjs')],
+                capture_output=True,
+                text=True,
+                timeout=15,
+                env=dict(os.environ, KITTY_WINDOW_TTY='/dev/null', KITTY_AGENT_BROKER_SOCKET=str(root / 'b.sock'), KITTY_AGENT_BROKER_TOKEN='test-token'),
+            )
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
 
     def test_broker_protocol(self):
         event = {'type': 'permission.asked', 'properties': {'sessionID': 's', 'id': 'i', 'secret': 'private'}}
-        self.assertEqual(opencode_broker_event(event, '1'), {
-            'type': 'event', 'event': {'kind': 'permission.asked', 'session_id': 's',
-                                      'interaction_id': 'i', 'payload': {}, 'event_id': '1'}})
+        self.assertEqual(
+            opencode_broker_event(event, '1'),
+            {'type': 'event', 'event': {'kind': 'permission.asked', 'session_id': 's', 'interaction_id': 'i', 'payload': {}, 'event_id': '1'}},
+        )
         self.assertNotIn('turn.cancel', OPENCODE_CAPABILITIES)
 
     def test_all_events_round_trip(self):
         for event_type in OPENCODE_EVENT_TYPES:
             with self.subTest(event_type=event_type):
                 properties = {
-                    'sessionID': 'child', 'info': {'id': 'child', 'parentID': 'parent'},
-                    'id': 'interaction', 'requestID': 'interaction',
-                    'status': {'type': 'busy'}, 'secret': 'not forwarded',
-                    'answers': ['private'], 'error': {'message': 'private'},
+                    'sessionID': 'child',
+                    'info': {'id': 'child', 'parentID': 'parent'},
+                    'id': 'interaction',
+                    'requestID': 'interaction',
+                    'status': {'type': 'busy'},
+                    'secret': 'not forwarded',
+                    'answers': ['private'],
+                    'error': {'message': 'private'},
                 }
                 event = {'type': event_type, 'properties': properties}
                 line = encode_opencode_event(event)
@@ -134,13 +151,25 @@ try {
         self.assertNotIn('parent_session_id', value)
 
     def test_invalid_and_unknown(self):
-        for event in ({}, {'type': []}, {'type': 'tool.updated'}, {'type': 'session.error', 'properties': {}},
-                      {'type': 'session.status', 'properties': {'sessionID': 's', 'status': []}}):
+        for event in (
+            {},
+            {'type': []},
+            {'type': 'tool.updated'},
+            {'type': 'session.error', 'properties': {}},
+            {'type': 'session.status', 'properties': {'sessionID': 's', 'status': []}},
+        ):
             self.assertIsNone(normalize_opencode_event(event))
             self.assertIsNone(encode_opencode_event(event))
         valid = json.loads(encode_opencode_event({'type': 'session.idle', 'properties': {'sessionID': 's'}}))
-        for patch in ({'version': 2}, {'version': True}, {'provider': 'other'}, {'secret': 'x'},
-                      {'state': 'blocked'}, {'interaction_id': 'invented'}, {'session_id': ''}):
+        for patch in (
+            {'version': 2},
+            {'version': True},
+            {'provider': 'other'},
+            {'secret': 'x'},
+            {'state': 'blocked'},
+            {'interaction_id': 'invented'},
+            {'session_id': ''},
+        ):
             with self.subTest(patch=patch), self.assertRaises(ValueError):
                 parse_opencode_event(json.dumps(valid | patch))
         for line in ('{}', '[]', 'invalid', '{}\n{}', b'\xff'):

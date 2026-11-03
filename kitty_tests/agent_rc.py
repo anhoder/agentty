@@ -22,11 +22,11 @@ class TestAgentRC(BaseTest):
         self.window = FakeWindow('ready', focused=True)
         self.window.as_text = lambda: 'visible text'
         self.boss = SimpleNamespace(
-            active_window=self.window, all_windows=[self.window], agent_tracker=AgentTracker(),
+            active_window=self.window,
+            all_windows=[self.window],
+            agent_tracker=AgentTracker(),
         )
-        self.boss.match_windows = lambda match, origin: [
-            w for w in self.boss.all_windows if match == 'all' or match == f'id:{w.id}'
-        ]
+        self.boss.match_windows = lambda match, origin: [w for w in self.boss.all_windows if match == 'all' or match == f'id:{w.id}']
 
     def response(self, action, /, **extra):
         payload = {'action': action, 'self': True, 'extent': 'detection', **extra}
@@ -35,10 +35,21 @@ class TestAgentRC(BaseTest):
     def test_list_and_get_have_stable_agent_record(self):
         listed = self.response('list')
         self.assertEqual(listed[0], self.response('get'))
-        self.assertEqual(set(listed[0]), {
-            'id', 'window_id', 'agent', 'state', 'title', 'cwd', 'session_id', 'focused',
-            'generation', 'cursor',
-        })
+        self.assertEqual(
+            set(listed[0]),
+            {
+                'id',
+                'window_id',
+                'agent',
+                'state',
+                'title',
+                'cwd',
+                'session_id',
+                'focused',
+                'generation',
+                'cursor',
+            },
+        )
         self.assertEqual(listed[0]['agent'], 'claude')
 
     def test_explain_separates_screen_and_tracker(self):
@@ -48,15 +59,25 @@ class TestAgentRC(BaseTest):
         explained = self.response('explain')
         self.assertEqual(explained['tracker_state'], 'working')
         self.assertEqual(explained['arbitrated_state'], 'idle')
-        self.assertEqual(explained['screen'], {
-            'source': 'agent_detection_snapshot', 'state': 'idle', 'manifest': 'claude',
-            'rule': None, 'region': None, 'priority': None, 'evidence': '', 'skipped': False,
-        })
+        self.assertEqual(
+            explained['screen'],
+            {
+                'source': 'agent_detection_snapshot',
+                'state': 'idle',
+                'manifest': 'claude',
+                'rule': None,
+                'region': None,
+                'priority': None,
+                'evidence': '',
+                'skipped': False,
+            },
+        )
         self.window.lines = ('✳ Thinking… (3s · esc to interrupt)',)
         match = detect('claude', self.window.agent_detection_snapshot())
         screen = self.response('explain')['screen']
-        self.assertEqual((screen['rule'], screen['region'], screen['priority'], screen['evidence']),
-                         (match.rule.id, match.rule.region, match.rule.priority, match.evidence))
+        self.assertEqual(
+            (screen['rule'], screen['region'], screen['priority'], screen['evidence']), (match.rule.id, match.rule.region, match.rule.priority, match.evidence)
+        )
 
     def test_explain_skipped_screen_holds_tracker_state(self):
         self.window.child.foreground_processes = [{'cmdline': ['codex']}]
@@ -117,8 +138,7 @@ class TestAgentRC(BaseTest):
             result = read_terminal(self.window, source, 4)
             self.assertEqual(result['text'], '\nlive\n\ntail')
             self.assertFalse(result['completeness']['complete_transcript'])
-        self.assertEqual(calls, [{}, {'add_history': True, 'add_wrap_markers': True},
-                                 {'add_history': True, 'add_wrap_markers': True}])
+        self.assertEqual(calls, [{}, {'add_history': True, 'add_wrap_markers': True}, {'add_history': True, 'add_wrap_markers': True}])
 
     def test_non_agent_is_null_and_invalid_action_fails(self):
         self.window.child.foreground_processes = [{'cmdline': ['zsh']}]
@@ -243,8 +263,7 @@ class TestAgentRC(BaseTest):
     def test_declarative_cli_and_go_argument_handling(self):
         self.assertIsInstance(command_for_name('agent'), Agent)
         opts, args = parse_subcommand_cli(self.command, ['agent', '--match', 'id:7', '--extent', 'visible', 'read'])
-        self.assertEqual(self.command.message_to_kitty(None, opts, args),
-                         {'action': 'read', 'match': 'id:7', 'self': False, 'extent': 'visible'})
+        self.assertEqual(self.command.message_to_kitty(None, opts, args), {'action': 'read', 'match': 'id:7', 'self': False, 'extent': 'visible'})
         code = '\n'.join(self.command.args.as_go_code('agent', {'action': 'choices.list.get.explain.read'}, set()))
         self.assertIn('case "list", "get", "explain", "read"', code)
         with patch.object(self.command, 'fatal', side_effect=ValueError):

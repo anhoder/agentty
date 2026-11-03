@@ -279,6 +279,7 @@ class TestAgents(BaseTest):
         self.ae(state_from_signals('opencode', statuses, working, session_id='root'), AgentState.blocked)
         statuses[0] = {'id': 'root', 'state': 'done'}
         self.ae(state_from_signals('opencode', statuses, working, session_id='root'), AgentState.done)
+
     def test_root_idle_does_not_hide_busy_child_session(self):
         statuses = [
             {'id': 'root', 'state': 'idle'},
@@ -287,12 +288,15 @@ class TestAgents(BaseTest):
         ]
         self.ae(state_from_signals('opencode', statuses, screen('neutral'), session_id='root'), AgentState.working)
         from kitty.agents import status_scope
-        self.ae(status_scope(statuses, 'root'), {
-            'root_session': 'root',
-            'matched_ids': ['root', 'root/child'],
-            'ignored_ids': ['other'],
-        })
 
+        self.ae(
+            status_scope(statuses, 'root'),
+            {
+                'root_session': 'root',
+                'matched_ids': ['root', 'root/child'],
+                'ignored_ids': ['other'],
+            },
+        )
 
     def test_identity_only_report_is_discarded(self):
         # A cancelled Claude turn leaves a stale working report while the

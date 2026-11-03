@@ -1,5 +1,7 @@
 """One bounded long poll of the service journal, using the RC wait lifecycle."""
+
 import json
+from typing import Any
 
 from kitty.agent_service import service_for
 from kitty.fast_data_types import add_timer
@@ -11,18 +13,19 @@ from .base import AsyncResponder, RemoteControlErrorWithoutTraceback
 
 
 class JournalWaiter(Waiter):
-    def poll(self, timer_id):
+    def poll(self, timer_id: int | None) -> None:
         service_for(self.boss).poll()
         result = service_for(self.boss).events(self.spec['cursor'], maximum=self.spec['maximum'])
         if result['reason'] != 'timeout':
             self.close(result)
 
-    def timeout(self, timer_id):
+    def timeout(self, timer_id: int | None) -> None:
         self.timer = 0
         self.close(service_for(self.boss).events(self.spec['cursor'], maximum=self.spec['maximum']))
 
-    def close(self, result=None):
+    def close(self, result: Any = None) -> None:
         from kitty.fast_data_types import remove_timer
+
         if getattr(self, 'poll_timer', 0):
             remove_timer(self.poll_timer)
             self.poll_timer = 0
@@ -36,7 +39,7 @@ class AgentSubscribe(AgentEvents):
     protocol_spec = AgentEvents.protocol_spec
     options_spec = AgentEvents.options_spec
 
-    def response_from_kitty(self, boss, window, payload_get):
+    def response_from_kitty(self, boss: Any, window: Any, payload_get: Any) -> Any:
         result = json.loads(super().response_from_kitty(boss, window, payload_get))
         timeout = payload_get('timeout_ms', missing=0)
         if type(timeout) is not int or not 0 <= timeout <= 10000:
@@ -46,8 +49,9 @@ class AgentSubscribe(AgentEvents):
             return json.dumps(result)
         if key in pending(boss) or len(pending(boss)) >= 16:
             raise RemoteControlErrorWithoutTraceback('Too many pending waits or duplicate async id')
-        waiter = JournalWaiter(boss, key, {'window_id': None, 'cursor': result['cursor'],
-                                        'maximum': payload_get('max_events', missing=100)}, AsyncResponder(payload_get, window))
+        waiter = JournalWaiter(
+            boss, key, {'window_id': None, 'cursor': result['cursor'], 'maximum': payload_get('max_events', missing=100)}, AsyncResponder(payload_get, window)
+        )
         pending(boss)[key] = waiter
         try:
             waiter.timer = add_timer(waiter.timeout, timeout / 1000, False)
@@ -57,7 +61,7 @@ class AgentSubscribe(AgentEvents):
             raise
         return AsyncResponse()
 
-    def cancel_async_request(self, boss, window, payload_get):
+    def cancel_async_request(self, boss: Any, window: Any, payload_get: Any) -> None:
         waiter = pending(boss).get(payload_get('async_id', missing=''))
         if waiter is not None:
             waiter.close()

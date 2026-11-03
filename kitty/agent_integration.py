@@ -24,7 +24,7 @@ KITTY_ASSET_MARKER = 'KITTY_AGENT_INTEGRATION_ID=kitty'
 
 # These reporters deliberately use only the current session supplied by the host
 # APIs. They never inspect session databases or infer a session from cwd.
-PI_REPORTER = r'''// KITTY_AGENT_INTEGRATION_ID=kitty
+PI_REPORTER = r"""// KITTY_AGENT_INTEGRATION_ID=kitty
 import fs from "node:fs";
 import path from "node:path";
 
@@ -62,11 +62,11 @@ export default function (pi) {
   pi.on("session_switch", report);
   pi.on("session_shutdown", clear);
 }
-'''
+"""
 
 # The optional structured provider lane uses agent_provider.py's field contract.
 # It requires both explicit broker environment variables; OSC remains independent.
-OPENCODE_REPORTER = r'''// KITTY_AGENT_INTEGRATION_ID=kitty
+OPENCODE_REPORTER = r"""// KITTY_AGENT_INTEGRATION_ID=kitty
 import fs from "node:fs";
 import net from "node:net";
 const AGENT = "opencode";
@@ -275,12 +275,22 @@ export default { id: "kitty.opencode.session", tui: async (api) => {
       else { childSessions.delete(sessionID); childParents.delete(sessionID); }
     }
   };
-  const off = ["session.created", "session.status", "session.idle", "permission.asked", "question.asked", "permission.replied", "question.replied", "question.rejected", "session.error", "session.deleted"].map((type) => api.event.on(type, onStatus));
+  const off = ["session.created", "session.status", "session.idle", "permission.asked",
+    "question.asked", "permission.replied", "question.replied", "question.rejected",
+    "session.error", "session.deleted"].map((type) => api.event.on(type, onStatus));
   sync(api);
   const timer = setInterval(() => sync(api), 100);
-  api.lifecycle.onDispose(() => { brokerDisposed = true; clearTimeout(brokerTimer); clearInterval(timer); for (const remove of off) remove(); broker?.destroy(); clearStatus(); reportIdentity(undefined); });
+  api.lifecycle.onDispose(() => {
+    brokerDisposed = true;
+    clearTimeout(brokerTimer);
+    clearInterval(timer);
+    for (const remove of off) remove();
+    broker?.destroy();
+    clearStatus();
+    reportIdentity(undefined);
+  });
 }};
-'''
+"""
 # Written by the hook, read by kitty/window.py's OSC 1337 handler
 HOOK_SCRIPT = r"""#!/bin/sh
 # Installed by kitty, see kitty/agent_integration.py. Tells kitty which agent conversation this window is in, so that kitty can
@@ -314,6 +324,8 @@ class Agent(NamedTuple):
     # Official integration mechanism. Plugin-only agents cannot use kitty's generic shell hook safely.
     integration_kind: str = 'hook'
     hook_event: str = 'SessionStart'
+
+
 class IntegrationInspection(NamedTuple):
     state: str
     paths: tuple[str, ...]
@@ -343,7 +355,6 @@ def owned_hook(path: str) -> bool:
 
 def _inspection_error(paths: tuple[str, ...], err: BaseException) -> IntegrationInspection:
     return IntegrationInspection('error', paths, str(err))
-
 
 
 def hook_dir() -> str:
@@ -652,11 +663,14 @@ def inspect_integration(agent: Agent) -> IntegrationInspection:
             if reporter_current and registered:
                 return IntegrationInspection('current', paths, 'Managed reporter and plugin registration are current')
             if not reporter_current and not registered:
-                return IntegrationInspection('outdated' if os.path.lexists(reporter) else 'missing', paths, 'Managed reporter or plugin registration is missing or differs')
+                state = 'outdated' if os.path.lexists(reporter) else 'missing'
+                return IntegrationInspection(state, paths, 'Managed reporter or plugin registration is missing or differs')
             return IntegrationInspection('outdated', paths, 'Managed reporter or plugin registration is missing or differs')
         if reporter_current:
             return IntegrationInspection('current', paths, 'Managed reporter is current')
-        return IntegrationInspection('outdated', paths, 'Managed reporter differs from generated content') if os.path.exists(reporter) else IntegrationInspection('missing', paths, 'Managed reporter is missing')
+        if os.path.exists(reporter):
+            return IntegrationInspection('outdated', paths, 'Managed reporter differs from generated content')
+        return IntegrationInspection('missing', paths, 'Managed reporter is missing')
     except Exception as err:
         return _inspection_error(locals().get('paths', ()), err)
 

@@ -73,15 +73,17 @@ class TestSessions(BaseTest):
 
     def test_session_agent_sidebar_state(self) -> None:
         opts = self.set_options()
-        raw = '\n'.join((
-            'agent_sidebar {"enabled":true,"width_cols":42,"collapsed_groups":["agent:claude","tab:tab-7"]}',
-            'new_tab first',
-            'tab_id tab-7',
-            'launch',
-            'new_tab second',
-            'tab_id tab-8',
-            'launch',
-        ))
+        raw = '\n'.join(
+            (
+                'agent_sidebar {"enabled":true,"width_cols":42,"collapsed_groups":["agent:claude","tab:tab-7"]}',
+                'new_tab first',
+                'tab_id tab-7',
+                'launch',
+                'new_tab second',
+                'tab_id tab-8',
+                'launch',
+            )
+        )
         (session,) = parse_session(raw, opts)
         self.ae((session.agent_sidebar_enabled, session.agent_sidebar_cols, session.agent_sidebar_collapsed_groups), (True, 42, ('agent:claude', 'tab:tab-7')))
         self.ae([tab.sidebar_id for tab in session.tabs], ['tab-7', 'tab-8'])
@@ -98,13 +100,30 @@ class TestSessions(BaseTest):
 
         def manager(wid: int, empty: bool = False) -> SimpleNamespace:
             # Use the real TabManager serializer, including its empty-window behavior.
-            tab = SimpleNamespace(serialize_state_as_session=Mock(return_value=[] if empty else [
-                f'new_tab window-{wid}', 'layout splits', f'set_layout_state {__import__("json").dumps(layout_state)}',
-                f'launch --title=window-{wid} /bin/sh', 'launch /bin/sh', 'focus',
-            ]))
-            tm = SimpleNamespace(tabs=[tab], active_tab=tab, wm_class='', wm_name='', serialize_geometry_as_session=lambda: [
-                'os_window_size 1180 760', 'os_window_position 100x80',
-            ])
+            tab = SimpleNamespace(
+                serialize_state_as_session=Mock(
+                    return_value=[]
+                    if empty
+                    else [
+                        f'new_tab window-{wid}',
+                        'layout splits',
+                        f'set_layout_state {__import__("json").dumps(layout_state)}',
+                        f'launch --title=window-{wid} /bin/sh',
+                        'launch /bin/sh',
+                        'focus',
+                    ]
+                )
+            )
+            tm = SimpleNamespace(
+                tabs=[tab],
+                active_tab=tab,
+                wm_class='',
+                wm_name='',
+                serialize_geometry_as_session=lambda: [
+                    'os_window_size 1180 760',
+                    'os_window_position 100x80',
+                ],
+            )
             tm.serialize_state_as_session = lambda *a, **kw: TabManager.serialize_state_as_session(tm, *a, **kw)
             return tm
 
@@ -134,7 +153,6 @@ class TestSessions(BaseTest):
             self.ae([s.tabs[0].name for s in filtered], [f'window-{wid}' for wid in (1, 2, 6, 7)])
             self.ae([s.os_window_tab_group for s in filtered], ['1', '1', '3', '4'])
             self.assertTrue(filtered[0].focus_os_window)
-
 
     def test_scrollback_for_restore(self) -> None:
         from kitty.logout_session import sanitize_restored_output, scrollback_for_restore
@@ -547,9 +565,7 @@ class TestSessions(BaseTest):
         encoded = unserialize_launch_flag + '{"id": 7, "agent": "omp"}'
         session_path = '/Users/test/.omp/sessions/abc.jsonl'
         opts = self.set_options({'resume_agents_on_restore': True})
-        (session,) = parse_session(
-            f'launch {shlex.join((encoded,))} --var=KITTY_AGENT_SESSION_PATH={session_path}', opts
-        )
+        (session,) = parse_session(f'launch {shlex.join((encoded,))} --var=KITTY_AGENT_SESSION_PATH={session_path}', opts)
         window = session.tabs[0].windows[0]
         self.ae(window.launch_spec.args, ['omp', f'--resume={session_path}'])
         self.assertTrue(window.launch_spec.opts.hold)

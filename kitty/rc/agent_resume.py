@@ -8,17 +8,17 @@ from .base import ArgsType, Boss, PayloadGetType, PayloadType, RCOptions, Remote
 
 
 class AgentResume(RemoteCommand):
-    protocol_spec = __doc__ = '''
+    protocol_spec = __doc__ = """
     agent/str: Explicit manifest agent
     session/str: Explicit session reference
     cwd/str: Explicit absolute working directory
     match/str: Exact source window id selector
     expected_agent/str: Expected live source agent
     expected_session/str: Optional live source session guard
-    '''
+    """
     short_desc = 'Resume an agent conversation in a controlled new window'
     desc = 'Use --agent --session --cwd OR --match --expected-agent [--expected-session]. No arbitrary launch arguments.'
-    options_spec = '''
+    options_spec = """
 --agent
 Manifest agent name.
 
@@ -41,7 +41,7 @@ Required live source identity in source mode.
 
 --expected-session
 Optional live source session guard.
-'''
+"""
     fields = ('agent', 'session', 'cwd', 'match', 'expected_agent', 'expected_session')
     args = RemoteCommand.Args(spec='', count=0)
 

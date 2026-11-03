@@ -84,9 +84,14 @@ class TestAgentIntegration(BaseTest):
                 original = {
                     'permissions': {'allow': ['Read(*)']},
                     'hooks': {
-                        'SessionStart': [{'matcher': 'startup', 'hooks': [
-                            {'type': 'command', 'command': 'echo kitty-keep-me', 'timeout': 3},
-                        ]}],
+                        'SessionStart': [
+                            {
+                                'matcher': 'startup',
+                                'hooks': [
+                                    {'type': 'command', 'command': 'echo kitty-keep-me', 'timeout': 3},
+                                ],
+                            }
+                        ],
                         'PreToolUse': [{'hooks': [{'type': 'command', 'command': 'echo other-event'}]}],
                     },
                 }

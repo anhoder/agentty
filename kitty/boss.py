@@ -3,6 +3,7 @@
 
 # Imports {{{
 import base64
+import binascii
 import json
 import os
 import re
@@ -1231,6 +1232,7 @@ class Boss:
         window = self.window_id_map.pop(window_id, None)
         self.agent_tracker.discard(window_id)
         from .rc.agent_wait import wake_waiters
+
         wake_waiters(self, window_id)
         if window is None:
             return
@@ -1966,6 +1968,7 @@ class Boss:
             return (tab_manager,)
         os_window_ids = native_tab_group_order(tab_manager.os_window_id) or (tab_manager.os_window_id,)
         return tuple(self.os_window_map[os_window_id] for os_window_id in os_window_ids if os_window_id in self.os_window_map)
+
     def restore_agent_sidebar_state(self, session: Any) -> None:
         enabled = session.agent_sidebar_enabled
         cols = session.agent_sidebar_cols
@@ -1974,7 +1977,6 @@ class Boss:
         self.agent_sidebar_enabled = enabled
         self.agent_sidebar_cols = cols
         self.agent_sidebar_collapsed_groups = set(session.agent_sidebar_collapsed_groups)
-
 
     def mark_agent_window_dirty(self, window_id: int) -> None:
         # Completion notifications work even when the sidebar is hidden; the
@@ -2014,8 +2016,7 @@ class Boss:
                     # The agent's own terminal title, which it repaints with
                     # the task it is on. Empty before the agent sets one.
                     title = f'{snapshot.agent} · {snapshot.title}' if snapshot.title else snapshot.agent
-                    rows.append(AgentSidebarRow(
-                        window.id, group, group_key, snapshot.agent, title, detail, snapshot.state, window is active_window))
+                    rows.append(AgentSidebarRow(window.id, group, group_key, snapshot.agent, title, detail, snapshot.state, window is active_window))
         rows = list(group_sidebar_rows(rows, strategy))
         if not rows:
             rows.append(AgentSidebarRow(0, '', '', '', 'No AI agents', '', AgentState.unknown, False))
@@ -2033,14 +2034,17 @@ class Boss:
             if window is None:
                 self.agent_tracker.discard(window_id)
                 from .rc.agent_wait import wake_waiters
+
                 wake_waiters(self, window_id)
                 continue
             before = self.agent_tracker.snapshot_for(window_id)
             self.agent_tracker.observe(window)
             after = self.agent_tracker.snapshot_for(window_id)
-            if getattr(self, '_agent_service', None) is not None:
-                self._agent_service.observe(window)
+            service = getattr(self, '_agent_service', None)
+            if service is not None:
+                service.observe(window)
             from .rc.agent_wait import wake_waiters
+
             wake_waiters(self, window_id)
             if after is not None and after.state is AgentState.done and (before is None or before.state is not AgentState.done):
                 self.notify_agent_done(after)
@@ -2164,6 +2168,7 @@ class Boss:
                 self.confirm(msg, self.handle_close_window_confirmation, window.id, window=window, title=_('Close window?'))
             else:
                 self.mark_window_for_close(window)
+
     @ac('misc', 'Update the native AI agents sidebar group collapse state')
     def agents_sidebar_group_toggle(self, data: str) -> None:
         try:
@@ -2173,7 +2178,7 @@ class Boss:
             if collapsed_s not in ('0', '1'):
                 return
             key = base64.b64decode(encoded_key.encode('ascii'), validate=True).decode('utf-8')
-        except (ValueError, UnicodeDecodeError, base64.binascii.Error):
+        except (ValueError, UnicodeDecodeError, binascii.Error):
             return
         if not key or os_window_id not in self.os_window_map:
             return
@@ -2181,7 +2186,6 @@ class Boss:
             self.agent_sidebar_collapsed_groups.add(key)
         else:
             self.agent_sidebar_collapsed_groups.discard(key)
-
 
     @ac('misc', 'Resize the native AI agents sidebar')
     def agents_sidebar_resize(self, data: str) -> None:
@@ -2816,6 +2820,7 @@ class Boss:
             self.window_id_map.pop(window_id, None)
             self.agent_tracker.discard(window_id)
             from .rc.agent_wait import wake_waiters
+
             wake_waiters(self, window_id)
         if not self.os_window_map and is_macos:
             cocoa_set_menubar_title('')
@@ -3490,13 +3495,15 @@ class Boss:
         # The session state is not serialized here: every OS window has already been closed by the time this runs, so there is
         # nothing left to serialize. It is saved when the quit is requested or the last OS window is closed.
         self.shutting_down = True
-        if getattr(self, '_agent_broker', None) is not None:
-            self._agent_broker.close()
+        broker = getattr(self, '_agent_broker', None)
+        if broker is not None:
+            broker.close()
             self._agent_broker = None
         if self.agent_integration_timer:
             remove_timer(self.agent_integration_timer)
             self.agent_integration_timer = 0
         from .rc.agent_wait import clear_waiters
+
         clear_waiters(self)
         if getattr(self, '_agent_observe_timer', 0):
             remove_timer(self._agent_observe_timer)

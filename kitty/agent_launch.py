@@ -5,6 +5,7 @@ import re
 import time
 from collections import OrderedDict
 from threading import RLock
+from typing import Any, Never
 
 from kitty.agent_manifest import is_valid_session_id, is_valid_session_path
 from kitty.agents import detect_agent, resume_argv_for, session_ref_of_window
@@ -17,17 +18,17 @@ _requests = OrderedDict()
 _lock = RLock()
 
 
-def reject(message):
+def reject(message: str) -> Never:
     raise ValueError(message)
 
 
-def cwd_directory(value):
+def cwd_directory(value: Any) -> str:
     if not isinstance(value, str) or not os.path.isabs(value) or not os.path.isdir(value):
         reject('cwd must be an existing absolute directory')
     return value
 
 
-def source_window(boss, match):
+def source_window(boss: Any, match: Any) -> Any:
     if not isinstance(match, str) or re.fullmatch(r'id:[1-9][0-9]*', match) is None:
         reject('source requires exact --match id:N')
     windows = list(boss.match_windows(match))
@@ -36,7 +37,7 @@ def source_window(boss, match):
     return windows[0]
 
 
-def controlled_launch(boss, source, cwd, argv, agent=None, session=None):
+def controlled_launch(boss: Any, source: Any, cwd: str, argv: Any, agent: Any = None, session: Any = None) -> dict[str, Any]:
     tab = source.tabref() if source is not None else boss.active_tab
     if tab is None:
         reject('No target tab')
@@ -51,6 +52,7 @@ def controlled_launch(boss, source, cwd, argv, agent=None, session=None):
     broker = token = None
     if agent == 'opencode':
         from kitty.agent_broker import broker_for
+
         broker = broker_for(boss)
         token, opts.env = broker.prepare(session)
     try:
@@ -68,7 +70,7 @@ def controlled_launch(boss, source, cwd, argv, agent=None, session=None):
     return {'launch_requested': True, 'window_id': w.id, 'stage': 'launch_requested', 'identity_confirmed': False}
 
 
-def resume(boss, get):
+def resume(boss: Any, get: Any) -> Any:
     match, expected, expected_session = get('match'), get('expected_agent'), get('expected_session')
     agent, session, cwd = get('agent'), get('session'), get('cwd')
     source = None
@@ -108,7 +110,7 @@ def resume(boss, get):
         return result
 
 
-def remember(key, now, fingerprint, result):
+def remember(key: Any, now: float, fingerprint: Any, result: Any) -> None:
     for old in list(_requests):
         if now - _requests[old][0] >= REQUEST_TTL:
             del _requests[old]
@@ -117,7 +119,7 @@ def remember(key, now, fingerprint, result):
         _requests.popitem(last=False)
 
 
-def start(boss, get):
+def start(boss: Any, get: Any) -> Any:
     agent, cwd, request_id = get('agent'), cwd_directory(get('cwd')), get('request_id')
     if not isinstance(agent, str) or agent not in START_ARGV:
         reject('Agent not in trusted start registry')

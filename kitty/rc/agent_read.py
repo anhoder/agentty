@@ -3,6 +3,7 @@
 
 import json
 from time import monotonic
+from typing import Any
 
 from kitty.agent_history import HistoryRead
 from kitty.agent_service import service_for
@@ -14,7 +15,7 @@ from .agent_wait import Waiter, pending
 from .base import AsyncResponder, RemoteCommand, RemoteControlErrorWithoutTraceback
 
 
-def resolve_read_target(boss, get):
+def resolve_read_target(boss: Any, get: Any) -> tuple[Any, dict[str, Any]]:
     service = service_for(boss)
     expected = get('expected_agent')
     selected = service.resolve_target(get, require_expected=True)
@@ -22,12 +23,10 @@ def resolve_read_target(boss, get):
     if agent is None or (expected and agent != expected):
         raise ValueError('Target is not the expected live agent')
     identity = service.inspect(selected)
-    return selected, dict(window_id=selected.id, agent=agent, **{
-        key: identity[key] for key in ('instance_id', 'runtime_epoch', 'binding_revision')
-    })
+    return selected, dict(window_id=selected.id, agent=agent, **{key: identity[key] for key in ('instance_id', 'runtime_epoch', 'binding_revision')})
 
 
-def read_terminal(window, source, lines):
+def read_terminal(window: Any, source: str, lines: int | None) -> dict[str, Any]:
     if source not in ('visible', 'detection', 'recent', 'recent-unwrapped'):
         raise ValueError('Invalid source')
     recent = source in ('recent', 'recent-unwrapped')
@@ -52,52 +51,69 @@ def read_terminal(window, source, lines):
         truncated = len(rows) > limit
         text = '\n'.join(rows[-limit:])
         text = text.replace('\r\n', '' if source == 'recent-unwrapped' else '\n').replace('\r', '')
-    return dict(source=source, text=text, completeness={
-        'scope': 'retained_terminal_history' if recent else 'screen',
-        'complete_transcript': False, 'truncated': truncated,
-        'note': 'Terminal history is bounded, may omit alternate-screen output, and is not a complete agent transcript.',
-    })
+    return dict(
+        source=source,
+        text=text,
+        completeness={
+            'scope': 'retained_terminal_history' if recent else 'screen',
+            'complete_transcript': False,
+            'truncated': truncated,
+            'note': 'Terminal history is bounded, may omit alternate-screen output, and is not a complete agent transcript.',
+        },
+    )
 
 
-def mouse_guard(screen):
+def mouse_guard(screen: Any) -> tuple[Any, str]:
     # Native send_mouse_event checks live tracking on every call and returns
     # False without writing when unsupported. Keyboard flags are an additional
     # continuity guard, not evidence of mouse tracking.
     return screen.current_key_encoding_flags(), ''
 
 
-def live_state(boss, window):
+def live_state(boss: Any, window: Any) -> str | None:
     service = service_for(boss)
     service.observe(window)
     return service.inspect(window)['execution']['state']
 
 
 class HistoryWaiter(Waiter):
-    def __init__(self, boss, key, responder, window, identity, fallback, lines, guard, sender=send_mouse_event):
+    def __init__(
+        self,
+        boss: Any,
+        key: str,
+        responder: Any,
+        window: Any,
+        identity: Any,
+        fallback: dict[str, Any],
+        lines: int | None,
+        guard: Any,
+        sender: Any = send_mouse_event,
+    ) -> None:
         super().__init__(boss, key, {'window_id': None}, responder)
-        self.window, self.identity, self.fallback = window, identity, fallback
+        self.window, self.identity = window, identity
+        self.fallback: dict[str, Any] = fallback
         self.guard, self.sender = guard, sender
         self.screen = window.screen
         self.started = monotonic()
         self.cancelled_at = None
         self.sent = 0
-        self.reader = HistoryRead(self.rows(), self.screen.columns, self.screen.lines,
-                                  self.started, passive_text=fallback['text'],
-                                  identity=identity, requested_lines=lines)
+        self.reader = HistoryRead(
+            self.rows(), self.screen.columns, self.screen.lines, self.started, passive_text=fallback['text'], identity=identity, requested_lines=lines
+        )
 
-    def rows(self):
+    def rows(self) -> list[str]:
         rows = []
         for i in range(self.screen.lines):
             line = self.screen.linebuf.line(i)
             rows.append(str(line) + ('\r' if self.screen.linebuf.is_continued(i) else ''))
         return rows
 
-    def cancel(self):
+    def cancel(self) -> None:
         if self.cancelled_at is None:
             self.cancelled_at = monotonic()
             self.reader.cancel(self.cancelled_at)
 
-    def poll(self, timer_id):
+    def poll(self, timer_id: int | None) -> None:
         if self.closed:
             return
         now = monotonic()
@@ -106,21 +122,29 @@ class HistoryWaiter(Waiter):
             current = None
             valid = False
             if w is self.window:
-                _, current = resolve_read_target(self.boss, lambda k: {
-                    'target': self.identity['instance_id'], 'expected_agent': self.identity['agent']}.get(k))
-                valid = (w.screen is self.screen and self.screen.is_using_alternate_linebuf()
-                         and not self.screen.scrolled_by
-                         and mouse_guard(self.screen)[0] == self.guard
-                         and self.screen.columns == self.reader.columns
-                         and self.screen.lines == self.reader.lines)
+                _, current = resolve_read_target(self.boss, lambda k: {'target': self.identity['instance_id'], 'expected_agent': self.identity['agent']}.get(k))
+                valid = (
+                    w.screen is self.screen
+                    and self.screen.is_using_alternate_linebuf()
+                    and not self.screen.scrolled_by
+                    and mouse_guard(self.screen)[0] == self.guard
+                    and self.screen.columns == self.reader.columns
+                    and self.screen.lines == self.reader.lines
+                )
             if now - self.started >= 15:
                 self.reader.cancel(now)
             if now - self.started >= 20 or (self.cancelled_at is not None and now - self.cancelled_at >= 5):
                 valid = False
             state = live_state(self.boss, w) if valid else None
-            action = self.reader.step(self.rows(), self.screen.columns, now, valid,
-                                      identity=current, working=state not in ('idle', 'done', None, 'unknown'),
-                                      unknown=state in (None, 'unknown'))
+            action = self.reader.step(
+                self.rows(),
+                self.screen.columns,
+                now,
+                valid,
+                identity=current,
+                working=state not in ('idle', 'done', None, 'unknown'),
+                unknown=state in (None, 'unknown'),
+            )
             if action.kind == 'wheel':
                 for _ in range(action.amount):
                     # Direct protocol injection does not move focus or the real pointer.
@@ -128,34 +152,35 @@ class HistoryWaiter(Waiter):
                     geometry = self.window.geometry
                     # Supply valid window-relative pixels even if the child has
                     # selected SGR pixel routing (no mode query is exposed).
-                    px = int((x + .5) * (geometry.right - geometry.left) / self.screen.columns)
-                    py = int((y + .5) * (geometry.bottom - geometry.top) / self.screen.lines)
-                    if not self.sender(self.screen, x, y,
-                                       MOUSE_WHEEL_UP if action.direction == 'up' else MOUSE_WHEEL_DOWN,
-                                       PRESS, 0, px, py):
+                    px = int((x + 0.5) * (geometry.right - geometry.left) / self.screen.columns)
+                    py = int((y + 0.5) * (geometry.bottom - geometry.top) / self.screen.lines)
+                    if not self.sender(self.screen, x, y, MOUSE_WHEEL_UP if action.direction == 'up' else MOUSE_WHEEL_DOWN, PRESS, 0, px, py):
                         if not self.sent:
-                            output = dict(self.fallback, target=self.identity, active_read=False,
-                                          restoration='not_needed')
-                            output['completeness'] = dict(output['completeness'], reason='mouse_mode_unsupported')
+                            output: dict[str, Any] = dict(self.fallback, target=self.identity, active_read=False, restoration='not_needed')
+                            output['completeness'] = {**output['completeness'], 'reason': 'mouse_mode_unsupported'}
                             self.close(output)
                             return
                         raise ValueError('mouse_send_failed')
                     self.sent += 1
             elif action.kind == 'done':
                 result = action.result
+                if result is None:
+                    raise ValueError('read finished without a result')
                 output = dict(self.fallback)
                 output['text'] = result.text
                 if output['source'] == 'recent-unwrapped' and result.completeness != 'passive':
                     output['text'] = output['text'].replace('\r\n', '').replace('\r', '')
-                output['completeness'] = dict(output['completeness'], scope=result.completeness,
-                    reason=result.reason, truncated=result.truncated)
-                output.update(active_read=result.active_read, restoration=result.restoration,
-                              concurrency='User input cannot be completely excluded')
+                output['completeness'] = {
+                    **output['completeness'],
+                    'scope': result.completeness,
+                    'reason': result.reason,
+                    'truncated': result.truncated,
+                }
+                output.update(active_read=result.active_read, restoration=result.restoration, concurrency='User input cannot be completely excluded')
                 self.close(dict(target=self.identity, **output))
         except Exception:
-            output = dict(self.fallback, target=self.identity, active_read=bool(self.sent),
-                          restoration='uncertain')
-            output['completeness'] = dict(output['completeness'], reason='active_read_failed')
+            output: dict[str, Any] = dict(self.fallback, target=self.identity, active_read=bool(self.sent), restoration='uncertain')
+            output['completeness'] = {**output['completeness'], 'reason': 'active_read_failed'}
             self.close(output)
 
 
@@ -163,16 +188,16 @@ class AgentRead(RemoteCommand):
     is_asynchronous = True
     response_timeout = 25
     args = RemoteCommand.Args(count=0)
-    protocol_spec = __doc__ = '''
+    protocol_spec = __doc__ = """
     target/str: Live agent instance id
     match/str: Explicit id:N window selector
     expected_agent/str: Required agent name when using match
     source/choices.visible.detection.recent.recent-unwrapped: Terminal text source
     lines/int: Recent line limit, from 1 to 10000 (default 80)
     passive/bool: Disable active scrolling
-    '''
+    """
     short_desc = 'Read agent terminal text, optionally sending history scroll input'
-    desc = '''Select --target INSTANCE or --match id:N --expected-agent NAME.
+    desc = """Select --target INSTANCE or --match id:N --expected-agent NAME.
 Visible reads the current visual screen, detection the live screen, both in full.
 Recent reads retained history plus live rows with soft wraps counted as lines;
 recent-unwrapped joins soft wraps after limiting rendered rows. Recent reads may
@@ -180,8 +205,8 @@ send mouse wheel input to an idle agent and attempt viewport restoration. Use
 --passive to disable this side effect. Remote-control authorization for agent-read
 therefore permits mouse input, not just observation. Focus and the real mouse
 position are unchanged; concurrent user input cannot be completely excluded.
-History is bounded and is not a complete transcript. No agent session files are read.'''
-    options_spec = '''
+History is bounded and is not a complete transcript. No agent session files are read."""
+    options_spec = """
 --target
 Live agent instance id.
 
@@ -209,9 +234,9 @@ Recent sources only: maximum lines, 1..10000, default 80.
 --passive
 type=bool-set
 Disable mouse input and read only retained terminal text.
-'''
+"""
 
-    def message_to_kitty(self, global_opts, opts, args):
+    def message_to_kitty(self, global_opts: Any, opts: Any, args: Any) -> dict[str, Any]:
         if args:
             self.fatal('agent-read accepts no positional arguments')
         payload = {key: getattr(opts, key) for key in ('target', 'match', 'expected_agent', 'source', 'lines')}
@@ -225,7 +250,7 @@ Disable mouse input and read only retained terminal text.
             payload['lines'] = None
         return payload
 
-    def response_from_kitty(self, boss, window, payload_get):
+    def response_from_kitty(self, boss: Any, window: Any, payload_get: Any) -> str | AsyncResponse:
         try:
             # Validate source/limit before touching identity state.
             source, lines = payload_get('source'), payload_get('lines')
@@ -259,11 +284,10 @@ Disable mouse input and read only retained terminal text.
                 if not reason and any(isinstance(w, HistoryWaiter) and w.window.id == selected.id for w in pending(boss).values()):
                     reason = 'active_read_busy'
                 if not reason:
-                    waiter = HistoryWaiter(boss, key, AsyncResponder(payload_get, window), selected,
-                                           identity, result, lines or 80, guard)
+                    waiter = HistoryWaiter(boss, key, AsyncResponder(payload_get, window), selected, identity, result, lines or 80, guard)
                     pending(boss)[key] = waiter
                     try:
-                        waiter.timer = add_timer(waiter.poll, .02, True)
+                        waiter.timer = add_timer(waiter.poll, 0.02, True)
                     except Exception:
                         waiter.close()
                         raise
@@ -273,7 +297,7 @@ Disable mouse input and read only retained terminal text.
         except ValueError as err:
             raise RemoteControlErrorWithoutTraceback(str(err)) from err
 
-    def cancel_async_request(self, boss, window, payload_get):
+    def cancel_async_request(self, boss: Any, window: Any, payload_get: Any) -> None:
         waiter = pending(boss).get(payload_get('async_id', missing=''))
         if isinstance(waiter, HistoryWaiter):
             waiter.cancel()

@@ -10,8 +10,16 @@ from kitty.agent_service import service_for
 from kitty.agents import AgentSnapshot, agent_event_cursor, agent_identity, detect_agent, session_id_of_window, snapshot_for_window, status_scope
 
 from .base import (
-    MATCH_WINDOW_OPTION, ArgsType, Boss, PayloadGetType, PayloadType, RCOptions, RemoteCommand,
-    RemoteControlErrorWithoutTraceback, ResponseType, Window,
+    MATCH_WINDOW_OPTION,
+    ArgsType,
+    Boss,
+    PayloadGetType,
+    PayloadType,
+    RCOptions,
+    RemoteCommand,
+    RemoteControlErrorWithoutTraceback,
+    ResponseType,
+    Window,
 )
 
 
@@ -30,14 +38,14 @@ def agent_record(snapshot: AgentSnapshot, window: Window) -> dict[str, Any]:
 
 
 class Agent(RemoteCommand):
-    protocol_spec = __doc__ = '''
+    protocol_spec = __doc__ = """
     action+/choices.list.get.explain.read.inspect: Read-only operation to perform
     match/str: Window selector using the existing window matching syntax
     self/bool: Select the window the command was run in
     extent/choices.detection.visible: Text source for read
-    '''
+    """
     short_desc = 'Inspect agents without sending input or changing their state'
-    desc = '''Return stable JSON describing agents. ACTION is list, get, explain, read or inspect.
+    desc = """Return stable JSON describing agents. ACTION is list, get, explain, read or inspect.
 List defaults to all live windows and omits non-agents. Other actions require exactly
 one selected window (the command window or active window by default), and return
 JSON null for a non-agent. Use --match id:NUMBER to select a particular window.
@@ -54,8 +62,10 @@ separates live screen evidence/arbitration from the matching cached tracker stat
 when the sidebar is disabled; use explain to observe this distinction.
 Read defaults to the live detection screen; the visual screen can show scrollback
 when scrolled. For bounded terminal history use agent-read. Neither command reads
-agent session files or promises a complete conversation transcript.'''
-    options_spec = MATCH_WINDOW_OPTION + '''
+agent session files or promises a complete conversation transcript."""
+    options_spec = (
+        MATCH_WINDOW_OPTION
+        + """
 
 --self
 type=bool-set
@@ -67,9 +77,12 @@ choices=detection,visible
 default=detection
 Text to return for read. detection is the live screen independent of scroll
 position; visible is the current visual screen. Neither includes full scrollback.
-'''
+"""
+    )
     args = RemoteCommand.Args(
-        spec='ACTION', count=1, json_field='action',
+        spec='ACTION',
+        count=1,
+        json_field='action',
         completion=RemoteCommand.CompletionSpec.from_string('type:keyword kwds:list,get,explain,read,inspect'),
     )
 
@@ -131,8 +144,12 @@ position; visible is the current visual screen. Neither includes full scrollback
                 match = detect(current.agent, screen)
                 candidate, visible_idle = snapshot_for_window(selected, screen, current.state)
                 cached = tracker.snapshot_for(selected.id)
-                matching_cache = (cached is not None and cached.agent == current.agent and cached.session_id == current.session_id
-                                  and tracker.identities.get(selected.id, agent_identity(selected)) == agent_identity(selected))
+                matching_cache = (
+                    cached is not None
+                    and cached.agent == current.agent
+                    and cached.session_id == current.session_id
+                    and tracker.identities.get(selected.id, agent_identity(selected)) == agent_identity(selected)
+                )
                 result = {
                     'record': result,
                     'state_source': 'tracker_cache' if matching_cache else 'live_observation',
@@ -155,7 +172,8 @@ position; visible is the current visual screen. Neither includes full scrollback
             elif action == 'read':
                 text = '\n'.join(selected.agent_detection_snapshot().lines) if extent == 'detection' else selected.as_text()
                 result = {
-                    'record': result, 'extent': extent,
+                    'record': result,
+                    'extent': extent,
                     'source': 'agent_detection_snapshot' if extent == 'detection' else 'window.as_text',
                     'text': text,
                 }

@@ -94,6 +94,7 @@ class Tab:
         self.layout_state: dict[str, Any] | None = None
         self.cwd: str | None = None
         self.next_title: str | None = None
+
     @property
     def has_non_background_processes(self) -> bool:
         for w in self.windows:
@@ -121,6 +122,7 @@ class Session:
         self.agent_sidebar_enabled: bool | None = None
         self.agent_sidebar_cols: int | None = None
         self.agent_sidebar_collapsed_groups: tuple[str, ...] = ()
+
     @property
     def has_non_background_processes(self) -> bool:
         for t in self.tabs:
@@ -148,6 +150,7 @@ class Session:
 
     def set_layout_state(self, val: str) -> None:
         self.tabs[-1].layout_state = json.loads(val)
+
     def add_window(self, cmd: None | str | list[str], expand: Callable[[str], str] = lambda x: x, resume_agents: bool = False) -> None:
         from .launch import parse_launch_args
 

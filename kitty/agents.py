@@ -120,8 +120,6 @@ def _candidate_names(process: Mapping[str, Any]) -> Sequence[str]:
     return tuple(names)
 
 
-
-
 def detect_agent(processes: Sequence[Mapping[str, Any]]) -> str | None:
     """Return the first recognized foreground agent, if any."""
     for process in processes:
@@ -200,7 +198,8 @@ def status_scope(program_status: Sequence[Mapping[str, Any]], session_id: str = 
     ignored = [str(r.get('id', '')) for r in records if r.get('id', '') and not _is_session_record(r.get('id', ''), session_id)]
     return {'root_session': session_id, 'matched_ids': matched, 'ignored_ids': ignored}
 
-def session_ref_of_window(window: Any, agent: str) -> str:
+
+def session_ref_of_window(window: Any, agent: Any) -> str:
     """Return the Herdr-compatible id or absolute session path reported by an agent."""
     from .agent_manifest import is_valid_session_path
 
@@ -295,22 +294,34 @@ class AgentTracker:
         """Called only by the Boss flush, after tracker arbitration/debounce."""
         if before != after:
             self.event_seq += 1
-            self.events.append({'seq': self.event_seq, 'window_id': window_id,
-                                'generation': self.generations.get(window_id, 0),
-                                'identity': self.identities.get(window_id),
-                                'reason': 'changed' if after is not None else 'agent_removed',
-                                'snapshot': asdict(after) if after is not None else None})
+            self.events.append(
+                {
+                    'seq': self.event_seq,
+                    'window_id': window_id,
+                    'generation': self.generations.get(window_id, 0),
+                    'identity': self.identities.get(window_id),
+                    'reason': 'changed' if after is not None else 'agent_removed',
+                    'snapshot': asdict(after) if after is not None else None,
+                }
+            )
 
     def event_batch(self, window_id: int, after_seq: int, maximum: int) -> dict[str, Any]:
+        snapshot = self.snapshots.get(window_id)
         if self.events and after_seq < self.events[0]['seq'] - 1:
-            return {'reason': 'truncated', 'resync_required': True, 'next_seq': self.event_seq,
-                    'head_seq': self.event_seq, 'has_more': False, 'resync_cursor': self.event_seq,
-                    'snapshot': asdict(self.snapshots[window_id]) if self.snapshots.get(window_id) else None, 'events': []}
+            return {
+                'reason': 'truncated',
+                'resync_required': True,
+                'next_seq': self.event_seq,
+                'head_seq': self.event_seq,
+                'has_more': False,
+                'resync_cursor': self.event_seq,
+                'snapshot': asdict(snapshot) if snapshot is not None else None,
+                'events': [],
+            }
         events = [e for e in self.events if e['window_id'] == window_id and e['seq'] > after_seq][:maximum]
         next_seq = events[-1]['seq'] if events else self.event_seq
         more = any(e['window_id'] == window_id and e['seq'] > next_seq for e in self.events)
-        return {'reason': 'changed' if events else 'timeout', 'next_seq': next_seq,
-                'head_seq': self.event_seq, 'has_more': more, 'events': events}
+        return {'reason': 'changed' if events else 'timeout', 'next_seq': next_seq, 'head_seq': self.event_seq, 'has_more': more, 'events': events}
 
     def mark_dirty(self, window_id: int) -> None:
         self.dirty_windows.add(window_id)
@@ -391,9 +402,16 @@ class AgentTracker:
     def discard(self, window_id: int) -> None:
         if window_id in self.snapshots or window_id in self.identities:
             self.event_seq += 1
-            self.events.append({'seq': self.event_seq, 'window_id': window_id, 'snapshot': None,
-                                'generation': self.generations.get(window_id, 0),
-                                'identity': self.identities.get(window_id), 'reason': 'window_closed'})
+            self.events.append(
+                {
+                    'seq': self.event_seq,
+                    'window_id': window_id,
+                    'snapshot': None,
+                    'generation': self.generations.get(window_id, 0),
+                    'identity': self.identities.get(window_id),
+                    'reason': 'window_closed',
+                }
+            )
         self.identities.pop(window_id, None)
         self.generations.pop(window_id, None)
         self.dirty_windows.discard(window_id)
@@ -424,8 +442,7 @@ def agent_identity(window: Any) -> tuple[Any, ...]:
     processes = window.child.foreground_processes
     agent = detect_agent(processes)
     pid = next((p.get('pid') for p in processes if detect_agent((p,)) == agent), None) if agent else None
-    birth = next((p.get('start_time', p.get('create_time', p.get('birth_time')))
-                  for p in processes if pid is not None and p.get('pid') == pid), None)
+    birth = next((p.get('start_time', p.get('create_time', p.get('birth_time'))) for p in processes if pid is not None and p.get('pid') == pid), None)
     return agent, session_id_of_window(window, agent) if agent else '', pid, birth
 
 

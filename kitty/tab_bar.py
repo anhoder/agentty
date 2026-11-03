@@ -29,10 +29,10 @@ from .fast_data_types import (
     get_boss,
     get_options,
     pt_to_px,
+    replace_c0_codes_except_nl_space_tab,
     set_tab_bar_render_data,
     split_into_graphemes,
     update_tab_bar_edge_colors,
-    replace_c0_codes_except_nl_space_tab,
     viewport_for_window,
     wcswidth,
 )
@@ -372,6 +372,7 @@ def tab_title_for_os_window(draw_data: DrawData, tab: TabBarData, index: int) ->
     title = re.sub(r'\x1b\[.+?[a-zA-Z]', '', title)
     title = re.sub(r'[\n\r]', ' ', title)
     return replace_c0_codes_except_nl_space_tab(title.encode()).decode()
+
 
 def evaluate_title_template(draw_data: DrawData, tab: TabBarData, index: int, max_title_length: int = 0) -> str:
     if tab.tab_id < 0:

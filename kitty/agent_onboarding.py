@@ -84,8 +84,13 @@ class AgentIntegrationPrompts:
                 boss.cached_values['agent-integration-never-prompt'] = dismissed
             elif choice in ('i', 'u'):
                 target = boss.window_id_map.get(window.id)
-                if (target is not window or target.child_is_remote or target.ssh_kitten_cmdline()
-                        or detect_agent(target.child.foreground_processes) != agent.id or not self.local_environment(target)):
+                if (
+                    target is not window
+                    or target.child_is_remote
+                    or target.ssh_kitten_cmdline()
+                    or detect_agent(target.child.foreground_processes) != agent.id
+                    or not self.local_environment(target)
+                ):
                     return
                 try:
                     # install() repeats ownership/config validation at consent time.
@@ -100,8 +105,16 @@ class AgentIntegrationPrompts:
 
         try:
             key = 'u' if updating else 'i'
-            overlay = boss.choose(message, answered, f'{key}:{action}', 'l:' + _('Later'), 'n:' + _('Never ask again'),
-                                  window=window, default='l', title=_('Kitty agent integration'))
+            overlay = boss.choose(
+                message,
+                answered,
+                f'{key}:{action}',
+                'l:' + _('Later'),
+                'n:' + _('Never ask again'),
+                window=window,
+                default='l',
+                title=_('Kitty agent integration'),
+            )
             if overlay is None:
                 self.prompt_open = False
         except Exception:

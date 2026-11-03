@@ -3,21 +3,29 @@
 
 import json
 import re
-from typing import Any
+from typing import Any, NoReturn
 
-from kitty.agents import AgentState, agent_event_cursor, agent_identity, detect_agent, session_ref_of_window, snapshot_for_window
 from kitty.agent_manifest import StateAuthority, authority_for
 from kitty.agent_service import service_for
+from kitty.agents import AgentState, agent_event_cursor, agent_identity, detect_agent, session_ref_of_window, snapshot_for_window
 from kitty.options.utils import parse_shortcut
 from kitty.utils import sanitize_for_bracketed_paste
 
 from .base import (
-    ArgsType, Boss, PayloadGetType, PayloadType, RCOptions, RemoteCommand,
-    RemoteControlErrorWithoutTraceback, ResponseType, Window,
+    ArgsType,
+    Boss,
+    PayloadGetter,
+    PayloadGetType,
+    PayloadType,
+    RCOptions,
+    RemoteCommand,
+    RemoteControlErrorWithoutTraceback,
+    ResponseType,
+    Window,
 )
 
 
-def reject(message: str) -> None:
+def reject(message: str) -> NoReturn:
     raise RemoteControlErrorWithoutTraceback(message)
 
 
@@ -66,7 +74,7 @@ def validate(payload_get: PayloadGetType) -> tuple[str, list[str], int]:
 
 
 class AgentControl(RemoteCommand):
-    protocol_spec = __doc__ = '''
+    protocol_spec = __doc__ = """
     action+/str: prompt, send-keys, focus or cancel
     arguments/list.str: Literal prompt text or key names
     match/str: Exact positive window id selector
@@ -77,13 +85,13 @@ class AgentControl(RemoteCommand):
     expected_epoch/str: Expected runtime epoch
     expected_binding/int: Expected binding revision
     request_id/str: Idempotency key
-    '''
+    """
     short_desc = 'Send guarded input or focus requests to a live agent'
-    desc = '''Requires --match id:NUMBER and --expected-agent. prompt takes one literal
+    desc = """Requires --match id:NUMBER and --expected-agent. prompt takes one literal
 text argument and requires live idle state. send-keys takes key names as in send-key.
 focus and cancel take no arguments. cancel sends Ctrl+C, never a process signal.
-Results acknowledge input or requests, not agent completion or termination.'''
-    options_spec = '''
+Results acknowledge input or requests, not agent completion or termination."""
+    options_spec = """
 --target
 Service instance identity (alternative to match).
 
@@ -115,19 +123,23 @@ Expected binding revision.
 
 --request-id
 Idempotency key.
-'''
-    args = RemoteCommand.Args(spec='ACTION [ARGUMENTS ...]', json_field='action', minimum_count=1,
-                              first_rest=('action', 'arguments'))
+"""
+    args = RemoteCommand.Args(spec='ACTION [ARGUMENTS ...]', json_field='action', minimum_count=1, first_rest=('action', 'arguments'))
 
     def message_to_kitty(self, global_opts: RCOptions, opts: Any, args: ArgsType) -> PayloadType:
-        payload = {'action': args[0] if args else '', 'arguments': list(args[1:]),
-                   'match': opts.match, 'expected_agent': opts.expected_agent, 'target': getattr(opts, 'target', None)}
+        payload = {
+            'action': args[0] if args else '',
+            'arguments': list(args[1:]),
+            'match': opts.match,
+            'expected_agent': opts.expected_agent,
+            'target': getattr(opts, 'target', None),
+        }
         if opts.expected_session:
             payload['expected_session'] = opts.expected_session
         for key in ('expected_instance', 'expected_epoch', 'expected_binding', 'request_id'):
             if (value := getattr(opts, key, None)) is not None:
                 payload[key] = value
-        validate(payload.get)
+        validate(PayloadGetter(self, payload))
         return payload
 
     def response_from_kitty(self, boss: Boss, window: Window | None, payload_get: PayloadGetType) -> ResponseType:
@@ -147,8 +159,7 @@ Idempotency key.
         try:
             binding = service.guard(target, payload_get)
             request_id = payload_get('request_id')
-            fingerprint = json.dumps([wid, binding['instance_id'], action, arguments,
-                                      payload_get('expected_agent'), payload_get('expected_session')])
+            fingerprint = json.dumps([wid, binding['instance_id'], action, arguments, payload_get('expected_agent'), payload_get('expected_session')])
             replay = service.replay(request_id, fingerprint)
             if replay is not None:
                 return json.dumps(replay, sort_keys=True)
@@ -164,7 +175,12 @@ Idempotency key.
             published = boss.agent_tracker.observe(target)
             current, visible_idle = snapshot_for_window(target, target.agent_detection_snapshot())
             reported_idle = any(r.get('state') == 'idle' for r in target.program_status.as_list())
-            if current is None or current.agent != agent or current.state not in (AgentState.idle, AgentState.done) or not (current.state == AgentState.done or visible_idle or (authority_for(agent) is StateAuthority.full_lifecycle and reported_idle)):
+            if (
+                current is None
+                or current.agent != agent
+                or current.state not in (AgentState.idle, AgentState.done)
+                or not (current.state == AgentState.done or visible_idle or (authority_for(agent) is StateAuthority.full_lifecycle and reported_idle))
+            ):
                 reject('prompt requires live idle state')
             baseline_seq = agent_event_cursor(boss)
             data = arguments[0].encode('utf-8')
@@ -180,13 +196,20 @@ Idempotency key.
             boss.set_active_window(target, switch_os_window_if_needed=True)
         else:
             target.send_key('ctrl+c')
-        result = {'window_id': wid, 'action': action,
-                           'baseline_seq': baseline_seq if action == 'prompt' else agent_event_cursor(boss),
-                           'identity': {'agent': agent, 'session_id': session_ref_of_window(target, agent),
-                                        'foreground_pid': agent_identity(target)[2],
-                                        'generation': published.generation if action == 'prompt' and published else None},
-                           'input_requested': action in ('prompt', 'send-keys'),
-                            'focus_requested': action == 'focus', 'cancel_requested': action == 'cancel'}
+        result = {
+            'window_id': wid,
+            'action': action,
+            'baseline_seq': baseline_seq if action == 'prompt' else agent_event_cursor(boss),
+            'identity': {
+                'agent': agent,
+                'session_id': session_ref_of_window(target, agent),
+                'foreground_pid': agent_identity(target)[2],
+                'generation': published.generation if action == 'prompt' and published else None,
+            },
+            'input_requested': action in ('prompt', 'send-keys'),
+            'focus_requested': action == 'focus',
+            'cancel_requested': action == 'cancel',
+        }
         result.update({k: binding[k] for k in ('runtime_epoch', 'instance_id', 'binding_revision')})
         if action == 'cancel':
             result['confirmation'] = 'unavailable'

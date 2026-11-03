@@ -1,6 +1,7 @@
 #!/usr/bin/env python
 # License: GPLv3 Copyright: 2026, Kovid Goyal <kovid at kovidgoyal.net>
 """One-shot event batches, optionally waiting on a Boss timer (not a subscription)."""
+
 import json
 import re
 from typing import Any
@@ -31,7 +32,9 @@ def validate(get: Any) -> dict:
             raise RemoteControlErrorWithoutTraceback('Invalid ' + key)
         result[key] = value
     until = get('until', 'changed')
-    if not isinstance(until, str) or (until != 'changed' and (not until or any(s not in {'idle', 'working', 'blocked', 'done', 'unknown'} for s in until.split(',')))):
+    if not isinstance(until, str) or (
+        until != 'changed' and (not until or any(s not in {'idle', 'working', 'blocked', 'done', 'unknown'} for s in until.split(',')))
+    ):
         raise RemoteControlErrorWithoutTraceback('Invalid until')
     result['until'] = until
     result['require_working'] = get('require_working', False)
@@ -52,12 +55,19 @@ def validate(get: Any) -> dict:
 def batch(boss: Any, spec: dict) -> dict:
     w = boss.window_id_map.get(spec['window_id'])
     if w is None:
-        return {'reason': 'window_closed', 'events': [], 'next_seq': agent_event_cursor(boss),
-                'working_seq': spec['working_seq'], 'working_generation': spec['working_generation']}
+        return {
+            'reason': 'window_closed',
+            'events': [],
+            'next_seq': agent_event_cursor(boss),
+            'working_seq': spec['working_seq'],
+            'working_generation': spec['working_generation'],
+        }
     result = boss.agent_tracker.event_batch(spec['window_id'], spec['after_seq'], spec['max_events'])
-    if (detect_agent(w.child.foreground_processes) != spec['agent'] or
-          session_id_of_window(w, spec['agent']) != spec['_session'] or
-          agent_identity(w) != spec['_identity']):
+    if (
+        detect_agent(w.child.foreground_processes) != spec['agent']
+        or session_id_of_window(w, spec['agent']) != spec['_session']
+        or agent_identity(w) != spec['_identity']
+    ):
         result['reason'] = 'identity_changed'
     elif result['reason'] == 'changed' and spec['until'] != 'changed':
         matched = False
@@ -100,12 +110,13 @@ class Waiter:
             pass  # A disconnected RC peer must not abort Boss lifecycle work.
         finally:
             from kitty.remote_control import active_async_requests
+
             active_async_requests.pop(self.key, None)
             if not pending(self.boss) and getattr(self.boss, '_agent_observe_timer', 0):
                 remove_timer(self.boss._agent_observe_timer)
                 self.boss._agent_observe_timer = 0
 
-    def timeout(self, timer_id: int) -> None:
+    def timeout(self, timer_id: int | None) -> None:
         self.timer = 0
         observe_pending(self.boss)
         self.close(batch(self.boss, self.spec))
@@ -137,7 +148,7 @@ class AgentWait(RemoteCommand):
     desc = 'One-shot bounded event batch, not a subscription. Omitted after-seq starts at the current cursor.'
     is_asynchronous = True
     response_timeout = 310
-    protocol_spec = '''match/str: Exact id:N selector
+    protocol_spec = """match/str: Exact id:N selector
 expected_agent/str: Required agent identity
 expected_session/str: Optional session identity
 after_seq/int: Event cursor
@@ -147,8 +158,8 @@ until/str: changed or comma-separated states
 require_working/bool: Require observed working before a terminal state
  timeout_ms/int: Wait duration, at most 300000 ms
 max_events/int: Batch limit, at most 100
-'''
-    options_spec = '''--match
+"""
+    options_spec = """--match
 Exact id:N selector (required).
 
 
@@ -196,17 +207,33 @@ Maximum wait in milliseconds, 0..300000.
 type=int
 default=100
 Maximum events, 1..100.
-'''
+"""
 
     def message_to_kitty(self, global_opts: Any, opts: Any, args: Any) -> dict:
         if args:
             self.fatal('agent-wait takes no positional arguments')
-        payload = {k: getattr(opts, k) for k in ('match', 'expected_agent', 'expected_session', 'after_seq', 'timeout_ms', 'max_events', 'until', 'require_working', 'working_seq', 'working_generation')}
+        payload = {
+            k: getattr(opts, k)
+            for k in (
+                'match',
+                'expected_agent',
+                'expected_session',
+                'after_seq',
+                'timeout_ms',
+                'max_events',
+                'until',
+                'require_working',
+                'working_seq',
+                'working_generation',
+            )
+        }
         validate(payload.get)
         return payload
 
     def response_from_kitty(self, boss: Any, window: Any, payload_get: Any) -> Any:
-        get = lambda key, default=None: payload_get(key, missing=default)
+        def get(key: Any, default: Any = None) -> Any:
+            return payload_get(key, missing=default)
+
         spec = validate(get)
         cursor = agent_event_cursor(boss)
         if spec['after_seq'] == -1:

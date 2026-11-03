@@ -1,12 +1,15 @@
 """RC history safety checks, run using the kitty launcher test runner."""
+
 from types import SimpleNamespace
-from unittest.mock import Mock
 from unittest import TestCase
+from unittest.mock import Mock
 
 from kitty.rc.agent_read import HistoryWaiter, agent_read, mouse_guard, read_terminal
 
+
 class AgentHistoryRC(TestCase):
     ae = TestCase.assertEqual
+
     def test_rendered_limit_before_unwrap(self):
         window = SimpleNamespace(as_text=lambda **kw: 'old\nfirst\rsecond\nlast\n')
         result = read_terminal(window, 'recent-unwrapped', 2)

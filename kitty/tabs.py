@@ -53,6 +53,7 @@ from .fast_data_types import (
     set_active_tab,
     set_active_window,
     set_agents_sidebar,
+    set_native_tab_title,
     set_redirect_keys_to_overlay,
     set_tab_being_dragged,
     set_tab_layout_name,
@@ -60,14 +61,12 @@ from .fast_data_types import (
     start_drag_with_data,
     swap_tabs,
     sync_os_window_title,
-    set_native_tab_title,
 )
 from .layout.base import DragOverlayMode, Layout
 from .layout.interface import all_layouts, create_layout_object_for, evict_cached_layouts
 from .layout.splits import Splits
 from .progress import ProgressState
 from .tab_bar import TabBar, TabBarData, WindowDropTarget, tab_title_for_os_window
-
 from .types import DockSpec, ac
 from .typing_compat import EdgeLiteral, SessionTab, SessionType, TypedDict
 from .utils import cmdline_for_hold, color_as_int, log_error, natsort_key, platform_window_id, resolved_shell, shlex_split, which
@@ -460,6 +459,7 @@ class Tab:  # {{{
         if last_used and last_used != self._current_layout_name and last_used in self.enabled_layouts:
             self._last_used_layout = last_used
 
+    def serialize_state(self) -> dict[str, Any]:
         return {
             'version': 1,
             'id': self.id,
@@ -1746,6 +1746,7 @@ class TabManager:  # {{{
         if tab is self.active_tab:
             sync_os_window_title(self.os_window_id)
         self.mark_tab_bar_dirty()
+
     def resize(self, only_tabs: bool = False) -> None:
         if self.agent_sidebar_enabled:
             self.update_native_agents_sidebar()

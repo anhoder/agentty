@@ -28,8 +28,16 @@ def load_command():
             raise ValueError('bad key')
         return SimpleNamespace(is_native=key.startswith('0x'), key=0 if key == 'invalid' else 1)
 
+    class PayloadGetter:
+        def __init__(self, cmd, payload):
+            self.cmd, self.payload = cmd, payload
+
+        def __call__(self, key, opt_name=None, missing=None):
+            return self.payload.get(key, missing)
+
     base = dict.fromkeys(('ArgsType', 'Boss', 'PayloadGetType', 'PayloadType', 'RCOptions', 'ResponseType', 'Window'), object)
-    base.update(RemoteCommand=RemoteCommand, RemoteControlErrorWithoutTraceback=ValueError)
+    base.update(RemoteCommand=RemoteCommand, RemoteControlErrorWithoutTraceback=ValueError, PayloadGetter=PayloadGetter)
+
     class StateAuthority:
         full_lifecycle = 'full_lifecycle'
 
@@ -37,17 +45,18 @@ def load_command():
         return StateAuthority.full_lifecycle
 
     deps = {
-            'kitty.rc.base': module('kitty.rc.base', **base),
-            'kitty.agents': module('kitty.agents', AgentState=SimpleNamespace(idle='idle', done='done'),
-                               agent_event_cursor=lambda boss: boss.cursor,
-                               agent_identity=lambda w: ('claude', w.session, 1234),
-                               detect_agent=lambda p: p[0]['agent'] if p else None,
-                               session_ref_of_window=lambda w, a: w.session,
-                               snapshot_for_window=lambda w, s: (SimpleNamespace(agent=w.child.foreground_processes[0]['agent'],
-                                                                               state=w.state), False)),
-         'kitty.agent_manifest': module('kitty.agent_manifest', authority_for=authority_for,
-                                        StateAuthority=StateAuthority),
-         'kitty.options.utils': module('kitty.options.utils', parse_shortcut=parse),
+        'kitty.rc.base': module('kitty.rc.base', **base),
+        'kitty.agents': module(
+            'kitty.agents',
+            AgentState=SimpleNamespace(idle='idle', done='done'),
+            agent_event_cursor=lambda boss: boss.cursor,
+            agent_identity=lambda w: ('claude', w.session, 1234),
+            detect_agent=lambda p: p[0]['agent'] if p else None,
+            session_ref_of_window=lambda w, a: w.session,
+            snapshot_for_window=lambda w, s: (SimpleNamespace(agent=w.child.foreground_processes[0]['agent'], state=w.state), False),
+        ),
+        'kitty.agent_manifest': module('kitty.agent_manifest', authority_for=authority_for, StateAuthority=StateAuthority),
+        'kitty.options.utils': module('kitty.options.utils', parse_shortcut=parse),
         'kitty.utils': module('kitty.utils', sanitize_for_bracketed_paste=lambda b: b),
     }
     spec = importlib.util.spec_from_file_location('kitty.rc.agent_control', Path(__file__).resolve().parents[1] / 'kitty/rc/agent_control.py')
@@ -83,9 +92,12 @@ class AgentControlRC(unittest.TestCase):
     def setUp(self):
         self.mod = load_command()
         self.window = FakeWindow()
-        self.boss = SimpleNamespace(match_windows=Mock(return_value=[self.window]), set_active_window=Mock(), cursor=17,
-                                    agent_tracker=SimpleNamespace(observe=Mock(return_value=SimpleNamespace(generation=3)),
-                                                                  snapshot_for=lambda wid: None))
+        self.boss = SimpleNamespace(
+            match_windows=Mock(return_value=[self.window]),
+            set_active_window=Mock(),
+            cursor=17,
+            agent_tracker=SimpleNamespace(observe=Mock(return_value=SimpleNamespace(generation=3)), snapshot_for=lambda wid: None),
+        )
         self.payload = dict(action='prompt', arguments=['hello'], match='id:42', expected_agent='claude')
 
     def run_command(self, **changes):
@@ -127,7 +139,7 @@ class AgentControlRC(unittest.TestCase):
         self.assertEqual(result['identity']['generation'], 3)
         self.boss.agent_tracker.observe.assert_called_once_with(self.window)
         self.assertFalse(result['cancel_requested'])
-        self.assertEqual(self.window.events, [('write', br'hello\n\t\u1234'), ('keys', ('enter',))])
+        self.assertEqual(self.window.events, [('write', rb'hello\n\t\u1234'), ('keys', ('enter',))])
 
     def test_controls_and_utf8(self):
         for text in ('a\x1bb', '\r', '\x00', '\x7f', '\x85', '\ud800', ''):

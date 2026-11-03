@@ -16,11 +16,20 @@ from typing import Any
 
 OPENCODE_EVENT_VERSION = 1
 OPENCODE_CAPABILITIES = frozenset({'session_lifecycle', 'session_status', 'parent_session', 'interaction_id'})
-OPENCODE_EVENT_TYPES = frozenset({
-    'session.created', 'session.status', 'session.idle', 'permission.asked',
-    'permission.replied', 'question.asked', 'question.replied',
-    'question.rejected', 'session.error', 'session.deleted',
-})
+OPENCODE_EVENT_TYPES = frozenset(
+    {
+        'session.created',
+        'session.status',
+        'session.idle',
+        'permission.asked',
+        'permission.replied',
+        'question.asked',
+        'question.replied',
+        'question.rejected',
+        'session.error',
+        'session.deleted',
+    }
+)
 
 
 def opencode_broker_event(event: Mapping[str, Any], event_id: str) -> dict[str, Any] | None:
@@ -37,8 +46,7 @@ def opencode_broker_event(event: Mapping[str, Any], event_id: str) -> dict[str, 
     normalized = normalize_opencode_event(event)
     if normalized is None:
         return None
-    value = {'kind': normalized['type'], 'session_id': normalized['session_id'],
-             'event_id': event_id, 'payload': {}}
+    value = {'kind': normalized['type'], 'session_id': normalized['session_id'], 'event_id': event_id, 'payload': {}}
     for key in ('parent_session_id', 'interaction_id'):
         if key in normalized:
             value[key] = normalized[key]
@@ -72,17 +80,23 @@ def normalize_opencode_event(event: Mapping[str, Any]) -> dict[str, Any] | None:
     if session_id is None:
         return None
     result: dict[str, Any] = {
-        'version': OPENCODE_EVENT_VERSION, 'provider': 'opencode',
-        'type': event_type, 'session_id': session_id,
+        'version': OPENCODE_EVENT_VERSION,
+        'provider': 'opencode',
+        'type': event_type,
+        'session_id': session_id,
     }
     parent = _identifier(info.get('parentID'))
     if parent is not None:
         result['parent_session_id'] = parent
     state = {
-        'session.idle': 'idle', 'permission.asked': 'blocked',
-        'question.asked': 'blocked', 'permission.replied': 'working',
-        'question.replied': 'working', 'question.rejected': 'working',
-        'session.error': 'error', 'session.deleted': 'clear',
+        'session.idle': 'idle',
+        'permission.asked': 'blocked',
+        'question.asked': 'blocked',
+        'permission.replied': 'working',
+        'question.replied': 'working',
+        'question.rejected': 'working',
+        'session.error': 'error',
+        'session.deleted': 'clear',
     }.get(event_type)
     if event_type == 'session.status':
         status = properties.get('status')

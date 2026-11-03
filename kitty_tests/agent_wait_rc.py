@@ -1,12 +1,13 @@
 """Isolated RC tests: no native kitty imports or subprocesses."""
-import importlib.util
+
 import ast
-from collections import deque
-from dataclasses import asdict, dataclass
+import importlib.util
 import json
 import sys
 import types
 import unittest
+from collections import deque
+from dataclasses import asdict, dataclass
 from pathlib import Path
 from unittest.mock import patch
 
@@ -33,16 +34,21 @@ class AgentWaitTest(unittest.TestCase):
         kt.AsyncResponse = type('AsyncResponse', (), {})
         rc = types.ModuleType('kitty.remote_control')
         rc.active_async_requests = {}
-        self.stub = patch.dict(sys.modules, {'kitty.agents': agents, 'kitty.fast_data_types': native,
-                                            'kitty.rc.base': base, 'kitty.types': kt, 'kitty.remote_control': rc})
+        self.stub = patch.dict(
+            sys.modules, {'kitty.agents': agents, 'kitty.fast_data_types': native, 'kitty.rc.base': base, 'kitty.types': kt, 'kitty.remote_control': rc}
+        )
         self.stub.start()
         self.addCleanup(self.stub.stop)
         path = Path(__file__).resolve().parents[1] / 'kitty/rc/agent_wait.py'
         spec = importlib.util.spec_from_file_location('kitty.rc.agent_wait_isolated', path)
         self.mod = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(self.mod)
-        self.tracker = types.SimpleNamespace(event_seq=4, event_batch=lambda *a: {'reason': 'timeout', 'next_seq': 4, 'events': []},
-                                             snapshot_for=lambda wid: types.SimpleNamespace(generation=1), observe=lambda w: None)
+        self.tracker = types.SimpleNamespace(
+            event_seq=4,
+            event_batch=lambda *a: {'reason': 'timeout', 'next_seq': 4, 'events': []},
+            snapshot_for=lambda wid: types.SimpleNamespace(generation=1),
+            observe=lambda w: None,
+        )
         self.window = types.SimpleNamespace(child=types.SimpleNamespace(foreground_processes='codex', pid=42), session='s')
         self.boss = types.SimpleNamespace(agent_tracker=self.tracker, window_id_map={1: self.window})
         self.payload = {'match': 'id:1', 'expected_agent': 'codex', 'timeout_ms': 100, 'async_id': 'a'}
@@ -51,8 +57,16 @@ class AgentWaitTest(unittest.TestCase):
         return self.mod.agent_wait.response_from_kitty(self.boss, None, lambda key, missing=None: self.payload.get(key, missing))
 
     def test_validation(self):
-        for key, value in (('match', 'all'), ('match', 'id:-1'), ('expected_agent', ''),
-                           ('timeout_ms', 300001), ('after_seq', -2), ('after_seq', None), ('max_events', 0), ('after_seq', True)):
+        for key, value in (
+            ('match', 'all'),
+            ('match', 'id:-1'),
+            ('expected_agent', ''),
+            ('timeout_ms', 300001),
+            ('after_seq', -2),
+            ('after_seq', None),
+            ('max_events', 0),
+            ('after_seq', True),
+        ):
             with self.subTest(key=key, value=value), patch.dict(self.payload, {key: value}):
                 with self.assertRaises(ValueError):
                     self.request()
@@ -88,8 +102,7 @@ class AgentWaitTest(unittest.TestCase):
         path = Path(__file__).resolve().parents[1] / 'kitty/agents.py'
         tree = ast.parse(path.read_text())
         nodes = [n for n in tree.body if isinstance(n, ast.ClassDef) and n.name in {'AgentSnapshot', 'AgentTracker'}]
-        namespace = {'Any': object, 'AgentState': str, 'dataclass': dataclass, 'asdict': asdict,
-                     'deque': deque, 'Sequence': list}
+        namespace = {'Any': object, 'AgentState': str, 'dataclass': dataclass, 'asdict': asdict, 'deque': deque, 'Sequence': list}
         exec(compile(ast.Module(body=nodes, type_ignores=[]), str(path), 'exec'), namespace)
         self.boss.agent_tracker = self.tracker = namespace['AgentTracker']()
         self.tracker.observe = lambda w: None
@@ -134,10 +147,19 @@ class AgentWaitTest(unittest.TestCase):
         async_response = self.mod.AsyncResponse
         no_response = type('NoResponse', (), {})
         command = types.SimpleNamespace(reads_streaming_data=False, cancel_async_request=lambda *a: None)
-        namespace = dict(Any=object, BossType=object, WindowType=object, AsyncResponse=async_response,
-                         NoResponse=no_response, version=(1, 0), active_async_requests=active,
-                         active_streams={}, monotonic=lambda: 1, command_for_name=lambda n: command,
-                         PayloadGetter=lambda c, p: p)
+        namespace = dict(
+            Any=object,
+            BossType=object,
+            WindowType=object,
+            AsyncResponse=async_response,
+            NoResponse=no_response,
+            version=(1, 0),
+            active_async_requests=active,
+            active_streams={},
+            monotonic=lambda: 1,
+            command_for_name=lambda n: command,
+            PayloadGetter=lambda c, p: p,
+        )
         exec(compile(ast.Module(body=[node], type_ignores=[]), str(path), 'exec'), namespace)
         handle = namespace['handle_cmd']
         cmd = {'version': (1, 0), 'cmd': 'agent-wait', 'async': 'a'}
@@ -147,8 +169,10 @@ class AgentWaitTest(unittest.TestCase):
             self.assertEqual('a' in active, isinstance(answer, async_response))
         handle(self.boss, None, dict(cmd, cancel_async=True), 0, None)
         self.assertFalse(active)
+
         def fail(*a):
             raise ValueError('failed')
+
         command.response_from_kitty = fail
         with self.assertRaises(ValueError):
             handle(self.boss, None, cmd.copy(), 0, None)
@@ -188,8 +212,7 @@ class AgentWaitTest(unittest.TestCase):
         self.tracker.event_batch = lambda *a: {'reason': 'changed', 'events': list(events), 'next_seq': events[-1]['seq']}
         self.request()
         self.assertFalse(self.sent)
-        events[:] = [{'seq': 2, 'snapshot': {'state': 'working', 'generation': 1}},
-                     {'seq': 3, 'snapshot': {'state': 'done', 'generation': 1}}]
+        events[:] = [{'seq': 2, 'snapshot': {'state': 'working', 'generation': 1}}, {'seq': 3, 'snapshot': {'state': 'done', 'generation': 1}}]
         self.mod.wake_waiters(self.boss, 1)
         self.assertEqual(self.sent[0]['reason'], 'changed')
 

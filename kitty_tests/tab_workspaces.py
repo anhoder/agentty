@@ -83,7 +83,6 @@ class TestTabWorkspaces(BaseTest):
             with self.subTest(title=title):
                 self.ae(index_for_new_tab(titles, 0, 'by-title', title), expected)
 
-
     def test_switching_tabs_relayouts_new_active_tab(self):
         tabs = [
             SimpleNamespace(active_window=None, relayout=Mock(), relayout_borders=Mock()),

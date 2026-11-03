@@ -293,6 +293,9 @@ IGNORED_DEPENDENCY_CVES = [
     'CVE-2026-12345',  # tempfile.TemporaryDirectory cleanup symlink attack
     # github.com/nwaples/rardecode/v2
     'CVE-2025-11579',  # rardecode is version 2.2.1, not vulnerable
+    # Newly flagged by grype, erroneously marked fixed in unreleased versions
+    'CVE-2026-103995',  # python stdlib, fixed in unreleased python 3.16
+    'CVE-2026-119376',  # sqlite bundled in sw, fixed in unreleased sqlite 3.54
 ]
 
 

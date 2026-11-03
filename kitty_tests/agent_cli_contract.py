@@ -1,12 +1,13 @@
 """System-Python contracts using production AST, without native UI imports."""
+
 import ast
 import dataclasses
 import importlib.util
-from pathlib import Path
+import re
 import sys
 import types
 import unittest
-import re
+from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -75,15 +76,31 @@ def contracts():
     ns['RemoteCommand'] = types.SimpleNamespace(Args=ns['ArgsHandling'], CompletionSpec=module.CompletionSpec)
     result = {}
     for name in ('agent', 'agent_control', 'agent_wait', 'agent_resume', 'agent_start', 'agent_events', 'agent_subscribe', 'agent_read', 'agent_prompt'):
-        wanted = {'agent': 'Agent', 'agent_control': 'AgentControl', 'agent_wait': 'AgentWait', 'agent_resume': 'AgentResume', 'agent_start': 'AgentStart', 'agent_events': 'AgentEvents', 'agent_subscribe': 'AgentSubscribe', 'agent_read': 'AgentRead', 'agent_prompt': 'AgentPrompt'}[name]
+        wanted = {
+            'agent': 'Agent',
+            'agent_control': 'AgentControl',
+            'agent_wait': 'AgentWait',
+            'agent_resume': 'AgentResume',
+            'agent_start': 'AgentStart',
+            'agent_events': 'AgentEvents',
+            'agent_subscribe': 'AgentSubscribe',
+            'agent_read': 'AgentRead',
+            'agent_prompt': 'AgentPrompt',
+        }[name]
         cls = next(n for n in nodes(f'kitty/rc/{name}.py') if isinstance(n, ast.ClassDef) and n.name == wanted)
         local = dict(ns)
         if name == 'agent_subscribe':
             local['AgentEvents'] = types.SimpleNamespace(**{k: result['agent_events'][k] for k in ('options_spec', 'protocol_spec')})
         if name == 'agent_prompt':
             local['agent_control'] = types.SimpleNamespace(options_spec=result['agent_control']['options_spec'])
-        execute([n for n in cls.body if isinstance(n, ast.Assign) and any(
-            isinstance(t, ast.Name) and t.id in {'args', 'options_spec', 'protocol_spec'} for t in n.targets)], local)
+        execute(
+            [
+                n
+                for n in cls.body
+                if isinstance(n, ast.Assign) and any(isinstance(t, ast.Name) and t.id in {'args', 'options_spec', 'protocol_spec'} for t in n.targets)
+            ],
+            local,
+        )
         result[name] = local
     return result
 
@@ -97,8 +114,7 @@ class AgentCLIContract(unittest.TestCase):
         c = self.commands[name]
         seq, _ = c['parse_option_spec'](c['options_spec'])
         options = {o.go_var_name: o for o in (c['GoOption'](x) for x in seq if not isinstance(x, str))}
-        return {f.field: f for f in (c['JSONField'](line.strip(), {}, options)
-                for line in c['protocol_spec'].splitlines() if ':' in line)}
+        return {f.field: f for f in (c['JSONField'](line.strip(), {}, options) for line in c['protocol_spec'].splitlines() if ':' in line)}
 
     def test_real_option_defaults(self):
         c = self.commands['agent_wait']
@@ -107,7 +123,7 @@ class AgentCLIContract(unittest.TestCase):
         seq, _ = c['parse_option_spec'](c['options_spec'].replace('MATCH_WINDOW_OPTION', ''))
         defaults = {o.obj_defn.dest.replace('-', '_'): c['defval_for_opt'](o.obj_defn) for o in (c['GoOption'](x) for x in seq if not isinstance(x, str))}
         source = (ROOT / 'kitty/rc/agent_wait.py').read_text()
-        for key, value in re.findall(r'--([a-z-]+)\n(?:type=[^\n]+\n)?default=([^\n]+)', source[source.index('options_spec'):]):
+        for key, value in re.findall(r'--([a-z-]+)\n(?:type=[^\n]+\n)?default=([^\n]+)', source[source.index('options_spec') :]):
             defaults[key.replace('-', '_')] = int(value) if value.lstrip('-').isdigit() else value
         defaults.update(after_seq=-1, require_working=False)
         for key, value in {'after_seq': -1, 'timeout_ms': 0, 'max_events': 100, 'until': 'changed', 'require_working': False}.items():
@@ -116,7 +132,21 @@ class AgentCLIContract(unittest.TestCase):
 
     def test_protocol_fields_and_omitempty(self):
         fields = self.fields('agent_wait')
-        self.assertEqual(set(fields), {'match', 'expected_agent', 'expected_session', 'after_seq', 'until', 'require_working', 'timeout_ms', 'max_events', 'working_seq', 'working_generation'})
+        self.assertEqual(
+            set(fields),
+            {
+                'match',
+                'expected_agent',
+                'expected_session',
+                'after_seq',
+                'until',
+                'require_working',
+                'timeout_ms',
+                'max_events',
+                'working_seq',
+                'working_generation',
+            },
+        )
         self.assertIn('json:"after_seq', fields['after_seq'].go_declaration())
         self.assertFalse(fields['after_seq'].omitempty)
         for name in self.commands:

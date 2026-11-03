@@ -44,8 +44,7 @@ class BrokerTest(unittest.TestCase):
         self.fail('broker did not reach expected state')
 
     def registration(self, token):
-        return dict(type='register', protocol_version=1, token=token,
-                    agent='opencode', session_id='ses_test123', capabilities=['cancel'])
+        return dict(type='register', protocol_version=1, token=token, agent='opencode', session_id='ses_test123', capabilities=['cancel'])
 
     def test_socket_and_disconnect(self):
         self.assertEqual(stat.S_IMODE(os.stat(self.broker.directory).st_mode), 0o700)
@@ -85,14 +84,12 @@ class BrokerTest(unittest.TestCase):
         client.settimeout(0.05)
         with self.assertRaises(socket.timeout):
             client.recv(1)
-        client.sendall((json.dumps(dict(type='event', event=dict(
-            kind='session.idle', session_id='ses_test123'))) + '\n').encode())
+        client.sendall((json.dumps(dict(type='event', event=dict(kind='session.idle', session_id='ses_test123'))) + '\n').encode())
         self.pump(lambda: len(self.reports) == 2)
         self.assertEqual(self.reports[-1][1]['event']['kind'], 'session.idle')
 
     def test_unknown_session_and_kind(self):
-        for event in (dict(kind='session.status', session_id='child', parent_session_id='ses_test123'),
-                      dict(kind='unknown', session_id='ses_test123')):
+        for event in (dict(kind='session.status', session_id='child', parent_session_id='ses_test123'), dict(kind='unknown', session_id='ses_test123')):
             token, _ = self.broker.prepare()
             self.broker.bind(token, self.window)
             client = self.connect(self.registration(token))
@@ -114,12 +111,20 @@ class BrokerTest(unittest.TestCase):
         self.broker.bind(token, self.window)
         c = self.connect(self.registration(token))
         self.pump(lambda: self.broker.tokens[token][2] is not None)
-        self.broker.receive(c._broker_client if hasattr(c, '_broker_client') else next(x for x in self.broker.clients if x['token'] == token),
-                            {'type': 'event', 'event': {'kind': 'gap', 'session_id': 'ses_test123',
-                             'payload': {'reason': 'reconnect', 'partial': True, 'children': 'unknown'}}})
-        self.broker.receive(next(x for x in self.broker.clients if x['token'] == token),
-                            {'type': 'event', 'event': {'kind': 'session.status', 'session_id': 'ses_test123',
-                             'payload': {'status': 'idle', 'snapshot': True, 'partial': True}}})
+        self.broker.receive(
+            c._broker_client if hasattr(c, '_broker_client') else next(x for x in self.broker.clients if x['token'] == token),
+            {
+                'type': 'event',
+                'event': {'kind': 'gap', 'session_id': 'ses_test123', 'payload': {'reason': 'reconnect', 'partial': True, 'children': 'unknown'}},
+            },
+        )
+        self.broker.receive(
+            next(x for x in self.broker.clients if x['token'] == token),
+            {
+                'type': 'event',
+                'event': {'kind': 'session.status', 'session_id': 'ses_test123', 'payload': {'status': 'idle', 'snapshot': True, 'partial': True}},
+            },
+        )
         self.assertEqual(len(self.reports), 3)
         self.assertIsNotNone(self.broker.tokens[token][2])
 

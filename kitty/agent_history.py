@@ -8,6 +8,7 @@ restoration. An identity must include process/screen generation, not just a PID.
 This collects visible scrollable text, never a full transcript.
 """
 
+from collections.abc import Sequence
 from dataclasses import dataclass
 
 
@@ -38,12 +39,23 @@ class HistoryRead:
     ``redraw`` reports output activity even when the text is unchanged.
     """
 
-    def __init__(self, initial_rows: list[str], columns: int, lines: int, now: float,
-                 *, passive_text: str | None = None, identity: object = None,
-                 requested_lines: int | None = None,
-                 strip_header: int = 0, strip_footer: int = 0,
-                 max_pages: int = 128, max_bytes: int = 1024 * 1024,
-                 max_duration: float = 15, restore_duration: float = 5):
+    def __init__(
+        self,
+        initial_rows: list[str],
+        columns: int,
+        lines: int,
+        now: float,
+        *,
+        passive_text: str | None = None,
+        identity: object = None,
+        requested_lines: int | None = None,
+        strip_header: int = 0,
+        strip_footer: int = 0,
+        max_pages: int = 128,
+        max_bytes: int = 1024 * 1024,
+        max_duration: float = 15,
+        restore_duration: float = 5,
+    ):
         if columns < 1 or lines != len(initial_rows) or lines < 1:
             raise ValueError('invalid initial dimensions')
         if min(strip_header, strip_footer) < 0 or strip_header + strip_footer >= lines:
@@ -63,7 +75,7 @@ class HistoryRead:
         self.restore_duration = min(restore_duration, 5)
         self.phase = 'settle'
         self.last = self.initial
-        self.quiet = now + .010
+        self.quiet = now + 0.010
         self.deadline = self.quiet
         self.previous = self._body(self.initial)
         self.history = self.previous
@@ -76,7 +88,7 @@ class HistoryRead:
         self.cancelled = False
 
     def _body(self, rows: tuple[str, ...]) -> tuple[str, ...]:
-        return rows[self.header:len(rows) - self.footer if self.footer else len(rows)]
+        return rows[self.header : len(rows) - self.footer if self.footer else len(rows)]
 
     def cancel(self, now: float) -> None:
         """Request cancellation; no I/O occurs until the next guarded step."""
@@ -88,19 +100,18 @@ class HistoryRead:
         reason = self.reason or 'reached_top'
         if restoration == 'failed':
             reason = 'restoration_failed'
-        collected = self.history if self.requested_lines is None else self.history[-self.requested_lines:]
-        truncated = (not success or not self.reached_top or
-                     (self.requested_lines is not None and len(self.history) > self.requested_lines))
-        self.result = Result('\n'.join(collected) if success else self.passive,
-                             'viewport_history' if success else 'passive', reason,
-                             restoration, self.active, truncated)
+        collected = self.history if self.requested_lines is None else self.history[-self.requested_lines :]
+        truncated = not success or not self.reached_top or (self.requested_lines is not None and len(self.history) > self.requested_lines)
+        self.result = Result(
+            '\n'.join(collected) if success else self.passive, 'viewport_history' if success else 'passive', reason, restoration, self.active, truncated
+        )
         return Action('done', result=self.result)
 
     def _wheel(self, direction: str, amount: int, phase: str, now: float) -> Action:
         self.active = True
         self.phase = phase
-        self.deadline = now + .120
-        self.quiet = now + .010
+        self.deadline = now + 0.120
+        self.quiet = now + 0.010
         return Action('wheel', direction, amount)
 
     def _restore(self, rows: tuple[str, ...], now: float) -> Action:
@@ -112,9 +123,18 @@ class HistoryRead:
             return self._wheel('down', self.up_events, 'restore', now)
         return self._finish('restored' if rows == self.initial else 'failed')
 
-    def step(self, rows: list[str], cols: int, now: float, valid: bool = True,
-             *, identity: object = None, working: bool = False,
-             unknown: bool = False, redraw: bool = False) -> Action:
+    def step(
+        self,
+        rows: Sequence[str],
+        cols: int,
+        now: float,
+        valid: bool = True,
+        *,
+        identity: object = None,
+        working: bool = False,
+        unknown: bool = False,
+        redraw: bool = False,
+    ) -> Action:
         if self.result is not None:
             return Action('done', result=self.result)
         rows = tuple(rows)
@@ -125,14 +145,13 @@ class HistoryRead:
         restoring = self.phase in ('restore', 'restore_probe')
         resized = cols != self.columns or len(rows) != self.lines
         if not restoring and (self.cancelled or resized or working or unknown or now >= self.end):
-            self.reason = self.reason or ('resized' if resized else 'working' if working else
-                                          'unknown' if unknown else 'timeout')
+            self.reason = self.reason or ('resized' if resized else 'working' if working else 'unknown' if unknown else 'timeout')
             return self._restore(rows, now)
         if restoring and now >= self.restore_end:
             return self._finish('failed')
         if rows != self.last or redraw:
             self.last = rows
-            self.quiet = now + .010
+            self.quiet = now + 0.010
         if now < self.quiet:
             return Action('wait')
         if restoring:
@@ -156,20 +175,19 @@ class HistoryRead:
             if rows == self.last_page:
                 self.reached_top = True
                 return self._restore(rows, now)
-            if (rows[:self.header] != self.initial[:self.header] or
-                (self.footer and rows[-self.footer:] != self.initial[-self.footer:])):
+            if rows[: self.header] != self.initial[: self.header] or (self.footer and rows[-self.footer :] != self.initial[-self.footer :]):
                 self.reason = 'chrome_changed'
                 return self._restore(rows, now)
             body = self._body(rows)
             # All plausible alignments must agree. Single-row and whitespace
             # anchors are deliberately insufficient evidence of continuity.
-            overlaps = [n for n in range(2, min(len(body), len(self.previous)))
-                        if body[-n:] == self.previous[:n]
-                        and sum(bool(x.strip()) for x in body[-n:]) >= 2]
+            overlaps = [
+                n for n in range(2, min(len(body), len(self.previous))) if body[-n:] == self.previous[:n] and sum(bool(x.strip()) for x in body[-n:]) >= 2
+            ]
             if len(overlaps) != 1:
                 self.reason = 'ambiguous_overlap' if overlaps else 'unaligned'
                 return self._restore(rows, now)
-            merged = body[:-overlaps[0]] + self.history
+            merged = body[: -overlaps[0]] + self.history
             if len('\n'.join(merged).encode('utf-8')) > self.max_bytes:
                 self.reason = 'byte_limit'
                 return self._restore(rows, now)
