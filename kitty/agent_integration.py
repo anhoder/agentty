@@ -259,9 +259,9 @@ def owned_reporter(path: str) -> bool:
 
 def opencode_plugin_config(agent: Agent) -> tuple[str, str]:
     base = os.path.dirname(agent.config_path())
-    # OpenCode's TUI loads plugins from tui.json[c], using the singular
-    # `plugin` key. It does not load cli.json plugins in the TUI.
-    for filename in ('tui.json', 'tui.jsonc'):
+    # OpenCode gives JSONC precedence over JSON. Prefer the active TUI config
+    # so installation cannot silently update an unused fallback file.
+    for filename in ('tui.jsonc', 'tui.json'):
         path = os.path.join(base, filename)
         if os.path.exists(path):
             return path, 'plugin'
