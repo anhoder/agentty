@@ -655,6 +655,7 @@ typedef struct OSWindow {
     bool has_too_few_tabs, agents_sidebar_enabled;
     unsigned int agents_sidebar_cols;
     PyObject *window_title;
+    PyObject *native_tab_title;
     bool disallow_title_changes, title_is_overriden;
     bool viewport_size_dirty, viewport_updated_at_least_once;
     monotonic_t viewport_resized_at;
@@ -737,6 +738,7 @@ typedef struct GlobalState {
         double x, y;
     } default_dpi;
     id_type active_drag_in_window, tracked_drag_in_window, mouse_hover_in_window, active_drag_resize;
+    Edge active_drag_resize_edges;
     int active_drag_button, tracked_drag_button;
     int mods_at_last_key_or_button_event;
     CloseRequest quit_request;

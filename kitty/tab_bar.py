@@ -32,6 +32,7 @@ from .fast_data_types import (
     set_tab_bar_render_data,
     split_into_graphemes,
     update_tab_bar_edge_colors,
+    replace_c0_codes_except_nl_space_tab,
     viewport_for_window,
     wcswidth,
 )
@@ -365,6 +366,12 @@ def apply_title_template(draw_data: DrawData, tab: TabBarData, index: int, max_t
         title = title_cache[key] = evaluate_title_template(draw_data, tab, index, max_title_length)
     return title
 
+
+def tab_title_for_os_window(draw_data: DrawData, tab: TabBarData, index: int) -> str:
+    title = apply_title_template(draw_data, tab, index)
+    title = re.sub(r'\x1b\[.+?[a-zA-Z]', '', title)
+    title = re.sub(r'[\n\r]', ' ', title)
+    return replace_c0_codes_except_nl_space_tab(title.encode()).decode()
 
 def evaluate_title_template(draw_data: DrawData, tab: TabBarData, index: int, max_title_length: int = 0) -> str:
     if tab.tab_id < 0:
@@ -1031,7 +1038,8 @@ class TabBar:
             available_width_for_left_margin = max(0, tab_bar.width - self.margin_width - cell_area_width)
             extra_width = max(0, tab_bar.width - 2 * self.margin_width - cell_area_width)
             left_margin = min(self.margin_width + extra_width // 2, available_width_for_left_margin)
-            self.window_geometry = g = WindowGeometry(left_margin, tab_bar.top, left_margin + cell_area_width, tab_bar.bottom, s.columns, s.lines)
+            left = tab_bar.left + left_margin
+            self.window_geometry = g = WindowGeometry(left, tab_bar.top, left + cell_area_width, tab_bar.bottom, s.columns, s.lines)
         self.laid_out_once = True
         self._last_viewport = (central, tab_bar, vw, vh)
         self.update_blank_rects(central, tab_bar, vw, vh)

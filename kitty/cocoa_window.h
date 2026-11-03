@@ -46,6 +46,7 @@ typedef enum {
     AGENTS_SIDEBAR_CLICK,
     AGENTS_SIDEBAR_MENU,
     AGENTS_SIDEBAR_RESIZE,
+    AGENTS_SIDEBAR_GROUP_TOGGLE,
     AGENTS_SIDEBAR_TOGGLE,
     COCOA_NOTIFICATION_UNTRACKED,
     NUM_COCOA_PENDING_ACTIONS,
@@ -53,6 +54,7 @@ typedef enum {
 
 void cocoa_focus_window(void *w);
 long cocoa_window_number(void *w);
+void cocoa_set_native_tab_title(void *w, const char *title);
 void cocoa_application_lifecycle_event(bool);
 void cocoa_recreate_global_menu(void);
 void cocoa_system_beep(const char *);
@@ -90,6 +92,8 @@ void cocoa_set_agents_sidebar(
     const char **,
     const unsigned char *,
     const bool *,
+    const char **,
+    size_t,
     size_t);
 void cocoa_report_live_notifications(const char *ident);
 void cocoa_set_dock_badge(const char *label);

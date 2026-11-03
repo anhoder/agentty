@@ -38,7 +38,7 @@ def load_command():
 
     deps = {
             'kitty.rc.base': module('kitty.rc.base', **base),
-            'kitty.agents': module('kitty.agents', AgentState=SimpleNamespace(idle='idle'),
+            'kitty.agents': module('kitty.agents', AgentState=SimpleNamespace(idle='idle', done='done'),
                                agent_event_cursor=lambda boss: boss.cursor,
                                agent_identity=lambda w: ('claude', w.session, 1234),
                                detect_agent=lambda p: p[0]['agent'] if p else None,
@@ -84,7 +84,8 @@ class AgentControlRC(unittest.TestCase):
         self.mod = load_command()
         self.window = FakeWindow()
         self.boss = SimpleNamespace(match_windows=Mock(return_value=[self.window]), set_active_window=Mock(), cursor=17,
-                                    agent_tracker=SimpleNamespace(observe=Mock(return_value=SimpleNamespace(generation=3))))
+                                    agent_tracker=SimpleNamespace(observe=Mock(return_value=SimpleNamespace(generation=3)),
+                                                                  snapshot_for=lambda wid: None))
         self.payload = dict(action='prompt', arguments=['hello'], match='id:42', expected_agent='claude')
 
     def run_command(self, **changes):
@@ -115,7 +116,7 @@ class AgentControlRC(unittest.TestCase):
         self.rejected()
 
     def test_live_states(self):
-        for state in ('blocked', 'working', 'unknown', 'done'):
+        for state in ('blocked', 'working', 'unknown'):
             self.window.state = state
             self.rejected()
 

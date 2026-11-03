@@ -3659,8 +3659,11 @@ together by macOS into a single window with the system tab bar. Splits inside a
 tab continue to work as normal. The options that control kitty's own tab bar,
 such as :opt:`tab_bar_style`, :opt:`tab_bar_edge` and
 :opt:`tab_activity_symbol`, have no effect when this is enabled, since the tab
-bar is drawn by the operating system. Requires macOS 10.13 or newer. Changing
-this option by reloading the config is not supported.
+bar is drawn by the operating system. :opt:`tab_title_template` still controls
+the titles displayed by the native tab bar and the OS window titlebar. An
+explicit OS window title (for example, :option:`kitty --title`) overrides only
+the window titlebar, not the native tab label. Requires macOS 10.13 or newer.
+Changing this option by reloading the config is not supported.
 """,
 )
 

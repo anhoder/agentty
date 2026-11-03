@@ -114,6 +114,9 @@ def _candidate_names(process: Mapping[str, Any]) -> Sequence[str]:
     names = [_executable_name(str(cmdline[0]))]
     if names[0] in {'env', 'node', 'bun', 'deno', 'python', 'python3', 'ruby', 'java'} and len(cmdline) > 1:
         names.append(_executable_name(str(cmdline[1])))
+        script = str(cmdline[1]).replace('\\', '/')
+        if any(script.endswith(f'/{scope}/pi-coding-agent/dist/cli.js') for scope in ('@earendil-works', '@mariozechner')):
+            names.append('pi')
     return tuple(names)
 
 
@@ -421,7 +424,9 @@ def agent_identity(window: Any) -> tuple[Any, ...]:
     processes = window.child.foreground_processes
     agent = detect_agent(processes)
     pid = next((p.get('pid') for p in processes if detect_agent((p,)) == agent), None) if agent else None
-    return agent, session_id_of_window(window, agent) if agent else '', pid
+    birth = next((p.get('start_time', p.get('create_time', p.get('birth_time')))
+                  for p in processes if pid is not None and p.get('pid') == pid), None)
+    return agent, session_id_of_window(window, agent) if agent else '', pid, birth
 
 
 def state_code(state: AgentState) -> int:

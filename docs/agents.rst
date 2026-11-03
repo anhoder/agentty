@@ -11,7 +11,14 @@ Enable the sidebar and map the toggle action in :file:`kitty.conf`::
     map kitty_mod+a toggle_agents_sidebar
 
 Click an agent row to focus its window. Press the mapped shortcut again to
-restore the normal tab list.
+hide the sidebar and restore the terminal's full width.
+
+The sidebar works with either value of :opt:`macos_native_tabs`. With
+:code:`macos_native_tabs no`, kitty's tab bar remains visible beside the
+sidebar, at its configured :opt:`tab_bar_edge`, so tabs without agents remain
+accessible. Its normal visibility settings, including :code:`tab_bar_style
+hidden` and :opt:`tab_bar_min_tabs`, still apply. With native tabs enabled,
+macOS continues to provide the tab bar.
 
 Right-click (or control-click) an agent row for a context menu acting on that
 row's agent window: focus it, open a new window in its working directory, copy
@@ -23,11 +30,11 @@ placeholder has no menu.
 The macOS surface uses a translucent sidebar material, grouped sections,
 two-line agent rows, colored state indicators, and active-row highlighting.
 A working agent shows a turning arc in place of the state dot; the animation
-only runs while something is actually working. Drag the sidebar's right edge
-to change its width; the sidebar always spans the full window height. The
-sidebar toggle is a native titlebar accessory after the traffic-light controls;
-AppKit reserves its width so the window title starts to its right. Its expanded
-and collapsed states use different background and chevron styles.
+only runs while something is actually working. Drag the sidebar's visible
+right-edge rail to change its width; the sidebar always spans the full window
+height. The sidebar toggle is a native titlebar accessory after the traffic-light
+controls; AppKit reserves its width so the window title starts to its right.
+Its expanded and collapsed states use different background and chevron styles.
 
 The sidebar header displays the active grouping, agent count, and group count.
 For example, ``Grouping: tab · 3 agents · 2 groups`` means that three agent
@@ -41,8 +48,11 @@ with :opt:`agents_sidebar_grouping`:
 
 Click a group header to expand or collapse its agent rows. Group headers use a
 separate shaded band and a native disclosure chevron, with a short transition
-animation for both the icon and agent rows. Collapse state is retained while
-the group remains present in the sidebar.
+animation for both the icon and agent rows. Collapse state is retained while the
+group remains present in the sidebar and is saved with a persisted kitty session.
+The sidebar's visibility, width and collapsed group identities are restored with
+that session. Agent activity states, hover state and animation progress are
+recomputed or reset when kitty starts.
 
 The sidebar is opened and closed manually with the persistent floating
 sidebar button at the upper-left of the window or the
@@ -151,6 +161,31 @@ in that terminal. Installing leaves other hooks and plugins untouched. Restart
 the agent after installing its reporter; enabling ``resume_agents_on_restore``
 alone does not install a reporter or recover an identity missing from an older
 snapshot.
+
+First-launch integration prompts
+---------------------------------
+
+Kitty checks supported local agents when their window has focus, even when the
+Agents sidebar is hidden. If a Kitty hook or reporter is missing or outdated,
+it offers ``Install`` or ``Update`` and lists the files that may change.
+Nothing is installed without consent, no input is sent to the agent, and the
+agent is never restarted automatically. Existing hooks and plugins are kept;
+custom files that conflict with Kitty's reporter are not overwritten.
+
+``Later`` defers the prompt for that agent/configuration for the current kitty
+run. ``Never ask again`` remembers the dismissal per agent across restarts.
+Manual installation with ``kitty +agent-integration install <agent>`` remains
+available. Installation checks compare generated file contents and plugin/hook
+registration; a file merely existing does not mean it is current.
+
+SSH windows and agents whose configuration environment differs from Kitty's
+are not offered local installation. Restart the agent after accepting an
+installation so it loads the new hook or plugin; kitty does not hot-reload an
+already-running agent.
+
+If an agent rewrites its process title and its environment can no longer be
+read, the check falls back to Kitty's recorded child environment. Explicitly
+different configuration paths still prevent local installation.
 
 The hook reports the id by setting the ``KITTY_AGENT_SESSION`` user variable
 with an OSC 1337 escape code. It writes to the
@@ -262,7 +297,7 @@ the tracker or sidebar except that ``prompt`` observes the target before sending
 input to establish its event baseline.
 
 One-shot agent waits
-~~~~~~~~~~~~~~~~~~~
+~~~~~~~~~~~~~~~~~~~~
 
 ``agent-wait`` returns one JSON event batch, not a subscription. Each call requires
 ``--match id:N`` (a positive exact window id) and ``--expected-agent NAME``.

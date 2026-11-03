@@ -64,8 +64,11 @@ export default function (pi) {
 }
 '''
 
+# The optional structured provider lane uses agent_provider.py's field contract.
+# It requires both explicit broker environment variables; OSC remains independent.
 OPENCODE_REPORTER = r'''// KITTY_AGENT_INTEGRATION_ID=kitty
 import fs from "node:fs";
+import net from "node:net";
 const AGENT = "opencode";
 const SOURCE = "kitty:opencode";
 const ID_KEY = "%(id_var)s";
@@ -76,6 +79,92 @@ let currentSession;
 const childSessions = new Set();
 const lastStates = new Map();
 let writeChain = Promise.resolve();
+let broker;
+let brokerSequence = 0;
+let brokerAPI;
+let brokerTimer;
+let brokerAttempts = 0;
+let brokerDisposed = false;
+let brokerGap = true;
+const childParents = new Map();
+const brokerCapabilities = ["session_lifecycle", "session_status", "parent_session", "interaction_id"];
+
+function brokerWrite(value) {
+  const socket = broker;
+  if (!socket || socket.connecting || socket.destroyed) { brokerGap = true; return; }
+  if (socket.writableLength > 65536) { brokerGap = true; socket.destroy(); return; }
+  try { socket.write(JSON.stringify(value) + "\n"); }
+  catch { brokerGap = true; socket.destroy(); }
+}
+
+function providerMarker(kind, payload) {
+  brokerWrite({ type: "event", event: { kind, session_id: currentSession,
+    payload, event_id: String(++brokerSequence) } });
+}
+
+function scheduleBroker() {
+  if (brokerDisposed || brokerTimer || !currentSession || brokerAttempts >= 6) return;
+  const delay = Math.min(100 * 2 ** brokerAttempts++, 3200);
+  brokerTimer = setTimeout(() => { brokerTimer = undefined; connectBroker(); }, delay);
+  brokerTimer.unref?.();
+}
+
+function connectBroker() {
+  const socketPath = process.env.KITTY_AGENT_BROKER_SOCKET;
+  const token = process.env.KITTY_AGENT_BROKER_TOKEN;
+  // Explicit local Unix socket opt-in only, with no discovery or daemon startup.
+  if (!socketPath || !socketPath.startsWith("/") || !token || !currentSession || brokerDisposed) return;
+  try {
+    const socket = net.createConnection({ path: socketPath });
+    broker = socket;
+    socket.on("error", () => { socket.destroy(); });
+    socket.on("close", () => {
+      if (broker !== socket || brokerDisposed) return;
+      broker = undefined;
+      brokerGap = true;
+      scheduleBroker();
+    });
+    socket.on("connect", () => {
+      if (broker !== socket || brokerDisposed) { socket.destroy(); return; }
+      brokerWrite({ type: "register", protocol_version: 1,
+        token, agent: AGENT, session_id: currentSession, capabilities: brokerCapabilities });
+      if (brokerGap) {
+        brokerGap = false;
+        providerMarker("gap", { reason: "startup_or_disconnected", partial: true, children: "unknown" });
+      }
+      // Reintroduce known relationships in insertion (parent-first) order.
+      for (const [id, parentID] of childParents) reportProviderEvent({ type: "session.created", properties: { info: { id, parentID } } });
+      let status;
+      try { status = statusOf(brokerAPI.state.session.status(currentSession)); } catch {}
+      if (["busy", "retry", "idle"].includes(status)) reportProviderEvent({ type: "session.status", properties: { sessionID: currentSession, status } }, true);
+    });
+    // No verified TUI cancellation API: do not advertise turn.cancel, execute
+    // commands or acknowledge success. Discard inbound bytes without buffering.
+    socket.on("data", () => {});
+    socket.unref();
+  } catch { broker = undefined; brokerGap = true; scheduleBroker(); }
+}
+
+function reportProviderEvent(event, snapshot = false) {
+  const p = event?.properties;
+  if (!p || typeof p !== "object") return;
+  const kind = event.type;
+  const sessionID = p.sessionID || ((kind === "session.created" || kind === "session.deleted") ? p.info?.id : undefined);
+  if (typeof sessionID !== "string" || !sessionID) return;
+  const value = { kind, session_id: sessionID, payload: {}, event_id: String(++brokerSequence) };
+  if (snapshot) Object.assign(value.payload, { snapshot: true, partial: true, children: "unknown" });
+  if (typeof p.info?.parentID === "string" && p.info.parentID) value.parent_session_id = p.info.parentID;
+  if (kind === "session.status") {
+    const status = statusOf(p.status);
+    if (!["busy", "retry", "idle"].includes(status)) return;
+    value.payload.status = status;
+  }
+  if (kind.startsWith("permission.") || kind.startsWith("question.")) {
+    const id = kind.endsWith(".asked") ? p.id : p.requestID;
+    if (typeof id === "string" && id) value.interaction_id = id;
+  }
+  brokerWrite({ type: "event", event: value });
+}
 
 function write(value) {
   if (!tty) return;
@@ -135,7 +224,16 @@ function sync(api) {
   if (sessionID === currentSession) return;
   clearStatus(currentSession);
   childSessions.clear();
+  childParents.clear();
   currentSession = sessionID;
+  const previousBroker = broker;
+  broker = undefined;
+  previousBroker?.destroy();
+  clearTimeout(brokerTimer);
+  brokerTimer = undefined;
+  brokerAttempts = 0;
+  brokerGap = true;
+  connectBroker();
   lastStates.clear();
   reportIdentity(sessionID);
   const status = sessionID ? statusOf(api.state.session.status(sessionID)) : undefined;
@@ -145,6 +243,8 @@ function sync(api) {
 
 export default { id: "kitty.opencode.session", tui: async (api) => {
   if (!tty) return;
+  brokerAPI = api;
+  brokerDisposed = false;
   const onStatus = (event) => {
     const properties = event?.properties ?? {};
     const info = properties.info;
@@ -152,10 +252,13 @@ export default { id: "kitty.opencode.session", tui: async (api) => {
     const parentID = info?.parentID;
     if (event.type === "session.created" && createdID && (parentID === currentSession || childSessions.has(parentID))) {
       childSessions.add(createdID);
+      childParents.set(createdID, parentID);
+      reportProviderEvent(event);
       return;
     }
     const sessionID = properties.sessionID || createdID;
     if (!sessionID || !isTrackedSession(sessionID)) return;
+    reportProviderEvent(event);
     const type = event.type;
     const status = statusOf(properties.status);
     if (type === "session.status") {
@@ -168,14 +271,14 @@ export default { id: "kitty.opencode.session", tui: async (api) => {
     else if (type === "session.error") reportStatus(sessionID, "error");
     else if (type === "session.deleted") {
       clearStatus(sessionID);
-      if (sessionID === currentSession) childSessions.clear();
-      else childSessions.delete(sessionID);
+      if (sessionID === currentSession) { childSessions.clear(); childParents.clear(); }
+      else { childSessions.delete(sessionID); childParents.delete(sessionID); }
     }
   };
   const off = ["session.created", "session.status", "session.idle", "permission.asked", "question.asked", "permission.replied", "question.replied", "question.rejected", "session.error", "session.deleted"].map((type) => api.event.on(type, onStatus));
   sync(api);
   const timer = setInterval(() => sync(api), 100);
-  api.lifecycle.onDispose(() => { clearInterval(timer); for (const remove of off) remove(); clearStatus(); reportIdentity(undefined); });
+  api.lifecycle.onDispose(() => { brokerDisposed = true; clearTimeout(brokerTimer); clearInterval(timer); for (const remove of off) remove(); broker?.destroy(); clearStatus(); reportIdentity(undefined); });
 }};
 '''
 # Written by the hook, read by kitty/window.py's OSC 1337 handler
@@ -211,6 +314,36 @@ class Agent(NamedTuple):
     # Official integration mechanism. Plugin-only agents cannot use kitty's generic shell hook safely.
     integration_kind: str = 'hook'
     hook_event: str = 'SessionStart'
+class IntegrationInspection(NamedTuple):
+    state: str
+    paths: tuple[str, ...]
+    detail: str
+
+
+HOOK_OWNERSHIP_MARKER = '# Installed by kitty, see kitty/agent_integration.py.'
+
+
+def hook_text(agent: Agent) -> str:
+    return HOOK_SCRIPT % {
+        'agent': agent.id,
+        'id_env': agent.id_env or 'KITTY_UNSET_SESSION_ID',
+        'session_var': AGENT_SESSION_VAR,
+        'agent_var': AGENT_ID_VAR,
+        'source_var': AGENT_SOURCE_VAR,
+    }
+
+
+def owned_hook(path: str) -> bool:
+    try:
+        with open(path) as f:
+            return HOOK_OWNERSHIP_MARKER in f.read(256)
+    except OSError:
+        return False
+
+
+def _inspection_error(paths: tuple[str, ...], err: BaseException) -> IntegrationInspection:
+    return IntegrationInspection('error', paths, str(err))
+
 
 
 def hook_dir() -> str:
@@ -240,7 +373,7 @@ def reporter_text(agent: Agent) -> str:
 
 def write_reporter(agent: Agent) -> str:
     path = reporter_path(agent)
-    if os.path.exists(path) and not owned_reporter(path):
+    if os.path.lexists(path) and not owned_reporter(path):
         raise SystemExit(f'Refusing to overwrite an unowned reporter: {path}')
     os.makedirs(os.path.dirname(path), mode=0o700, exist_ok=True)
     with open(path, 'w') as f:
@@ -317,16 +450,11 @@ def reporter_is_installed(agent: Agent) -> bool:
 
 def write_hook(agent: Agent) -> str:
     path = hook_path(agent.id)
+    if os.path.lexists(path) and not owned_hook(path):
+        raise SystemExit(f'Refusing to overwrite an unowned hook: {path}')
     os.makedirs(os.path.dirname(path), mode=0o700, exist_ok=True)
-    script = HOOK_SCRIPT % {
-        'agent': agent.id,
-        'id_env': agent.id_env or 'KITTY_UNSET_SESSION_ID',
-        'session_var': AGENT_SESSION_VAR,
-        'agent_var': AGENT_ID_VAR,
-        'source_var': AGENT_SOURCE_VAR,
-    }
     with open(path, 'w') as f:
-        f.write(script)
+        f.write(hook_text(agent))
     os.chmod(path, 0o700)
     return path
 
@@ -356,7 +484,7 @@ def write_json(path: str, data: dict[str, Any]) -> None:
 
 
 def is_kitty_hook(entry: Any) -> bool:
-    return isinstance(entry, dict) and 'kitty' in str(entry.get('command', ''))
+    return isinstance(entry, dict) and isinstance(entry.get('command'), str) and entry['command'].startswith(hook_dir() + os.sep)
 
 
 def claude_settings_path() -> str:
@@ -400,7 +528,7 @@ def register_hook(path: str, script: str) -> None:
         entries = group.get('hooks') if isinstance(group, dict) else None
         if isinstance(entries, list):
             for i, entry in enumerate(entries):
-                if is_kitty_hook(entry):  # already installed, update it in place
+                if isinstance(entry, dict) and entry.get('command') == script:  # update only this managed hook
                     entries[i] = hook_entry(script)
                     write_json(path, data)
                     return
@@ -437,6 +565,102 @@ def hook_is_installed(path: str) -> bool:
     return False
 
 
+def inspect_integration(agent: Agent) -> IntegrationInspection:
+    if agent.integration_kind not in ('hook', 'native', 'tui-plugin'):
+        try:
+            path = agent.config_path()
+        except Exception as err:
+            return _inspection_error((), err)
+        return IntegrationInspection('unsupported', (path,), f'{agent.name} requires its native kitty adapter ({agent.integration_kind})')
+    try:
+        config = agent.config_path()
+        paths = (config, hook_path(agent.id)) if agent.integration_kind == 'hook' else (reporter_path(agent),)
+        if agent.integration_kind == 'tui-plugin':
+            plugin_path, key = opencode_plugin_config(agent)
+            paths = (plugin_path, reporter_path(agent))
+        if not config:
+            return IntegrationInspection('error', paths, 'No configuration path')
+        parent = os.path.dirname(config)
+        if not os.path.isdir(parent):
+            return IntegrationInspection('missing', paths, f'{parent or "no config path"} does not exist')
+        if agent.integration_kind == 'hook':
+            script_path = hook_path(agent.id)
+            script_exists = os.path.lexists(script_path)
+            script_owned = owned_hook(script_path) if script_exists else False
+            if script_exists and not script_owned:
+                return IntegrationInspection('conflict', paths, f'Refusing to overwrite an unowned hook: {script_path}')
+            try:
+                data = read_json(config)
+            except SystemExit as err:
+                return _inspection_error(paths, err)
+            hooks = data.get('hooks', {})
+            if not isinstance(hooks, dict):
+                return IntegrationInspection('error', paths, f'Cannot use {config}: hooks is not an object')
+            groups = hooks.get(agent.hook_event, [])
+            if not isinstance(groups, list):
+                return IntegrationInspection('error', paths, f'Cannot use {config}: hooks.{agent.hook_event} is not a list')
+            expected = hook_entry(script_path)
+            registration = None
+            registration_conflict = False
+            for group in groups:
+                if not isinstance(group, dict):
+                    return IntegrationInspection('error', paths, f'Cannot use {config}: hook group is not an object')
+                entries = group.get('hooks', [])
+                if not isinstance(entries, list):
+                    return IntegrationInspection('error', paths, f'Cannot use {config}: hook group hooks is not a list')
+                for entry in entries:
+                    if isinstance(entry, dict) and entry.get('command') == script_path:
+                        registration = entry
+                    elif isinstance(entry, dict) and entry.get('command', '').startswith(hook_dir() + os.sep):
+                        registration_conflict = True
+            if registration_conflict:
+                return IntegrationInspection('conflict', paths, f'An unrelated kitty hook is registered in {config}')
+            if not script_exists:
+                return IntegrationInspection('missing', paths, 'Managed hook script is missing')
+            if not os.path.isfile(script_path):
+                return IntegrationInspection('error', paths, f'{script_path} is not a regular file')
+            try:
+                with open(script_path) as f:
+                    script_current = f.read() == hook_text(agent)
+            except OSError as err:
+                return _inspection_error(paths, err)
+            if not script_current or registration != expected:
+                return IntegrationInspection('outdated', paths, 'Managed hook or registration differs from generated content')
+            return IntegrationInspection('current', paths, 'Managed hook and registration are current')
+        reporter = reporter_path(agent)
+        if not os.path.lexists(reporter):
+            reporter_current = False
+        elif not os.path.isfile(reporter):
+            return IntegrationInspection('error', paths, f'{reporter} is not a regular file')
+        elif not owned_reporter(reporter):
+            return IntegrationInspection('conflict', paths, f'Refusing to overwrite an unowned reporter: {reporter}')
+        else:
+            try:
+                with open(reporter) as f:
+                    reporter_current = f.read() == reporter_text(agent)
+            except OSError as err:
+                return _inspection_error(paths, err)
+        if agent.integration_kind == 'tui-plugin':
+            try:
+                data = read_plugin_config(plugin_path)
+            except SystemExit as err:
+                return _inspection_error(paths, err)
+            entries = data.get(key, [])
+            if not isinstance(entries, list):
+                return IntegrationInspection('error', paths, f'Cannot use {plugin_path}: {key} is not a list')
+            registered = './kitty-agent-state.js' in entries
+            if reporter_current and registered:
+                return IntegrationInspection('current', paths, 'Managed reporter and plugin registration are current')
+            if not reporter_current and not registered:
+                return IntegrationInspection('outdated' if os.path.lexists(reporter) else 'missing', paths, 'Managed reporter or plugin registration is missing or differs')
+            return IntegrationInspection('outdated', paths, 'Managed reporter or plugin registration is missing or differs')
+        if reporter_current:
+            return IntegrationInspection('current', paths, 'Managed reporter is current')
+        return IntegrationInspection('outdated', paths, 'Managed reporter differs from generated content') if os.path.exists(reporter) else IntegrationInspection('missing', paths, 'Managed reporter is missing')
+    except Exception as err:
+        return _inspection_error(locals().get('paths', ()), err)
+
+
 AGENTS: tuple[Agent, ...] = (
     Agent('claude', 'Claude Code', 'CLAUDE_CODE_SESSION_ID', claude_settings_path, 'hook'),
     Agent('codex', 'Codex', '', codex_hooks_path, 'hook'),
@@ -469,19 +693,28 @@ def agent_by_id(agent_id: str) -> Agent:
 
 def install(agent_id: str) -> str:
     agent = agent_by_id(agent_id)
-    if agent.integration_kind in ('native', 'tui-plugin'):
+    inspection = inspect_integration(agent)
+    if inspection.state in ('conflict', 'error'):
+        raise SystemExit(inspection.detail)
+    if agent.integration_kind == 'native':
         path = agent.config_path()
         if not path or not os.path.isdir(os.path.dirname(path)):
             raise SystemExit(f'{agent.name} is not configured on this computer: {os.path.dirname(path) or "no config path"} does not exist')
-        if agent.integration_kind == 'tui-plugin':
-            register_plugin(agent)
         return f'Installed the kitty session reporter for {agent.name} in {write_reporter(agent)}'
+    if agent.integration_kind == 'tui-plugin':
+        path = agent.config_path()
+        if not path or not os.path.isdir(os.path.dirname(path)):
+            raise SystemExit(f'{agent.name} is not configured on this computer: {os.path.dirname(path) or "no config path"} does not exist')
+        reporter = write_reporter(agent)
+        register_plugin(agent)
+        return f'Installed the kitty session reporter for {agent.name} in {reporter}'
     if agent.integration_kind != 'hook':
         raise SystemExit(f'{agent.name} requires its native kitty adapter ({agent.integration_kind})')
     path = agent.config_path()
     if not path or not os.path.isdir(os.path.dirname(path)):
         raise SystemExit(f'{agent.name} is not configured on this computer: {os.path.dirname(path) or "no config path"} does not exist')
-    register_hook(path, write_hook(agent))
+    script = write_hook(agent)
+    register_hook(path, script)
     return f'Installed the kitty session hook for {agent.name} in {path}'
 
 
@@ -507,16 +740,9 @@ def uninstall(agent_id: str) -> str:
 def status() -> list[str]:
     ans = []
     for agent in AGENTS:
-        if agent.integration_kind in ('native', 'tui-plugin'):
-            state = 'installed' if reporter_is_installed(agent) else 'not installed'
-            ans.append(f'{agent.id:8} {state:14} {reporter_path(agent)}')
-            continue
-        if agent.integration_kind == 'plugin-required':
-            ans.append(f'{agent.id:8} plugin-required {agent.config_path()}')
-            continue
-        path = agent.config_path()
-        state = 'installed' if hook_is_installed(path) else 'not installed'
-        ans.append(f'{agent.id:8} {state:14} {path}')
+        inspection = inspect_integration(agent)
+        path = inspection.paths[0] if inspection.paths else ''
+        ans.append(f'{agent.id:8} {inspection.state:11} {path} {inspection.detail}')
     return ans
 
 

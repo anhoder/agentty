@@ -161,6 +161,31 @@ class TestTabBar(BaseTest):
         self.ae(tb.tab_id_at(60, 130), 0)
         self.ae(tb.tab_id_at(180, 10), 0)
 
+    def test_horizontal_tab_bar_beside_agents_sidebar(self) -> None:
+        from kitty.fast_data_types import BOTTOM_EDGE, TOP_EDGE
+
+        for edge in (TOP_EDGE, BOTTOM_EDGE):
+            with self.subTest(edge=edge):
+                self.set_options({'tab_bar_edge': edge, 'tab_bar_style': 'separator', 'tab_title_template': '{title}'})
+                top = 0 if edge == TOP_EDGE else 140
+                central = region(200, 20 if edge == TOP_EDGE else 0, 800, 160 if edge == TOP_EDGE else 140)
+                tab_bar = region(200, top, 800, top + 20)
+                with (
+                    patch('kitty.tab_bar.cell_size_for_window', return_value=(10, 20)),
+                    patch('kitty.tab_bar.viewport_for_window', return_value=(central, tab_bar, 800, 160, 10, 20)),
+                    patch('kitty.tab_bar.set_tab_bar_render_data'),
+                    patch('kitty.tab_bar.update_tab_bar_edge_colors', return_value=None),
+                    patch('kitty.tab_bar.get_boss', return_value=DummyBoss()),
+                ):
+                    tb = TabBar(1)
+                    tb.layout()
+                    tb.update((TabBarData(title='shell', tab_id=1, is_active=True), TabBarData(title='agent', tab_id=2)))
+                self.assertGreaterEqual(tb.window_geometry.left, 200)
+                for extent in tb.tab_extents:
+                    x = tb.window_geometry.left + extent.x.start * 10
+                    self.ae(tb.tab_id_at(x, top + 10), extent.tab_id)
+                self.ae(tb.tab_id_at(100, top + 10), 0)
+
     def test_vertical_tab_bar_alignment(self) -> None:
         self.set_options(
             {

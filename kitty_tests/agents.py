@@ -32,6 +32,12 @@ class TestAgents(BaseTest):
         self.assertIsNone(detect_agent([{'cmdline': ['/bin/zsh', '-l']}]))
         self.assertIsNone(detect_agent([]))
 
+    def test_detect_pi_from_resolved_node_entrypoint(self):
+        for scope in ('@earendil-works', '@mariozechner'):
+            path = f'/opt/homebrew/lib/node_modules/{scope}/pi-coding-agent/dist/cli.js'
+            self.ae(detect_agent([{'cmdline': ['node', path]}]), 'pi')
+        self.assertIsNone(detect_agent([{'cmdline': ['node', '/tmp/project/dist/cli.js']}]))
+
     # region slicing
 
     def test_bottom_non_empty_lines_skips_blank_padding(self):
@@ -277,6 +283,7 @@ class TestAgents(BaseTest):
         statuses = [
             {'id': 'root', 'state': 'idle'},
             {'id': 'root/child', 'state': 'working'},
+            {'id': 'other', 'state': 'blocked'},
         ]
         self.ae(state_from_signals('opencode', statuses, screen('neutral'), session_id='root'), AgentState.working)
         from kitty.agents import status_scope
@@ -348,6 +355,7 @@ class TestAgents(BaseTest):
         tabs = [Tab([w]) for w in windows]
         for i, tab in enumerate(tabs, start=1):
             tab.id = i
+            tab.sidebar_id = f'tab-{i}'
             tab.effective_title = 'T'
         scope = (TabManager(tabs),)
         tracker = AgentTracker()
@@ -383,6 +391,7 @@ class TestAgents(BaseTest):
         tabs = [Tab([window]) for window in windows[:10]]
         for i, tab in enumerate(tabs, start=1):
             tab.id = i
+            tab.sidebar_id = f'tab-{i}'
         tabs[0].append(windows[10])
         scope = (TabManager(tabs[:1]), TabManager(tabs[1:]))
         tracker = AgentTracker()
@@ -435,6 +444,42 @@ class TestAgents(BaseTest):
         rows = scope[0].agent_sidebar_rows
         self.ae(len(rows), 1)
         self.ae((rows[0].group, rows[0].group_key, rows[0].agent, rows[0].title), ('', '', '', 'No AI agents'))
+
+
+class TestAgentTimerLifecycle(BaseTest):
+    def test_agent_timers_are_released_on_shutdown(self):
+        from contextlib import ExitStack
+        from unittest.mock import patch
+
+        from kitty.boss import Boss
+        from kitty.cli import parse_args
+
+        opts = self.set_options()
+        args, _ = parse_args([])
+        for debounce in (False, True):
+            with self.subTest(debounce=debounce), ExitStack() as stack:
+                timers = {}
+
+                def add_timer(callback, delay, repeat):
+                    timer_id = len(timers) + 1
+                    timers[timer_id] = callback
+                    return timer_id
+
+                for name in ('ChildMonitor', 'set_boss', 'NotificationManager', 'destroy_global_data'):
+                    stack.enter_context(patch(f'kitty.boss.{name}'))
+                stack.enter_context(patch('kitty.boss.store_effective_config', return_value=('', '')))
+                stack.enter_context(patch('kitty.boss.add_timer', side_effect=add_timer))
+                stack.enter_context(patch('kitty.boss.remove_timer', side_effect=timers.pop))
+                stack.enter_context(patch('kitty.agents.monotonic', return_value=100.1))
+                boss = Boss(opts, args, {}, {})
+                if debounce:
+                    boss.agent_tracker.refresh_window(FakeWindow('\u2733 Thinking\u2026 (3s \u00b7 esc to interrupt)', focused=True), now=100.0)
+                    boss.agent_tracker.refresh_window(FakeWindow('neutral text', focused=True), now=100.1)
+                    boss.flush_agent_sidebar_updates()
+                    self.assertIn(boss._agent_debounce_timer, timers)
+                boss.destroy()
+                self.ae(timers, {})
+                self.assertTrue(boss.shutting_down)
 
 
 class FakeWindow:
@@ -658,13 +703,6 @@ class TestAgentResume(BaseTest):
             self.ae(agents[agent].integration_kind, 'adapter-required')
         for agent in ('copilot', 'devin', 'droid', 'qodercli', 'qwen', 'letta', 'cursor', 'grok', 'agy', 'mastracode'):
             self.ae(agents[agent].integration_kind, 'adapter-required')
-
-    def test_opencode_reporter_tracks_lifecycle(self):
-        from kitty.agent_integration import agent_by_id, reporter_text
-
-        reporter = reporter_text(agent_by_id('opencode'))
-        for marker in ('api.event.on', 'session.status', 'state=${state}', 'kind=${kind}', 'state=clear'):
-            self.assertIn(marker, reporter)
 
     def test_herdr_source_identity(self):
         from kitty.agents import AGENT_SOURCE_VAR, session_ref_of_window

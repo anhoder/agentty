@@ -285,6 +285,11 @@ which also saves the state periodically, see :opt:`persist_session_interval`.
 The periodic saves leave out the scrollback, as serializing it repeatedly is
 expensive; only the save when kitty exits includes it.
 
+The saved session also restores the macOS Agents sidebar visibility, width and
+collapsed group state when the sidebar is enabled. Agent activity is detected
+again after the restored processes start; transient hover and animation state is
+not saved.
+
 The saved state is used only once, and only when kitty is started without
 :option:`kitty --session` or a command to run, and it is deleted once it has
 been restored. Programs that were running in windows, other than the shell and

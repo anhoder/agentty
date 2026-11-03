@@ -418,10 +418,13 @@ set_window_watermark_text(id_type os_window_id, id_type tab_id, id_type window_i
 void
 set_os_window_title_from_window(Window *w, OSWindow *os_window) {
     if (os_window->disallow_title_changes || os_window->title_is_overriden) return;
-    if (w->title && w->title != os_window->window_title) {
-        Py_CLEAR(os_window->window_title);
-        os_window->window_title = Py_NewRef(w->title);
-        set_os_window_title(os_window, PyUnicode_AsUTF8(w->title));
+    PyObject *title = w->title;
+#ifdef __APPLE__
+    if (OPT(macos_native_tabs) && os_window->native_tab_title) title = os_window->native_tab_title;
+#endif
+    if (title && title != os_window->window_title) {
+        Py_XSETREF(os_window->window_title, Py_NewRef(title));
+        set_os_window_title(os_window, PyUnicode_AsUTF8(title));
     }
 }
 
@@ -615,6 +618,7 @@ destroy_os_window_item(OSWindow *w) {
         remove_tab_inner(w, tab->id);
     }
     Py_CLEAR(w->window_title);
+    Py_CLEAR(w->native_tab_title);
     Py_CLEAR(w->tab_bar_render_data.screen);
     free_vao(w->tab_bar_render_data.vao_idx);
     free(w->tabs);
@@ -808,9 +812,9 @@ pyset_tab_layout_name(PyObject *self UNUSED, PyObject *args) {
 
 
 static unsigned
-vertical_tab_bar_cols(const OSWindow *os_window, long margin_outer, long margin_inner) {
+vertical_tab_bar_cols(const OSWindow *os_window, long width, long margin_outer, long margin_inner) {
     unsigned cell_width = MAX(1u, os_window->fonts_data->fcm.cell_width);
-    long available_width = (long)os_window->viewport_width - margin_outer - margin_inner;
+    long available_width = width - margin_outer - margin_inner;
     if (available_width <= 0) return 0;
     unsigned available_cols = MAX(1u, (unsigned)available_width / cell_width);
     // Without an explicit title length use a default sidebar wide enough for
@@ -825,26 +829,19 @@ vertical_tab_bar_cols(const OSWindow *os_window, long margin_outer, long margin_
 
 void
 os_window_regions(const OSWindow *os_window, Region *central, Region *tab_bar) {
+    central->left = 0;
+    central->right = os_window->viewport_width;
+    central->top = 0;
+    central->bottom = os_window->viewport_height;
     if (os_window->agents_sidebar_enabled) {
         unsigned cols = MAX(1u, MIN(os_window->agents_sidebar_cols, (unsigned)os_window->viewport_width / MAX(1u, os_window->fonts_data->fcm.cell_width)));
         unsigned width = cols * os_window->fonts_data->fcm.cell_width;
         central->left = MIN((long)width, (long)os_window->viewport_width);
-        central->right = os_window->viewport_width;
-        central->top = 0;
-        central->bottom = os_window->viewport_height;
-        tab_bar->left = 0;
-        tab_bar->right = width;
-        tab_bar->top = 0;
-        tab_bar->bottom = os_window->viewport_height;
-        return;
     }
     if (!OPT(tab_bar_hidden) && os_window->num_tabs && !os_window->has_too_few_tabs) {
         long margin_outer = pt_to_px_for_os_window(OPT(tab_bar_margin_height.outer), os_window);
         long margin_inner = pt_to_px_for_os_window(OPT(tab_bar_margin_height.inner), os_window);
-        central->left = 0;
-        central->right = os_window->viewport_width;
-        central->top = 0;
-        central->bottom = os_window->viewport_height;
+        long available_width = central->right - central->left;
         switch (OPT(tab_bar_edge)) {
             case TOP_EDGE: {
                 unsigned tab_bar_height = os_window->fonts_data->fcm.cell_height + margin_inner + margin_outer;
@@ -858,27 +855,27 @@ os_window_regions(const OSWindow *os_window, Region *central, Region *tab_bar) {
                 break;
             }
             case LEFT_EDGE: {
-                unsigned left_cols = vertical_tab_bar_cols(os_window, margin_outer, margin_inner);
+                unsigned left_cols = vertical_tab_bar_cols(os_window, available_width, margin_outer, margin_inner);
                 if (!left_cols) {
                     zero_at_ptr(tab_bar);
                     return;
                 }
                 unsigned left_width = left_cols * os_window->fonts_data->fcm.cell_width;
-                central->left = MIN((long)(left_width + margin_inner + margin_outer), (long)central->right);
-                tab_bar->left = margin_outer;
+                tab_bar->left = central->left + margin_outer;
+                central->left = MIN(central->left + (long)(left_width + margin_inner + margin_outer), central->right);
                 tab_bar->right = tab_bar->left + left_width;
                 tab_bar->top = central->top;
                 tab_bar->bottom = central->bottom;
                 break;
             }
             case RIGHT_EDGE: {
-                unsigned right_cols = vertical_tab_bar_cols(os_window, margin_outer, margin_inner);
+                unsigned right_cols = vertical_tab_bar_cols(os_window, available_width, margin_outer, margin_inner);
                 if (!right_cols) {
                     zero_at_ptr(tab_bar);
                     return;
                 }
                 unsigned right_width = right_cols * os_window->fonts_data->fcm.cell_width;
-                central->right = MAX(0, (long)os_window->viewport_width - (long)(right_width + margin_inner + margin_outer));
+                central->right = MAX(central->left, central->right - (long)(right_width + margin_inner + margin_outer));
                 tab_bar->left = central->right + margin_inner;
                 tab_bar->right = tab_bar->left + right_width;
                 tab_bar->top = central->top;
@@ -899,10 +896,6 @@ os_window_regions(const OSWindow *os_window, Region *central, Region *tab_bar) {
         }
     } else {
         zero_at_ptr(tab_bar);
-        central->left = 0;
-        central->top = 0;
-        central->right = os_window->viewport_width;
-        central->bottom = os_window->viewport_height;
     }
 }
 
@@ -1528,6 +1521,7 @@ PYWRAP1(update_window_visibility) {
     END_WITH_WINDOW;
     Py_RETURN_NONE;
 }
+
 
 
 PYWRAP1(sync_os_window_title) {

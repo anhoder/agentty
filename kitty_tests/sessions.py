@@ -24,6 +24,22 @@ class TestSessions(BaseTest):
         (session,) = parse_session(f'launch {shlex.join((old_encoded,))}', opts)
         self.ae(session.tabs[0].windows[0].font_size_override, None)
 
+    def test_default_session_window_metadata(self) -> None:
+        from kitty.session import create_sessions
+
+        (session,) = create_sessions(self.set_options())
+        self.ae(
+            (
+                session.os_window_size,
+                session.os_window_position,
+                session.os_window_class,
+                session.os_window_name,
+                session.os_window_title,
+                session.os_window_state,
+            ),
+            (None, None, None, None, None, None),
+        )
+
     def test_session_size_overrides_remembered_size(self) -> None:
         opts = self.set_options({'remember_window_size': True})
         with_size, without_size = parse_session('os_window_size 1180 760\nlaunch\nnew_os_window\nlaunch', opts)
@@ -54,6 +70,21 @@ class TestSessions(BaseTest):
         self.ae((s.os_window_size, s.os_window_position, s.os_window_state), (size, (-1200, 80), 'maximized'))
         for state, name in ((WINDOW_FULLSCREEN, 'fullscreen'), (WINDOW_NORMAL, 'normal')):
             self.ae(os_window_geometry_as_session({**g, 'state': state})[-1], f'os_window_state {name}')
+
+    def test_session_agent_sidebar_state(self) -> None:
+        opts = self.set_options()
+        raw = '\n'.join((
+            'agent_sidebar {"enabled":true,"width_cols":42,"collapsed_groups":["agent:claude","tab:tab-7"]}',
+            'new_tab first',
+            'tab_id tab-7',
+            'launch',
+            'new_tab second',
+            'tab_id tab-8',
+            'launch',
+        ))
+        (session,) = parse_session(raw, opts)
+        self.ae((session.agent_sidebar_enabled, session.agent_sidebar_cols, session.agent_sidebar_collapsed_groups), (True, 42, ('agent:claude', 'tab:tab-7')))
+        self.ae([tab.sidebar_id for tab in session.tabs], ['tab-7', 'tab-8'])
 
     def test_native_tab_groups_in_saved_session(self) -> None:
         from types import SimpleNamespace

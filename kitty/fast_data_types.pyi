@@ -644,6 +644,9 @@ def update_window_visibility(os_window_id: int, tab_id: int, window_id: int, vis
 def sync_os_window_title(os_window_id: int) -> None:
     pass
 
+def set_native_tab_title(os_window_id: int, title: str) -> None:
+    pass
+
 def set_options(opts: Optional[Options], is_wayland: bool = False, debug_rendering: bool = False, debug_font_fallback: bool = False) -> None:
     pass
 
@@ -907,7 +910,7 @@ def macos_cycle_through_os_windows(backwards: bool) -> None:
 def native_tab_group_order(os_window_id: int) -> tuple[int, ...] | None:
     pass
 
-def set_agents_sidebar(os_window_id: int, enabled: bool, cols: int, grouping: str, icons_dir: str, rows: tuple[tuple[int, str, str, str, str, str, int, bool], ...]) -> None: ...
+def set_agents_sidebar(os_window_id: int, enabled: bool, cols: int, grouping: str, icons_dir: str, rows: tuple[tuple[int, str, str, str, str, str, int, bool], ...], collapsed_groups: tuple[str, ...] = ()) -> None: ...
 def toggle_macos_tab_overview(os_window_id: int) -> None:
     pass
 

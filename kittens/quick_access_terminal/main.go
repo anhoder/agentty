@@ -68,6 +68,8 @@ func main(cmd *cli.Command, opts *Options, args []string) (rc int, err error) {
 			argv = append(argv, fmt.Sprintf("--override=%s", c))
 		}
 	}
+	// Quick access terminal tabs must use kitty's tab bar, not macOS native tabs.
+	argv = append(argv, "--override=macos_native_tabs=no")
 
 	argv = append(argv, fmt.Sprintf("--override=background_opacity=%f", conf.Background_opacity))
 	if runtime.GOOS != "darwin" {

@@ -87,13 +87,13 @@ class Tab:
         self.pending_resize_spec: ResizeSpec | None = None
         self.pending_focus_matching_window: str = ''
         self.name = name.strip()
+        self.sidebar_id: str | None = None
         self.active_window_idx = -1
         self.enabled_layouts = opts.enabled_layouts
         self.layout = (self.enabled_layouts or ['tall'])[0]
         self.layout_state: dict[str, Any] | None = None
         self.cwd: str | None = None
         self.next_title: str | None = None
-
     @property
     def has_non_background_processes(self) -> bool:
         for w in self.windows:
@@ -110,16 +110,17 @@ class Session:
         self.tabs: list[Tab] = []
         self.active_tab_idx = 0
         self.focus_tab_spec: str | None = None
-        self.default_title = default_title
         self.os_window_size: WindowSizes | None = None
         self.os_window_position: tuple[int, int] | None = None
         self.os_window_class: str | None = None
         self.os_window_name: str | None = None
+        self.os_window_title: str | None = default_title
         self.os_window_state: str | None = None
-        self.os_window_title: str | None = None
         self.os_window_tab_group: str | None = None
         self.focus_os_window: bool = False
-
+        self.agent_sidebar_enabled: bool | None = None
+        self.agent_sidebar_cols: int | None = None
+        self.agent_sidebar_collapsed_groups: tuple[str, ...] = ()
     @property
     def has_non_background_processes(self) -> bool:
         for t in self.tabs:
@@ -135,6 +136,11 @@ class Session:
     def set_next_title(self, title: str) -> None:
         self.tabs[-1].next_title = title.strip()
 
+    def set_tab_id(self, val: str) -> None:
+        if not val:
+            raise ValueError('tab_id requires a non-empty identifier')
+        self.tabs[-1].sidebar_id = val
+
     def set_layout(self, val: str) -> None:
         if val.partition(':')[0] not in all_layouts:
             raise ValueError(f'{val} is not a valid layout')
@@ -142,7 +148,6 @@ class Session:
 
     def set_layout_state(self, val: str) -> None:
         self.tabs[-1].layout_state = json.loads(val)
-
     def add_window(self, cmd: None | str | list[str], expand: Callable[[str], str] = lambda x: x, resume_agents: bool = False) -> None:
         from .launch import parse_launch_args
 
@@ -288,8 +293,7 @@ def parse_session(
                 cmd, rest = parts[0], ''
             else:
                 cmd, rest = parts
-            cmd, rest = cmd.strip(), rest.strip()
-            if cmd not in ('launch', 'set_layout_state'):
+            if cmd not in ('launch', 'set_layout_state', 'agent_sidebar'):
                 rest = expand(rest)
             if cmd == 'new_tab':
                 ans.add_tab(opts, rest)
@@ -307,6 +311,24 @@ def parse_session(
                 ans.focus_tab(rest)
             elif cmd == 'focus_os_window':
                 ans.focus_os_window = True
+            elif cmd == 'tab_id':
+                ans.set_tab_id(rest)
+            elif cmd == 'agent_sidebar':
+                data = json.loads(rest)
+                if not isinstance(data, dict):
+                    raise ValueError('agent_sidebar requires a JSON object')
+                enabled = data.get('enabled')
+                cols = data.get('width_cols')
+                collapsed = data.get('collapsed_groups', ())
+                if not isinstance(enabled, bool):
+                    raise ValueError('agent_sidebar.enabled must be a boolean')
+                if not isinstance(cols, int) or isinstance(cols, bool) or cols < 16:
+                    raise ValueError('agent_sidebar.width_cols must be an integer >= 16')
+                if not isinstance(collapsed, list) or not all(isinstance(x, str) and x for x in collapsed):
+                    raise ValueError('agent_sidebar.collapsed_groups must be a list of non-empty strings')
+                ans.agent_sidebar_enabled = enabled
+                ans.agent_sidebar_cols = cols
+                ans.agent_sidebar_collapsed_groups = tuple(dict.fromkeys(collapsed))
             elif cmd == 'enabled_layouts':
                 ans.set_enabled_layouts(rest)
             elif cmd == 'cd':
