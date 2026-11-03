@@ -2752,6 +2752,7 @@ dnd_test_cleanup_fake_window(PyObject *self UNUSED, PyObject *args) {
                 tab->windows = NULL;
             }
             Py_CLEAR(osw->window_title);
+            Py_CLEAR(osw->native_tab_title);
             Py_CLEAR(osw->tab_bar_render_data.screen);
             free(osw->tabs);
             osw->tabs = NULL;

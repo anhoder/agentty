@@ -3184,13 +3184,20 @@ set_agents_sidebar(PyObject *self UNUSED, PyObject *args) {
     const char *grouping;
     const char *icons_dir;
     PyObject *rows;
-    if (!PyArg_ParseTuple(args, "KpIssO", &osw_id, &enabled, &cols, &grouping, &icons_dir, &rows)) return NULL;
+    PyObject *collapsed_groups;
+    if (!PyArg_ParseTuple(args, "KpIssOO", &osw_id, &enabled, &cols, &grouping, &icons_dir, &rows, &collapsed_groups)) return NULL;
 #ifdef __APPLE__
     OSWindow *osw = os_window_for_id(osw_id);
     if (!osw || !osw->handle) Py_RETURN_NONE;
     PyObject *fast = PySequence_Fast(rows, "sidebar rows must be a sequence");
     if (!fast) return NULL;
+    PyObject *fast_collapsed = PySequence_Fast(collapsed_groups, "sidebar collapsed groups must be a sequence");
+    if (!fast_collapsed) {
+        Py_DECREF(fast);
+        return NULL;
+    }
     Py_ssize_t count = PySequence_Fast_GET_SIZE(fast);
+    Py_ssize_t collapsed_count = PySequence_Fast_GET_SIZE(fast_collapsed);
     PyObject *ret = NULL;
     unsigned cell_width = 0;
     unsigned long long *window_ids = PyMem_Malloc((size_t)count * sizeof(unsigned long long));
@@ -3201,7 +3208,9 @@ set_agents_sidebar(PyObject *self UNUSED, PyObject *args) {
     const char **details = PyMem_Malloc((size_t)count * sizeof(char *));
     unsigned char *states = PyMem_Malloc((size_t)count * sizeof(unsigned char));
     bool *active = PyMem_Calloc((size_t)count, sizeof(bool));
-    if (count && (!window_ids || !groups || !group_keys || !agents || !labels || !details || !states || !active)) {
+    const char **collapsed = PyMem_Malloc((size_t)collapsed_count * sizeof(char *));
+    if ((count && (!window_ids || !groups || !group_keys || !agents || !labels || !details || !states || !active)) ||
+        (collapsed_count && !collapsed)) {
         PyErr_NoMemory();
         goto cleanup;
     }
@@ -3228,6 +3237,13 @@ set_agents_sidebar(PyObject *self UNUSED, PyObject *args) {
         states[i] = (unsigned char)state;
         active[i] = PyObject_IsTrue(PyTuple_GET_ITEM(item, 7));
     }
+    for (Py_ssize_t i = 0; i < collapsed_count; i++) {
+        PyObject *item = PySequence_Fast_GET_ITEM(fast_collapsed, i);
+        if (!PyUnicode_Check(item) || !(collapsed[i] = PyUnicode_AsUTF8(item))) {
+            if (!PyErr_Occurred()) PyErr_SetString(PyExc_TypeError, "sidebar collapsed groups must contain strings");
+            goto cleanup;
+        }
+    }
     osw->agents_sidebar_enabled = enabled != 0;
     osw->agents_sidebar_cols = enabled ? cols : 0;
     cell_width = osw->fonts_data ? osw->fonts_data->fcm.cell_width : 0;
@@ -3247,6 +3263,8 @@ set_agents_sidebar(PyObject *self UNUSED, PyObject *args) {
         details,
         states,
         active,
+        collapsed,
+        (size_t)collapsed_count,
         (size_t)count);
     wakeup_main_loop();
     ret = Py_NewRef(Py_None);
@@ -3259,6 +3277,8 @@ cleanup:
     PyMem_Free(details);
     PyMem_Free(states);
     PyMem_Free(active);
+    PyMem_Free(collapsed);
+    Py_DECREF(fast_collapsed);
     Py_DECREF(fast);
     return ret;
 #else
@@ -3266,7 +3286,9 @@ cleanup:
     (void)enabled;
     (void)cols;
     (void)grouping;
+    (void)icons_dir;
     (void)rows;
+    (void)collapsed_groups;
 #endif
     Py_RETURN_NONE;
 }
@@ -3442,6 +3464,22 @@ request_window_attention(id_type kitty_window_id, bool audio_bell) {
 #endif
         glfwPostEmptyEvent();
     }
+}
+
+static PyObject *
+set_native_tab_title(PyObject *self UNUSED, PyObject *args) {
+    unsigned long long os_window_id;
+    PyObject *title;
+    if (!PyArg_ParseTuple(args, "KU", &os_window_id, &title)) return NULL;
+#ifdef __APPLE__
+    OSWindow *w = os_window_for_id(os_window_id);
+    if (w && w->handle) {
+        Py_XSETREF(w->native_tab_title, Py_NewRef(title));
+        cocoa_set_native_tab_title(glfwGetCocoaWindow(w->handle), PyUnicode_AsUTF8(title));
+        update_os_window_title(w);
+    }
+#endif
+    Py_RETURN_NONE;
 }
 
 void
@@ -4312,6 +4350,7 @@ static PyMethodDef module_methods[] = {
     METHODB(native_tab_group_order, METH_O),
     METHODB(toggle_macos_tab_overview, METH_O),
     METHODB(set_agents_sidebar, METH_VARARGS),
+    METHODB(set_native_tab_title, METH_VARARGS),
     METHODB(get_content_scale_for_window, METH_NOARGS),
     METHODB(ring_bell, METH_VARARGS),
     METHODB(request_attention, METH_VARARGS),

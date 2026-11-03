@@ -49,7 +49,6 @@ from .fast_data_types import (
     remove_timer,
     remove_window,
     reorder_tabs,
-    replace_c0_codes_except_nl_space_tab,
     ring_bell,
     set_active_tab,
     set_active_window,
@@ -61,12 +60,14 @@ from .fast_data_types import (
     start_drag_with_data,
     swap_tabs,
     sync_os_window_title,
+    set_native_tab_title,
 )
 from .layout.base import DragOverlayMode, Layout
 from .layout.interface import all_layouts, create_layout_object_for, evict_cached_layouts
 from .layout.splits import Splits
 from .progress import ProgressState
-from .tab_bar import TabBar, TabBarData, WindowDropTarget, apply_title_template
+from .tab_bar import TabBar, TabBarData, WindowDropTarget, tab_title_for_os_window
+
 from .types import DockSpec, ac
 from .typing_compat import EdgeLiteral, SessionTab, SessionType, TypedDict
 from .utils import cmdline_for_hold, color_as_int, log_error, natsort_key, platform_window_id, resolved_shell, shlex_split, which
@@ -263,10 +264,12 @@ class Tab:  # {{{
         self.id: int = add_tab(self.os_window_id)
         if not self.id:
             raise Exception(f'No OS window with id {self.os_window_id} found, or tab counter has wrapped')
+        self.sidebar_id = getattr(session_tab, 'sidebar_id', None) or f'tab-{self.id}'
         self.args = tab_manager.args
         self.name = getattr(session_tab, 'name', '')
         self.enabled_layouts = [x.lower() for x in getattr(session_tab, 'enabled_layouts', None) or get_options().enabled_layouts]
         self.borders = Borders(self.os_window_id, self.id)
+
         self.windows: WindowList = WindowList(self)
         self._last_used_layout: str | None = None
         self._current_layout_name: str | None = None
@@ -457,10 +460,10 @@ class Tab:  # {{{
         if last_used and last_used != self._current_layout_name and last_used in self.enabled_layouts:
             self._last_used_layout = last_used
 
-    def serialize_state(self) -> dict[str, Any]:
         return {
             'version': 1,
             'id': self.id,
+            'sidebar_id': self.sidebar_id,
             'window_list': self.windows.serialize_state(),
             'current_layout': self._current_layout_name,
             'last_used_layout': self._last_used_layout,
@@ -529,6 +532,7 @@ class Tab:  # {{{
             return [
                 '',
                 f'new_tab {self.name}'.rstrip(),
+                f'tab_id {self.sidebar_id}',
                 f'layout {layout}',
                 f'enabled_layouts {",".join(enabled_layouts)}',
                 f'set_layout_state {json.dumps(self.serialize_layout_state_for_session())}',
@@ -1614,6 +1618,7 @@ class TabManager:  # {{{
             w = tab.active_window
             for q in tab:
                 q.focus_changed(w is q and tab is active_tab)
+        self.update_native_tab_title()
 
     @property
     def active_tab_idx(self) -> int:
@@ -1688,6 +1693,7 @@ class TabManager:  # {{{
     def mark_tab_bar_dirty(self) -> None:
         should_be_shown = not self.tab_bar_hidden and self.tab_bar_should_be_visible
         mark_tab_bar_dirty(self.os_window_id, should_be_shown)
+        self.update_native_tab_title()
         w = self.active_window or self.any_window
         if w is not None:
             data = {'tab_manager': self}
@@ -1696,8 +1702,6 @@ class TabManager:  # {{{
                 watcher(boss, w, data)
 
     def update_tab_bar_data(self) -> None:
-        if self.agent_sidebar_enabled:
-            return
         if self.tab_bar.update(self.tab_bar_data):
             for tab in self.tabs:
                 tab.relayout_borders()
@@ -1705,12 +1709,12 @@ class TabManager:  # {{{
     def set_agent_sidebar_rows(self, rows: Sequence[AgentSidebarRow]) -> None:
         self.agent_sidebar_rows = tuple(rows)
         if self.agent_sidebar_enabled:
-            self.update_native_agents_sidebar()
-            self.resize(only_tabs=True)
+            self.resize()
 
     def update_native_agents_sidebar(self) -> None:
         if not is_macos:
             return
+        boss = get_boss()
         set_agents_sidebar(
             self.os_window_id,
             self.agent_sidebar_enabled,
@@ -1721,21 +1725,34 @@ class TabManager:  # {{{
                 (row.window_id, row.group, row.group_key, row.agent, row.title, row.detail, state_code(row.state), row.is_active)
                 for row in self.agent_sidebar_rows
             ),
+            tuple(sorted(getattr(boss, 'agent_sidebar_collapsed_groups', ()))),
         )
 
+    def update_native_tab_title(self) -> None:
+        if not is_macos or not get_options().macos_native_tabs:
+            return
+        tab = self.active_tab
+        if tab is None:
+            return
+        tabs = tuple(self.tabs_to_be_shown_in_tab_bar)
+        try:
+            index = tabs.index(tab) + 1
+        except ValueError:
+            return
+        title = tab_title_for_os_window(self.tab_bar.draw_data, tab.data_for_tab_bar(True), index)
+        set_native_tab_title(self.os_window_id, title)
+
     def title_changed(self, tab: Tab) -> None:
-        self.mark_tab_bar_dirty()
         if tab is self.active_tab:
             sync_os_window_title(self.os_window_id)
-
+        self.mark_tab_bar_dirty()
     def resize(self, only_tabs: bool = False) -> None:
-        if not only_tabs:
-            if not self.tab_bar_hidden and not self.agent_sidebar_enabled:
-                self.layout_tab_bar()
-        for tab in self.tabs:
-            tab.relayout()
         if self.agent_sidebar_enabled:
             self.update_native_agents_sidebar()
+        if not only_tabs and not self.tab_bar_hidden:
+            self.layout_tab_bar()
+        for tab in self.tabs:
+            tab.relayout()
 
     def set_active_tab_idx(self, idx: int) -> None:
         self._set_active_tab(idx)
@@ -1876,6 +1893,14 @@ class TabManager:  # {{{
             ans.extend(tab.serialize_state_as_session(session_path, matched_windows, ser_opts))
         if ans:
             prefix = [] if is_first else ['', '', 'new_os_window']
+            boss = get_boss()
+            if boss is not None and hasattr(boss, 'agent_sidebar_enabled'):
+                sidebar = {
+                    'enabled': bool(boss.agent_sidebar_enabled),
+                    'width_cols': max(16, int(boss.agent_sidebar_cols)),
+                    'collapsed_groups': sorted(getattr(boss, 'agent_sidebar_collapsed_groups', ())),
+                }
+                prefix.append(f'agent_sidebar {json.dumps(sidebar, separators=(",", ":"))}')
             if self.wm_class and self.wm_class != appname:
                 prefix.append(f'os_window_class {self.wm_class}')
             if self.wm_name and self.wm_name != appname:
@@ -2134,10 +2159,7 @@ class TabManager:  # {{{
         for i, tab in enumerate(self.tabs_to_be_shown_in_tab_bar):
             if tab.id == dragged_tab_id:
                 td = tab.data_for_tab_bar(tab is self.active_tab)
-                title = apply_title_template(self.tab_bar.draw_data, td, i + 1)
-                title = re.sub(r'\x1b\[.+?[a-zA-Z]', '', title).strip()  # strip CSI codes ]
-                title = re.sub(r'[\n\r]', ' ', title)
-                title = replace_c0_codes_except_nl_space_tab(title.encode()).decode()
+                title = tab_title_for_os_window(self.tab_bar.draw_data, td, i + 1).strip()
                 opts = get_options()
                 if td.is_active:
                     fg = color_as_int(opts.active_tab_foreground)
@@ -2582,6 +2604,7 @@ class TabManager:  # {{{
         opts = get_options()
         self.tab_bar_hidden = opts.tab_bar_style == 'hidden' or (is_macos and opts.macos_native_tabs)
         self.tab_bar.apply_options()
+        self.update_native_tab_title()
         if not self.agent_sidebar_enabled:
             self.update_tab_bar_data()
             self.layout_tab_bar()

@@ -25,7 +25,7 @@ def validate(get: Any) -> dict:
     result = {'window_id': int(match[3:]), 'agent': agent, 'session': get('expected_session', None)}
     if result['session'] is not None and not isinstance(result['session'], str):
         raise RemoteControlErrorWithoutTraceback('expected-session must be a string')
-    for key, default, low, high in (('after_seq', -1, -1, None), ('timeout_ms', 0, 0, 10000), ('max_events', 100, 1, 100)):
+    for key, default, low, high in (('after_seq', -1, -1, None), ('timeout_ms', 0, 0, 300000), ('max_events', 100, 1, 100)):
         value = get(key, default)
         if type(value) is not int or value < low or (high is not None and value > high):
             raise RemoteControlErrorWithoutTraceback('Invalid ' + key)
@@ -112,7 +112,7 @@ class Waiter:
 
 
 def observe_pending(boss: Any, timer_id: int | None = None) -> None:
-    for wid in {w.spec['window_id'] for w in tuple(pending(boss).values())}:
+    for wid in {w.spec['window_id'] for w in tuple(pending(boss).values()) if w.spec['window_id'] is not None}:
         window = boss.window_id_map.get(wid)
         if window is not None:
             boss.agent_tracker.observe(window)
@@ -121,7 +121,7 @@ def observe_pending(boss: Any, timer_id: int | None = None) -> None:
 
 def wake_waiters(boss: Any, window_id: int) -> None:
     for waiter in tuple(pending(boss).values()):
-        if waiter.spec['window_id'] == window_id:
+        if type(waiter) is Waiter and waiter.spec['window_id'] == window_id:
             result = batch(boss, waiter.spec)
             if result['reason'] != 'timeout':
                 waiter.close(result)
@@ -136,7 +136,7 @@ class AgentWait(RemoteCommand):
     short_desc = 'Wait once for a batch of observed agent changes'
     desc = 'One-shot bounded event batch, not a subscription. Omitted after-seq starts at the current cursor.'
     is_asynchronous = True
-    response_timeout = 15
+    response_timeout = 310
     protocol_spec = '''match/str: Exact id:N selector
 expected_agent/str: Required agent identity
 expected_session/str: Optional session identity
@@ -145,7 +145,7 @@ working_seq/int: Previously observed working event cursor
 working_generation/int: Generation of the working event
 until/str: changed or comma-separated states
 require_working/bool: Require observed working before a terminal state
-timeout_ms/int: Wait duration, at most 10000 ms
+ timeout_ms/int: Wait duration, at most 300000 ms
 max_events/int: Batch limit, at most 100
 '''
     options_spec = '''--match
@@ -189,7 +189,7 @@ Require a working event after the cursor in this generation.
 --timeout-ms
 type=int
 default=0
-Maximum wait in milliseconds, 0..10000.
+Maximum wait in milliseconds, 0..300000.
 
 
 --max-events

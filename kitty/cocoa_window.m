@@ -116,6 +116,11 @@ draw_agents_sidebar_icon(NSRect rect) {
     [self addTrackingArea:hover_tracking_area];
 }
 
+- (void)resetCursorRects {
+    [super resetCursorRects];
+    [self addCursorRect:self.bounds cursor:[NSCursor pointingHandCursor]];
+}
+
 - (void)mouseEntered:(NSEvent *)event {
     (void)event;
     hovered = YES;
@@ -241,9 +246,10 @@ cocoa_initialize_agents_sidebar_toggle(void *ptr) {
     CGFloat spinner_phase;
     NSVisualEffectView *background_view;
     unsigned cell_width_pixels;
+    NSTrackingArea *sidebar_tracking_area;
     BOOL resizing;
     BOOL resizing_width;
-    NSTrackingArea *sidebar_tracking_area;
+    BOOL resize_hovered;
     NSMutableSet<NSString *> *collapsed_groups;
     NSMutableDictionary<NSString *, NSNumber *> *group_animation;
     NSInteger hovered_row;
@@ -274,8 +280,10 @@ cocoa_initialize_agents_sidebar_toggle(void *ptr) {
 // same expanded/collapsed groups.
 + (NSMutableSet<NSString *> *)sharedCollapsedGroups;
 + (NSMutableDictionary<NSString *, NSNumber *> *)sharedGroupAnimation;
++ (void)setSharedCollapsedGroups:(const char **)keys count:(size_t)count;
 - (void)startGroupAnimationTimer;
 - (void)sharedGroupStateChanged:(NSNotification *)notification;
+
 @end
 
 @implementation KittyAgentsSidebarView
@@ -302,6 +310,7 @@ cocoa_initialize_agents_sidebar_toggle(void *ptr) {
         spinner_phase = 0.0;
         hovered_row = -1;
         hovered_group_key = nil;
+        resize_hovered = NO;
         collapsed_groups = [[KittyAgentsSidebarView sharedCollapsedGroups] retain];
         group_animation = [[KittyAgentsSidebarView sharedGroupAnimation] retain];
         [[NSNotificationCenter defaultCenter] addObserver:self selector:@selector(sharedGroupStateChanged:) name:@"KittyAgentsSidebarGroupStateChanged" object:nil];
@@ -391,6 +400,19 @@ cocoa_initialize_agents_sidebar_toggle(void *ptr) {
     return shared;
 }
 
++ (void)setSharedCollapsedGroups:(const char **)keys count:(size_t)count {
+    NSMutableSet<NSString *> *collapsed = [self sharedCollapsedGroups];
+    NSMutableDictionary<NSString *, NSNumber *> *animation = [self sharedGroupAnimation];
+    [collapsed removeAllObjects];
+    [animation removeAllObjects];
+    for (size_t i = 0; i < count; i++) {
+        if (keys[i]) {
+            NSString *key = [NSString stringWithUTF8String:keys[i]];
+            if (key.length) [collapsed addObject:key];
+        }
+    }
+}
+
 - (void)startGroupAnimationTimer {
     if (group_animation_timer) return;
     group_animation_timer = [NSTimer timerWithTimeInterval:(1.0 / 60.0) target:self selector:@selector(advanceGroupAnimation:) userInfo:nil repeats:YES];
@@ -436,6 +458,11 @@ cocoa_initialize_agents_sidebar_toggle(void *ptr) {
     [chevron moveToPoint:NSMakePoint(point.x - 3.0, point.y - 2.0)];
     [chevron lineToPoint:NSMakePoint(point.x, point.y + 1.0)];
     [chevron lineToPoint:NSMakePoint(point.x + 3.0, point.y - 2.0)];
+    if (hovered) {
+        NSRect hover_rect = NSMakeRect(point.x - 9.0, point.y - 9.0, 18.0, 18.0);
+        [[[NSColor controlBackgroundColor] colorWithAlphaComponent:0.34] setFill];
+        [[NSBezierPath bezierPathWithRoundedRect:hover_rect xRadius:6.0 yRadius:6.0] fill];
+    }
     NSAffineTransform *transform = [NSAffineTransform transform];
     [transform translateXBy:point.x yBy:point.y];
     [transform rotateByRadians:angle];
@@ -474,7 +501,7 @@ cocoa_initialize_agents_sidebar_toggle(void *ptr) {
             last_key = key;
         }
         CGFloat current_row_height = row_height * expansion;
-        if (current_row_height > 1.0 && p.y >= y && p.y < y + current_row_height) return (NSInteger)i;
+        if (current_row_height > 1.0 && p.y >= y && p.y < y + current_row_height && [self windowIDForRow:(NSInteger)i]) return (NSInteger)i;
         y += current_row_height;
     }
     return -1;
@@ -493,6 +520,8 @@ cocoa_initialize_agents_sidebar_toggle(void *ptr) {
     if (p.x >= self.bounds.size.width - 8.0) {
         resizing = YES;
         resizing_width = YES;
+        resize_hovered = YES;
+        [self setNeedsDisplay:YES];
         return;
     }
     NSString *group_key = [self groupKeyAtPoint:p];
@@ -502,6 +531,10 @@ cocoa_initialize_agents_sidebar_toggle(void *ptr) {
         else [collapsed_groups removeObject:group_key];
         if (!group_animation[group_key]) group_animation[group_key] = @(collapsing ? 1.0 : 0.0);
         [self startGroupAnimationTimer];
+        NSData *encoded_data = [group_key dataUsingEncoding:NSUTF8StringEncoding];
+        NSString *encoded_key = [[[encoded_data base64EncodedStringWithOptions:0] copy] autorelease];
+        NSString *payload = [NSString stringWithFormat:@"%u:%d:%@", os_window_id, collapsing ? 1 : 0, encoded_key];
+        set_cocoa_pending_action(AGENTS_SIDEBAR_GROUP_TOGGLE, [payload UTF8String]);
         [[NSNotificationCenter defaultCenter] postNotificationName:@"KittyAgentsSidebarGroupStateChanged" object:self];
         [self setNeedsDisplay:YES];
         return;
@@ -551,7 +584,8 @@ cocoa_initialize_agents_sidebar_toggle(void *ptr) {
 - (void)updateHoverAtPoint:(NSPoint)p {
     NSInteger next_row = -1;
     NSString *next_key = nil;
-    if (p.x < self.bounds.size.width - 8.0) {
+    BOOL next_resize_hovered = resizing || (p.x >= self.bounds.size.width - 8.0 && p.x <= self.bounds.size.width);
+    if (!next_resize_hovered) {
         next_key = [self groupKeyAtPoint:p];
         if (!next_key) next_row = [self rowAtPoint:p];
     }
@@ -562,15 +596,19 @@ cocoa_initialize_agents_sidebar_toggle(void *ptr) {
     }
     BOOL row_changed = hovered_row != next_row;
     hovered_row = next_row;
-    if (group_changed || row_changed) [self setNeedsDisplay:YES];
+    BOOL resize_changed = resize_hovered != next_resize_hovered;
+    resize_hovered = next_resize_hovered;
+    if (group_changed || row_changed || resize_changed) [self setNeedsDisplay:YES];
 }
 
 - (void)mouseMoved:(NSEvent *)event {
     NSPoint p = [self convertPoint:event.locationInWindow fromView:nil];
     [self updateHoverAtPoint:p];
-    if (p.x >= self.bounds.size.width - 8.0) [[NSCursor resizeLeftRightCursor] set];
+    if (resize_hovered) [[NSCursor resizeLeftRightCursor] set];
+    else if (hovered_group_key || hovered_row >= 0) [[NSCursor pointingHandCursor] set];
     else [[NSCursor arrowCursor] set];
 }
+
 
 - (void)mouseEntered:(NSEvent *)event {
     [self mouseMoved:event];
@@ -600,9 +638,10 @@ cocoa_initialize_agents_sidebar_toggle(void *ptr) {
 }
 
 - (void)mouseUp:(NSEvent *)event {
-    (void)event;
     resizing = NO;
     resizing_width = NO;
+    NSPoint p = [self convertPoint:event.locationInWindow fromView:nil];
+    [self updateHoverAtPoint:p];
     [self resetCursorRects];
 }
 - (void)setRows:(const unsigned long long *)new_window_ids
@@ -843,22 +882,20 @@ cocoa_initialize_agents_sidebar_toggle(void *ptr) {
         }
         CGFloat expansion = grouped ? [self groupExpansion:group_key] : 1.0;
         if (expansion <= 0.001) continue;
-        BOOL row_hovered = hovered_row == (NSInteger)i;
+        BOOL row_hovered = hovered_row == (NSInteger)i && [self windowIDForRow:(NSInteger)i];
         BOOL active = [active_rows[i] boolValue];
         NSRect row = NSMakeRect(0, y, self.bounds.size.width, row_height * expansion);
         [NSGraphicsContext saveGraphicsState];
         NSRectClip(row);
+        NSRect pill = NSInsetRect(row, 6.0, 2.0);
         if (active) {
-            // selected row, instead of a full-bleed rectangle.
-            NSRect pill = NSInsetRect(row, 6.0, 2.0);
             [[NSColor selectedContentBackgroundColor] setFill];
             [[NSBezierPath bezierPathWithRoundedRect:pill xRadius:6.0 yRadius:6.0] fill];
         } else if (row_hovered) {
-            NSRect pill = NSInsetRect(row, 6.0, 2.0);
-            [[[NSColor controlBackgroundColor] colorWithAlphaComponent:0.26] setFill];
+            [[[NSColor controlBackgroundColor] colorWithAlphaComponent:0.38] setFill];
             [[NSBezierPath bezierPathWithRoundedRect:pill xRadius:6.0 yRadius:6.0] fill];
         }
-        NSColor *primary_color = active ? [NSColor alternateSelectedControlTextColor] : [NSColor controlTextColor];
+        NSColor *primary_color = active ? [NSColor alternateSelectedControlTextColor] : (row_hovered ? [NSColor labelColor] : [NSColor controlTextColor]);
         NSColor *detail_color = active ? [[NSColor alternateSelectedControlTextColor] colorWithAlphaComponent:0.72] : [NSColor secondaryLabelColor];
         BOOL has_agent = i < agents.count && agents[i].length > 0;
         NSUInteger row_state = [states[i] unsignedIntegerValue];
@@ -938,9 +975,17 @@ cocoa_initialize_agents_sidebar_toggle(void *ptr) {
         [NSGraphicsContext restoreGraphicsState];
         y += row_height * expansion;
     }
+    const CGFloat rail_width = (resize_hovered || resizing) ? 2.0 : 1.0;
+    const CGFloat rail_x = MAX(0.0, self.bounds.size.width - rail_width);
+    NSColor *rail_color;
+    if (resizing) rail_color = [[NSColor controlAccentColor] colorWithAlphaComponent:0.88];
+    else if (resize_hovered) rail_color = [[NSColor labelColor] colorWithAlphaComponent:0.72];
+    else rail_color = [[NSColor separatorColor] colorWithAlphaComponent:0.55];
+    [rail_color setFill];
+    NSRectFill(NSMakeRect(rail_x, 0.0, rail_width, self.bounds.size.height));
+
+
 }
-
-
 - (void)dealloc {
     [self stopAnimating];
     [group_animation_timer invalidate];
@@ -981,9 +1026,12 @@ cocoa_set_agents_sidebar(
     const char **details,
     const unsigned char *states,
     const bool *active,
+    const char **collapsed,
+    size_t collapsed_count,
     size_t count) {
     NSWindow *window = (NSWindow *)ptr;
     if (!window || !window.contentView) return;
+    [KittyAgentsSidebarView setSharedCollapsedGroups:collapsed count:collapsed_count];
     NSButton *toggle_button = agents_sidebar_toggle_button(window);
     toggle_button.hidden = NO;
     agents_sidebar_update_toggle_state(toggle_button, enabled);
@@ -2018,6 +2066,13 @@ long
 cocoa_window_number(void *w) {
     NSWindow *window = (NSWindow *)w;
     return [window windowNumber];
+}
+
+void
+cocoa_set_native_tab_title(void *w, const char *title) {
+    NSWindow *window = (NSWindow *)w;
+    // Keep tab labels independent of explicit OS window title overrides.
+    if (@available(macOS 10.13, *)) window.tab.title = @(title);
 }
 
 size_t

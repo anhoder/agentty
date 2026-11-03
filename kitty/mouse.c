@@ -301,6 +301,52 @@ border_contains_mouse(BorderRect *br, double tolerance, Edge *edges) {
     return ans;
 }
 
+static void
+find_border_gap(Tab *t, Edge *edges, id_type *window_id) {
+    double x = global_state.callback_os_window->mouse_x, y = global_state.callback_os_window->mouse_y;
+    BorderRect *left = NULL, *right = NULL, *top = NULL, *bottom = NULL;
+
+    for (unsigned i = 0; i < t->num_windows; i++) {
+        if (contains_mouse(t->windows + i)) return;
+    }
+    for (unsigned i = 0; i < t->border_rects.num_border_rects; i++) {
+        BorderRect *br = t->border_rects.rect_buf + i;
+        if (!br->border_type) continue;
+        if (br->horizontal) {
+            if (x < br->px.left || x >= br->px.right) continue;
+            if (br->border_type < 0 && br->px.bottom <= y && (!top || br->px.bottom > top->px.bottom)) top = br;
+            else if (br->border_type > 0 && br->px.top >= y && (!bottom || br->px.top < bottom->px.top)) bottom = br;
+        } else {
+            if (y < br->px.top || y >= br->px.bottom) continue;
+            if (br->border_type > 0 && br->px.right <= x && (!left || br->px.right > left->px.right)) left = br;
+            else if (br->border_type < 0 && br->px.left >= x && (!right || br->px.left < right->px.left)) right = br;
+        }
+    }
+    if (left && right && left->px.right < right->px.left) {
+        *edges |= RIGHT_EDGE;
+        if (!*window_id) *window_id = left->border_type < 0 ? -left->border_type : left->border_type;
+    }
+    if (top && bottom && top->px.bottom < bottom->px.top) {
+        *edges |= BOTTOM_EDGE;
+        if (!*window_id) *window_id = top->border_type < 0 ? -top->border_type : top->border_type;
+    }
+}
+
+static MouseShape
+mouse_cursor_shape_for_border(Edge edges) {
+    if (edges & LEFT_EDGE) {
+        if (edges & TOP_EDGE) return NWSE_RESIZE_POINTER;
+        if (edges & BOTTOM_EDGE) return NESW_RESIZE_POINTER;
+        return EW_RESIZE_POINTER;
+    }
+    if (edges & RIGHT_EDGE) {
+        if (edges & TOP_EDGE) return NESW_RESIZE_POINTER;
+        if (edges & BOTTOM_EDGE) return NWSE_RESIZE_POINTER;
+        return EW_RESIZE_POINTER;
+    }
+    if (edges & (TOP_EDGE | BOTTOM_EDGE)) return NS_RESIZE_POINTER;
+    return DEFAULT_POINTER;
+}
 
 static bool clamp_to_window = false;
 
@@ -1093,6 +1139,7 @@ mouse_region(bool detect_borders, bool detect_title_bar) {
                 if (closest_horiz && border_contains_mouse(closest_horiz, tolerance, &ans.window_border) && !window_id)
                     window_id = closest_horiz->border_type < 0 ? -closest_horiz->border_type : closest_horiz->border_type;
             }
+            if (!ans.window_border) find_border_gap(t, &ans.window_border, &window_id);
             if (ans.window_border) {
                 // If a hovered scrollbar overlaps this border region, the
                 // scrollbar takes precedence to avoid flickering when the
@@ -1163,8 +1210,10 @@ void
 focus_in_event(void) {
     // Ensure that no URL is highlighted and the mouse cursor is in default shape
     mouse_cursor_shape = TEXT_POINTER;
-    MouseRegion r = mouse_region(false, false);
-    if (r.window && r.window->render_data.screen) {
+    MouseRegion r = mouse_region(true, false);
+    if (r.window_border) {
+        mouse_cursor_shape = mouse_cursor_shape_for_border(r.window_border);
+    } else if (r.window && r.window->render_data.screen) {
         screen_mark_url(r.window->render_data.screen, 0, 0, 0, 0);
         set_mouse_cursor_for_screen(r.window->render_data.screen);
     }
@@ -1174,8 +1223,10 @@ focus_in_event(void) {
 void
 update_mouse_pointer_shape(void) {
     mouse_cursor_shape = TEXT_POINTER;
-    MouseRegion r = mouse_region(false, true);
-    if (r.in_tab_bar) {
+    MouseRegion r = mouse_region(true, true);
+    if (r.window_border) {
+        mouse_cursor_shape = mouse_cursor_shape_for_border(r.window_border);
+    } else if (r.in_tab_bar) {
         mouse_cursor_shape = POINTER_POINTER;
     } else if (r.in_title_bar) {
         mouse_cursor_shape = POINTER_POINTER;
@@ -1425,12 +1476,14 @@ mouse_event(const int button, int modifiers, int action) {
     if (global_state.active_drag_resize) {
         if (button < 0) {
             call_boss(drag_resize_update, "dd", osw->mouse_x, osw->mouse_y);
+            mouse_cursor_shape = mouse_cursor_shape_for_border(global_state.active_drag_resize_edges);
+            set_mouse_cursor(mouse_cursor_shape);
             debug("drag resize updated\n");
         } else if (button == GLFW_MOUSE_BUTTON_LEFT && action == GLFW_RELEASE) {
             call_boss(drag_resize_end, "");
             global_state.active_drag_resize = 0;
-            mouse_cursor_shape = DEFAULT_POINTER;
-            set_mouse_cursor(mouse_cursor_shape);
+            global_state.active_drag_resize_edges = 0;
+            update_mouse_pointer_shape();
             debug("drag resize ended\n");
         }
         return;
@@ -1452,15 +1505,7 @@ mouse_event(const int button, int modifiers, int action) {
         debug("handled by window title bar\n");
     } else if (r.window_border) {
         debug("window border: %s window id: %llu\n", border_name(r.window_border), w ? w->id : 0);
-        if (r.window_border & LEFT_EDGE) {
-            if (r.window_border & TOP_EDGE) mouse_cursor_shape = NWSE_RESIZE_POINTER;
-            else if (r.window_border & BOTTOM_EDGE) mouse_cursor_shape = NESW_RESIZE_POINTER;
-            else mouse_cursor_shape = EW_RESIZE_POINTER;
-        } else if (r.window_border & RIGHT_EDGE) {
-            if (r.window_border & TOP_EDGE) mouse_cursor_shape = NESW_RESIZE_POINTER;
-            else if (r.window_border & BOTTOM_EDGE) mouse_cursor_shape = NWSE_RESIZE_POINTER;
-            else mouse_cursor_shape = EW_RESIZE_POINTER;
-        } else if (r.window_border & (TOP_EDGE | BOTTOM_EDGE)) mouse_cursor_shape = NS_RESIZE_POINTER;
+        mouse_cursor_shape = mouse_cursor_shape_for_border(r.window_border);
         if (w && button == GLFW_MOUSE_BUTTON_LEFT && w->render_data.screen) {
             RAII_PyObject(
                 retval,
@@ -1478,7 +1523,10 @@ mouse_event(const int button, int modifiers, int action) {
                 PyErr_Print();
                 return;
             }
-            if (PyObject_IsTrue(retval)) global_state.active_drag_resize = w->id;
+            if (PyObject_IsTrue(retval)) {
+                global_state.active_drag_resize = w->id;
+                global_state.active_drag_resize_edges = r.window_border;
+            }
         }
     } else if (w) {
         debug("grabbed: %d\n", w->render_data.screen->modes.mouse_tracking_mode != 0);

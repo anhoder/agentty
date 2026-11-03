@@ -36,7 +36,7 @@ def source_window(boss, match):
     return windows[0]
 
 
-def controlled_launch(boss, source, cwd, argv):
+def controlled_launch(boss, source, cwd, argv, agent=None, session=None):
     tab = source.tabref() if source is not None else boss.active_tab
     if tab is None:
         reject('No target tab')
@@ -48,9 +48,23 @@ def controlled_launch(boss, source, cwd, argv):
     opts.copy_cmdline = False
     opts.stdin_source = 'none'
     opts.watcher = []
-    w = launch(boss, opts, list(argv), target_tab=tab, force_target_tab=True)
+    broker = token = None
+    if agent == 'opencode':
+        from kitty.agent_broker import broker_for
+        broker = broker_for(boss)
+        token, opts.env = broker.prepare(session)
+    try:
+        w = launch(boss, opts, list(argv), target_tab=tab, force_target_tab=True)
+    except BaseException:
+        if broker is not None:
+            broker.revoke(token)
+        raise
     if w is None:
+        if broker is not None:
+            broker.revoke(token)
         reject('Launch returned no window; no automatic cleanup or retry was performed')
+    if broker is not None:
+        broker.bind(token, w)
     return {'launch_requested': True, 'window_id': w.id, 'stage': 'launch_requested', 'identity_confirmed': False}
 
 
@@ -89,7 +103,7 @@ def resume(boss, get):
         key = ('resume', id(boss), agent, session)
         if key in _requests and now - _requests[key][0] < REQUEST_TTL:
             reject('Session launch recently requested')
-        result = controlled_launch(boss, source, cwd, argv)
+        result = controlled_launch(boss, source, cwd, argv, agent, session)
         remember(key, now, (agent, session, cwd), result)
         return result
 
@@ -118,7 +132,7 @@ def start(boss, get):
             if previous[1] != fingerprint:
                 reject('request-id reused with different parameters')
             return dict(previous[2], replayed=True)
-        result = controlled_launch(boss, None, cwd, START_ARGV[agent])
+        result = controlled_launch(boss, None, cwd, START_ARGV[agent], agent)
         result.update(request_id=request_id, replayed=False)
         remember(key, now, fingerprint, result)
         return result

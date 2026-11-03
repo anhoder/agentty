@@ -10,7 +10,29 @@ Recent major new features
 ---------------------------
 
 
+- macOS: Keep kitty's ordinary tab bar visible and interactive alongside the
+  Agents sidebar when :opt:`macos_native_tabs` is disabled, including vertical
+  tab bars and sidebar resizing.
+- Fix an uninitialized agent debounce timer causing a traceback on exit or when first scheduling an agent idle transition.
+- quick-access-terminal: Force kitty's built-in tab bar instead of macOS native tabs.
+- macOS: Polish Agents sidebar hover feedback across the toggle, group headers, disclosures and agent rows, and show a visible right-edge resize rail.
+- macOS: Fix Agents sidebar row clipping hiding the resize rail outside agent rows and obscuring subsequent rows.
+- macOS: Do not highlight the Agents sidebar's empty placeholder or show a hand cursor over it.
+- macOS: Stop the terminal view from overriding the Agents sidebar's mouse
+  cursor, preventing rapid pointer/hand flicker while hovering sidebar rows
+  and preserving the sidebar's resize cursor.
+- Fix pane border resizing so the resize cursor is shown consistently while hovering and dragging, including the spacing between adjacent pane borders.
+- Fix startup failing when the default session did not define window metadata such as its position or size.
+- Persist and restore the macOS Agents sidebar visibility, width and collapsed
+  group state as part of the automatic kitty session snapshot. Runtime agent
+  activity and transient UI animation state are still recomputed on restore.
 - Fix the terminal content in inactive tabs being partially covered by the tab bar after entering fullscreen.
+- macOS: Make :opt:`tab_title_template`, including ``{custom}``, control both
+  the native tab label and the OS window title when :opt:`macos_native_tabs`
+  is enabled, without pane Job titles overwriting the template. Explicit OS
+  window titles still take precedence over the template in the titlebar;
+  clearing the override restores the template without changing the tab label.
+- Fix terminal content height not being refreshed after merging native macOS windows or moving a tab out of the native tab bar.
 - A new option :opt:`persist_session` to save the state of kitty whenever it
   exits and restore it the next time kitty is started, including the layout of
   every tab, the working directory of every window and the scrollback. Set it
@@ -32,6 +54,12 @@ Recent major new features
   clears stale state on session switches and TUI shutdown.
 - Ensure agent idle debounce transitions are flushed even when the Agents
   sidebar is hidden.
+- Offer consent-based installation or updates for Kitty-owned agent integrations
+  on first local agent detection, with per-agent dismissal and explicit restart
+  guidance. Custom integration files are never overwritten.
+- Fix first-launch integration prompts being skipped when Pi rewrites its
+  process title and macOS can no longer read its environment. Recognize Pi's
+  resolved Node package entry point as well as its executable name.
 - macOS: Display brand icons for each AI agent in the Agents sidebar. Icons
   are loaded from ``kitty/agent_icons/`` and adapt to light/dark appearance
   by substituting ``currentColor`` in SVG sources with the label color. Non-square

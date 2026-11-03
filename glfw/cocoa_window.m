@@ -394,12 +394,12 @@ _glfwRestartDisplayLinks(void) {
     }
 }
 
-// Returns whether the cursor is in the content area of the specified window
+// Native overlays own their cursor even though they are inside the content view.
 //
 static bool
 cursorInContentArea(_GLFWwindow *window) {
-    const NSPoint pos = [window->ns.object mouseLocationOutsideOfEventStream];
-    return [window->ns.view mouse:pos inRect:[window->ns.view frame]];
+    const NSPoint pos = [[window->ns.view superview] convertPoint:[window->ns.object mouseLocationOutsideOfEventStream] fromView:nil];
+    return [window->ns.view hitTest:pos] == window->ns.view;
 }
 
 // Hides the cursor if not already hidden
@@ -426,6 +426,10 @@ showCursor(_GLFWwindow *window UNUSED) {
 //
 static void
 updateCursorImage(_GLFWwindow *window) {
+    if (window->cursorMode != GLFW_CURSOR_DISABLED && !cursorInContentArea(window)) {
+        showCursor(window);
+        return;
+    }
     if (window->cursorMode == GLFW_CURSOR_NORMAL) {
         showCursor(window);
 
@@ -705,6 +709,14 @@ static void _glfwUpdateNotchCover(_GLFWwindow *);
     // to a resize event that was caused by a screen change as the OpenGL
     // context is not ready yet. See: https://github.com/kovidgoyal/kitty/issues/8983
     if (window->ns.resizeCallback && !is_screen_change && !is_fullscreen && window->ns.live_resize_in_progress) window->ns.resizeCallback((GLFWwindow *)window);
+}
+
+// AppKit can change the content frame when windows are merged into or removed
+// from a native tab group without posting NSWindowDidResizeNotification. Check
+// the settled frame during windowDidUpdate so kitty receives the new viewport.
+- (void)windowDidUpdate:(NSNotification *)notification {
+    NSRect contentRect = get_window_size_without_border_in_logical_pixels(window);
+    if (contentRect.size.width != window->ns.width || contentRect.size.height != window->ns.height) [self windowDidResize:notification];
 }
 
 - (void)windowDidMove:(NSNotification *)notification {

@@ -448,8 +448,10 @@ class Boss:
         self.agent_tracker = AgentTracker()
         self.agent_sidebar_flush_timer = 0
         self._agent_debounce_timer = 0
+        self.agent_integration_timer = 0
         self.agent_sidebar_enabled = False
         self.agent_sidebar_cols = 30
+        self.agent_sidebar_collapsed_groups: set[str] = set()
         self.session_autosave_timer = 0
         self.session_snapshot_saved_at_exit = False
         self.misc_config_errors: list[str] = []
@@ -484,19 +486,26 @@ class Boss:
             self.atexit.unlink(effective_config_path)
         if effective_config_error:
             self.misc_config_errors.append(effective_config_error)
+        from .agent_onboarding import AgentIntegrationPrompts
+
+        self.agent_integration_prompts = AgentIntegrationPrompts(self)
+        self.agent_integration_timer = add_timer(self.agent_integration_prompts.poll, 1.0, True)
 
     def native_tabs_enabled(self) -> bool:
         return is_macos and get_options().macos_native_tabs
 
     def startup_first_child(self, os_window_id: int | None, startup_sessions: Iterable[Session] = ()) -> None:
-        si = startup_sessions or create_sessions(get_options(), self.args, default_session=get_options().startup_session)
+        si = tuple(startup_sessions or create_sessions(get_options(), self.args, default_session=get_options().startup_session))
+        for startup_session in si:
+            if startup_session.agent_sidebar_enabled is not None:
+                self.restore_agent_sidebar_state(startup_session)
+                break
         focused_os_window = wid = 0
         tab_group_members: dict[str, int] = {}
         native_tabs = self.native_tabs_enabled()
         token = os.environ.pop('XDG_ACTIVATION_TOKEN', '')
         with Window.set_ignore_focus_changes_for_new_windows():
             for startup_session in si:
-                # The window state from the CLI options will override and apply to every single OS window in startup session
                 wstate = self.args.start_as if self.args.start_as and self.args.start_as != 'normal' else None  # ty: ignore[redundant-condition]
                 parent = tab_group_members.get(startup_session.os_window_tab_group) if native_tabs and startup_session.os_window_tab_group is not None else None
                 wid = self.add_os_window(startup_session, window_state=wstate, os_window_id=os_window_id, tab_group_parent_os_window_id=parent)
@@ -1957,6 +1966,15 @@ class Boss:
             return (tab_manager,)
         os_window_ids = native_tab_group_order(tab_manager.os_window_id) or (tab_manager.os_window_id,)
         return tuple(self.os_window_map[os_window_id] for os_window_id in os_window_ids if os_window_id in self.os_window_map)
+    def restore_agent_sidebar_state(self, session: Any) -> None:
+        enabled = session.agent_sidebar_enabled
+        cols = session.agent_sidebar_cols
+        if not isinstance(enabled, bool) or not isinstance(cols, int) or cols < 16:
+            return
+        self.agent_sidebar_enabled = enabled
+        self.agent_sidebar_cols = cols
+        self.agent_sidebar_collapsed_groups = set(session.agent_sidebar_collapsed_groups)
+
 
     def mark_agent_window_dirty(self, window_id: int) -> None:
         # Completion notifications work even when the sidebar is hidden; the
@@ -1986,9 +2004,9 @@ class Boss:
                         group = f'{tab_index}: {title}'
                         # The label carries the tab number and title, both of
                         # which change as tabs are reordered, renamed, or
-                        # retitled by a working agent. Key the group on the tab
-                        # id so collapsed state survives all of that.
-                        group_key = f'tab:{tab.id}'
+                        # retitled by a working agent. The serialized tab id is
+                        # stable across session restore.
+                        group_key = f'tab:{tab.sidebar_id}'
                     elif strategy == 'path':
                         group = group_key = snapshot.cwd or cwd
                     else:
@@ -2020,6 +2038,8 @@ class Boss:
             before = self.agent_tracker.snapshot_for(window_id)
             self.agent_tracker.observe(window)
             after = self.agent_tracker.snapshot_for(window_id)
+            if getattr(self, '_agent_service', None) is not None:
+                self._agent_service.observe(window)
             from .rc.agent_wait import wake_waiters
             wake_waiters(self, window_id)
             if after is not None and after.state is AgentState.done and (before is None or before.state is not AgentState.done):
@@ -2089,7 +2109,7 @@ class Boss:
             for tm in managers:
                 tm.set_agent_sidebar_rows(())
                 tm.update_native_agents_sidebar()
-                tm.resize(only_tabs=True)
+                tm.resize()
                 tm.update_tab_bar_data()
                 tm.mark_tab_bar_dirty()
 
@@ -2144,6 +2164,24 @@ class Boss:
                 self.confirm(msg, self.handle_close_window_confirmation, window.id, window=window, title=_('Close window?'))
             else:
                 self.mark_window_for_close(window)
+    @ac('misc', 'Update the native AI agents sidebar group collapse state')
+    def agents_sidebar_group_toggle(self, data: str) -> None:
+        try:
+            os_window_id_s, collapsed_s, encoded_key = data.split(':', 2)
+            os_window_id = int(os_window_id_s)
+            collapsed = collapsed_s == '1'
+            if collapsed_s not in ('0', '1'):
+                return
+            key = base64.b64decode(encoded_key.encode('ascii'), validate=True).decode('utf-8')
+        except (ValueError, UnicodeDecodeError, base64.binascii.Error):
+            return
+        if not key or os_window_id not in self.os_window_map:
+            return
+        if collapsed:
+            self.agent_sidebar_collapsed_groups.add(key)
+        else:
+            self.agent_sidebar_collapsed_groups.discard(key)
+
 
     @ac('misc', 'Resize the native AI agents sidebar')
     def agents_sidebar_resize(self, data: str) -> None:
@@ -2160,8 +2198,7 @@ class Boss:
         scope = self.agent_sidebar_scope(tab_manager)
         for tm in scope:
             tm.agent_sidebar_cols = cols
-            tm.update_native_agents_sidebar()
-            tm.resize(only_tabs=True)
+            tm.resize()
 
     @ac(
         'misc',
@@ -3453,6 +3490,12 @@ class Boss:
         # The session state is not serialized here: every OS window has already been closed by the time this runs, so there is
         # nothing left to serialize. It is saved when the quit is requested or the last OS window is closed.
         self.shutting_down = True
+        if getattr(self, '_agent_broker', None) is not None:
+            self._agent_broker.close()
+            self._agent_broker = None
+        if self.agent_integration_timer:
+            remove_timer(self.agent_integration_timer)
+            self.agent_integration_timer = 0
         from .rc.agent_wait import clear_waiters
         clear_waiters(self)
         if getattr(self, '_agent_observe_timer', 0):

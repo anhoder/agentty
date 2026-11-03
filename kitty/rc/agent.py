@@ -6,7 +6,8 @@ from dataclasses import replace
 from typing import Any
 
 from kitty.agent_manifest import authority_for, detect
-from kitty.agents import AgentSnapshot, agent_event_cursor, detect_agent, session_id_of_window, snapshot_for_window, status_scope
+from kitty.agent_service import service_for
+from kitty.agents import AgentSnapshot, agent_event_cursor, agent_identity, detect_agent, session_id_of_window, snapshot_for_window, status_scope
 
 from .base import (
     MATCH_WINDOW_OPTION, ArgsType, Boss, PayloadGetType, PayloadType, RCOptions, RemoteCommand,
@@ -30,13 +31,13 @@ def agent_record(snapshot: AgentSnapshot, window: Window) -> dict[str, Any]:
 
 class Agent(RemoteCommand):
     protocol_spec = __doc__ = '''
-    action+/choices.list.get.explain.read: Read-only operation to perform
+    action+/choices.list.get.explain.read.inspect: Read-only operation to perform
     match/str: Window selector using the existing window matching syntax
     self/bool: Select the window the command was run in
     extent/choices.detection.visible: Text source for read
     '''
     short_desc = 'Inspect agents without sending input or changing their state'
-    desc = '''Return stable JSON describing agents. ACTION is list, get, explain or read.
+    desc = '''Return stable JSON describing agents. ACTION is list, get, explain, read or inspect.
 List defaults to all live windows and omits non-agents. Other actions require exactly
 one selected window (the command window or active window by default), and return
 JSON null for a non-agent. Use --match id:NUMBER to select a particular window.
@@ -51,8 +52,9 @@ Explain labels the record state source (tracker_cache or live_observation), and
 separates live screen evidence/arbitration from the matching cached tracker state
 (null when there is no matching cache). Cached state can lag live evidence, even
 when the sidebar is disabled; use explain to observe this distinction.
-Read supports the live detection screen and the visual screen, which can show
-scrollback when scrolled. It does not expose recent history or session files.'''
+Read defaults to the live detection screen; the visual screen can show scrollback
+when scrolled. For bounded terminal history use agent-read. Neither command reads
+agent session files or promises a complete conversation transcript.'''
     options_spec = MATCH_WINDOW_OPTION + '''
 
 --self
@@ -68,18 +70,18 @@ position; visible is the current visual screen. Neither includes full scrollback
 '''
     args = RemoteCommand.Args(
         spec='ACTION', count=1, json_field='action',
-        completion=RemoteCommand.CompletionSpec.from_string('type:keyword kwds:list,get,explain,read'),
+        completion=RemoteCommand.CompletionSpec.from_string('type:keyword kwds:list,get,explain,read,inspect'),
     )
 
     def message_to_kitty(self, global_opts: RCOptions, opts: Any, args: ArgsType) -> PayloadType:
-        if len(args) != 1 or args[0] not in ('list', 'get', 'explain', 'read'):
-            self.fatal('agent requires one action: list, get, explain or read')
+        if len(args) != 1 or args[0] not in ('list', 'get', 'explain', 'read', 'inspect'):
+            self.fatal('agent requires one action: list, get, explain, read or inspect')
         return {'action': args[0], 'match': opts.match, 'self': opts.self, 'extent': opts.extent}
 
     def response_from_kitty(self, boss: Boss, window: Window | None, payload_get: PayloadGetType) -> ResponseType:
         action = payload_get('action')
-        if action not in ('list', 'get', 'explain', 'read'):
-            raise RemoteControlErrorWithoutTraceback('Invalid agent action: expected list, get, explain or read')
+        if action not in ('list', 'get', 'explain', 'read', 'inspect'):
+            raise RemoteControlErrorWithoutTraceback('Invalid agent action: expected list, get, explain, read or inspect')
         extent = payload_get('extent')
         if action == 'read' and extent not in ('detection', 'visible'):
             raise RemoteControlErrorWithoutTraceback('Invalid agent read extent: expected detection or visible')
@@ -98,15 +100,18 @@ position; visible is the current visual screen. Neither includes full scrollback
                 return None
             session_id = session_id_of_window(w, live_agent)
             cached = tracker.snapshot_for(w.id)
-            if cached is not None and cached.agent == live_agent and cached.session_id == session_id:
+            identity_matches = tracker.identities.get(w.id, agent_identity(w)) == agent_identity(w)
+            if cached is not None and cached.agent == live_agent and cached.session_id == session_id and identity_matches:
                 # Keep the published state (including debounce/done holds), but
                 # never reuse stale window/session metadata from that snapshot.
                 current, _ = snapshot_for_window(w, previous=cached.state)
-                return replace(current, state=cached.state) if current is not None else None
+                return replace(current, state=cached.state, generation=cached.generation) if current is not None else None
             # Do not consume dirty flags, advance debounce timers or publish state
             # as a side effect of a read-only remote-control request. In particular
             # do not carry a different agent's previous state into arbitration.
-            return snapshot_for_window(w, w.agent_detection_snapshot())[0]
+            current = snapshot_for_window(w, w.agent_detection_snapshot())[0]
+            generation = tracker.generations.get(w.id, 0) + (0 if w.id in tracker.identities and identity_matches else 1)
+            return replace(current, generation=generation) if current is not None else None
 
         if action == 'list':
             records = [agent_record(s, w) for w in sorted(windows, key=lambda w: w.id) if (s := snapshot(w)) is not None]
@@ -119,12 +124,15 @@ position; visible is the current visual screen. Neither includes full scrollback
         if current is not None:
             result = agent_record(current, selected)
             result['cursor'] = agent_event_cursor(boss)
+            if action == 'inspect':
+                result.update(service_for(boss).inspect(selected))
             if action == 'explain':
                 screen = selected.agent_detection_snapshot()
                 match = detect(current.agent, screen)
                 candidate, visible_idle = snapshot_for_window(selected, screen, current.state)
                 cached = tracker.snapshot_for(selected.id)
-                matching_cache = cached is not None and cached.agent == current.agent and cached.session_id == current.session_id
+                matching_cache = (cached is not None and cached.agent == current.agent and cached.session_id == current.session_id
+                                  and tracker.identities.get(selected.id, agent_identity(selected)) == agent_identity(selected))
                 result = {
                     'record': result,
                     'state_source': 'tracker_cache' if matching_cache else 'live_observation',

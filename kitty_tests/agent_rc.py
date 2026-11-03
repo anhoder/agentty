@@ -9,6 +9,7 @@ from unittest.mock import patch
 from kitty.agent_manifest import detect
 from kitty.agents import AgentState, AgentTracker
 from kitty.rc.agent import Agent
+from kitty.rc.agent_read import AgentRead, read_terminal
 from kitty.rc.base import MatchError, PayloadGetter, RemoteControlErrorWithoutTraceback, command_for_name, parse_subcommand_cli
 
 from .agents import FakeWindow
@@ -79,6 +80,45 @@ class TestAgentRC(BaseTest):
         self.assertEqual(visible['text'], 'visible text')
         with self.assertRaises(RemoteControlErrorWithoutTraceback):
             self.response('read', extent='recent')
+
+    def test_agent_read_sources_and_cli(self):
+        calls = []
+        self.window.as_text = lambda **kw: calls.append(kw) or 'old\nlong\rwrapped\ntail\n'
+        self.assertEqual(read_terminal(self.window, 'recent', 2)['text'], 'wrapped\ntail')
+        self.assertEqual(read_terminal(self.window, 'recent-unwrapped', 2)['text'], 'wrapped\ntail')
+        self.assertEqual(calls, [{'add_history': True, 'add_wrap_markers': True}] * 2)
+        self.assertEqual(read_terminal(self.window, 'detection', None)['text'], 'ready')
+        command = AgentRead()
+        self.assertIsInstance(command_for_name('agent-read'), AgentRead)
+        opts, args = parse_subcommand_cli(command, ['agent-read', '--target', 'instance', '--source', 'recent'])
+        payload = command.message_to_kitty(None, opts, args)
+        self.assertEqual(payload['target'], 'instance')
+        self.assertIsNone(payload['lines'])
+        for value in (0, -1, 10001, True, '2'):
+            with self.assertRaises(ValueError):
+                read_terminal(self.window, 'recent', value)
+        with self.assertRaises(ValueError):
+            read_terminal(self.window, 'visible', 2)
+
+    def test_agent_read_scrolled_viewport_and_blank_lines(self):
+        calls = []
+
+        def as_text(**kw):
+            calls.append(kw)
+            # A rolled viewport differs from the live bottom. History mode
+            # ignores that viewport, as the real window.py helper does.
+            return 'history\n\nlive\n\ntail\n' if kw.get('add_history') else 'rolled\n\nviewport'
+
+        self.window.as_text = as_text
+        self.window.lines = ('live', '', 'tail')
+        self.assertEqual(read_terminal(self.window, 'visible', None)['text'], 'rolled\n\nviewport')
+        self.assertEqual(read_terminal(self.window, 'detection', None)['text'], 'live\n\ntail')
+        for source in ('recent', 'recent-unwrapped'):
+            result = read_terminal(self.window, source, 4)
+            self.assertEqual(result['text'], '\nlive\n\ntail')
+            self.assertFalse(result['completeness']['complete_transcript'])
+        self.assertEqual(calls, [{}, {'add_history': True, 'add_wrap_markers': True},
+                                 {'add_history': True, 'add_wrap_markers': True}])
 
     def test_non_agent_is_null_and_invalid_action_fails(self):
         self.window.child.foreground_processes = [{'cmdline': ['zsh']}]
@@ -157,7 +197,7 @@ class TestAgentRC(BaseTest):
         self.assertEqual(explained['arbitrated_state'], 'unknown')
         self.assertIs(tracker.snapshot_for(self.window.id), cached)
 
-    def test_same_agent_preserves_cached_state_but_metadata_is_live(self):
+    def test_session_change_does_not_reuse_cached_state(self):
         tracker = self.boss.agent_tracker
         self.window.lines = ('✳ Thinking… (3s · esc to interrupt)',)
         tracker.refresh_window(self.window)
@@ -168,15 +208,15 @@ class TestAgentRC(BaseTest):
         self.window.user_vars = {'KITTY_AGENT_SESSION': 'new-session'}
         self.window.is_focused = False
         for record in (self.response('get'), self.response('list')[0], self.response('read')['record']):
-            self.assertEqual(record['state'], 'working')
+            self.assertEqual(record['state'], 'idle')
             self.assertEqual(record['title'], 'Renamed')
             self.assertEqual(record['cwd'], '/new/path')
             self.assertEqual(record['session_id'], 'new-session')
             self.assertFalse(record['focused'])
             self.assertEqual(record['id'], record['window_id'])
         explained = self.response('explain')
-        self.assertEqual(explained['state_source'], 'tracker_cache')
-        self.assertEqual(explained['tracker_state'], 'working')
+        self.assertEqual(explained['state_source'], 'live_observation')
+        self.assertIsNone(explained['tracker_state'])
         self.assertEqual(explained['arbitrated_state'], 'idle')
         self.assertIs(tracker.snapshot_for(self.window.id), cached)
 

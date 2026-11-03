@@ -52,7 +52,7 @@ class AgentWaitTest(unittest.TestCase):
 
     def test_validation(self):
         for key, value in (('match', 'all'), ('match', 'id:-1'), ('expected_agent', ''),
-                           ('timeout_ms', 10001), ('after_seq', -2), ('after_seq', None), ('max_events', 0), ('after_seq', True)):
+                           ('timeout_ms', 300001), ('after_seq', -2), ('after_seq', None), ('max_events', 0), ('after_seq', True)):
             with self.subTest(key=key, value=value), patch.dict(self.payload, {key: value}):
                 with self.assertRaises(ValueError):
                     self.request()
