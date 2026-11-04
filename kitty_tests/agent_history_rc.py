@@ -1,12 +1,13 @@
 """RC history safety checks, run using the kitty launcher test runner."""
 
 from types import SimpleNamespace
-from unittest.mock import Mock, patch
 from unittest import TestCase
+from unittest.mock import Mock, patch
 
+from kitty.fast_data_types import PRESS, send_mouse_event
 from kitty.rc.agent_read import HistoryWaiter, agent_read, mouse_guard, read_terminal
 from kitty.rc.agent_wait import clear_waiters, pending
-from kitty.fast_data_types import MOUSE_WHEEL_DOWN, MOUSE_WHEEL_UP, PRESS, send_mouse_event
+
 from .base import BaseTest
 
 
@@ -40,38 +41,44 @@ class AgentHistoryRC(TestCase):
 
     def make_waiter(self, sender=None):
         rows = ['6', '7', '8', '9', '10']
-        screen = SimpleNamespace(columns=80, lines=5, scrolled_by=0,
-            current_key_encoding_flags=lambda: 0, is_using_alternate_linebuf=lambda: True,
-            linebuf=SimpleNamespace(line=lambda i: rows[i], is_continued=lambda i: False))
-        window = SimpleNamespace(id=1, screen=screen,
-            geometry=SimpleNamespace(left=0, right=800, top=0, bottom=100))
+        screen = SimpleNamespace(
+            columns=80,
+            lines=5,
+            scrolled_by=0,
+            current_key_encoding_flags=lambda: 0,
+            is_using_alternate_linebuf=lambda: True,
+            linebuf=SimpleNamespace(line=lambda i: rows[i], is_continued=lambda i: False),
+        )
+        window = SimpleNamespace(id=1, screen=screen, geometry=SimpleNamespace(left=0, right=800, top=0, bottom=100))
         boss = SimpleNamespace(window_id_map={1: window})
         responder = Mock()
         fallback = dict(source='recent', text='passive', completeness={'complete_transcript': False})
         identity = {'instance_id': 'a', 'agent': 'claude'}
         with patch('kitty.rc.agent_read.monotonic', return_value=0):
-            waiter = HistoryWaiter(boss, 'history-test', responder, window, identity,
-                                   fallback, 7, 0, sender=sender or Mock(return_value=True))
+            waiter = HistoryWaiter(boss, 'history-test', responder, window, identity, fallback, 7, 0, sender=sender or Mock(return_value=True))
         pending(boss)[waiter.key] = waiter
         return waiter, rows, responder
 
     def tick(self, waiter, now, identity=None):
-        with patch('kitty.rc.agent_read.monotonic', return_value=now), \
-             patch('kitty.rc.agent_read.resolve_read_target', return_value=(waiter.window, identity or waiter.identity)), \
-             patch('kitty.rc.agent_read.live_state', return_value='idle'):
+        with (
+            patch('kitty.rc.agent_read.monotonic', return_value=now),
+            patch('kitty.rc.agent_read.resolve_read_target', return_value=(waiter.window, identity or waiter.identity)),
+            patch('kitty.rc.agent_read.live_state', return_value='idle'),
+        ):
             waiter.poll(0)
 
     def test_success_restores_original_viewport(self):
         import json
+
         w, rows, responder = self.make_waiter()
-        self.tick(w, .02)
-        self.tick(w, .15)
+        self.tick(w, 0.02)
+        self.tick(w, 0.15)
         rows[:] = ['3', '4', '5', '6', '7']
-        self.tick(w, .17)
-        self.tick(w, .30)
+        self.tick(w, 0.17)
+        self.tick(w, 0.30)
         rows[:] = ['6', '7', '8', '9', '10']
-        self.tick(w, .32)
-        self.tick(w, .35)
+        self.tick(w, 0.32)
+        self.tick(w, 0.35)
         self.assertTrue(w.closed)
         result = json.loads(responder.send_data.call_args.args[0])
         self.ae(result['restoration'], 'restored')
@@ -79,8 +86,9 @@ class AgentHistoryRC(TestCase):
 
     def test_native_false_is_passive(self):
         import json
+
         w, rows, responder = self.make_waiter(Mock(return_value=False))
-        self.tick(w, .02)
+        self.tick(w, 0.02)
         result = json.loads(responder.send_data.call_args.args[0])
         self.assertFalse(result['active_read'])
         self.ae(result['text'], 'passive')
@@ -88,26 +96,26 @@ class AgentHistoryRC(TestCase):
 
     def test_identity_change_stops_before_input(self):
         w, rows, responder = self.make_waiter()
-        self.tick(w, .02, {'instance_id': 'other'})
+        self.tick(w, 0.02, {'instance_id': 'other'})
         w.sender.assert_not_called()
         self.assertTrue(w.closed)
 
     def test_shutdown_closes_without_recovery_input(self):
         w, rows, responder = self.make_waiter()
-        self.tick(w, .02)
+        self.tick(w, 0.02)
         count = w.sender.call_count
         clear_waiters(w.boss)
-        self.tick(w, .15)
+        self.tick(w, 0.15)
         self.ae(w.sender.call_count, count)
         self.assertFalse(pending(w.boss))
 
     def test_cancel_recovers_and_cleans_up(self):
         w, rows, responder = self.make_waiter()
-        self.tick(w, .02)
-        with patch('kitty.rc.agent_read.monotonic', return_value=.03):
+        self.tick(w, 0.02)
+        with patch('kitty.rc.agent_read.monotonic', return_value=0.03):
             w.cancel()
-        self.tick(w, .04)
-        self.tick(w, .07)
+        self.tick(w, 0.04)
+        self.tick(w, 0.07)
         self.assertTrue(w.closed)
         self.assertFalse(pending(w.boss))
 

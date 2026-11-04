@@ -3209,8 +3209,7 @@ set_agents_sidebar(PyObject *self UNUSED, PyObject *args) {
     unsigned char *states = PyMem_Malloc((size_t)count * sizeof(unsigned char));
     bool *active = PyMem_Calloc((size_t)count, sizeof(bool));
     const char **collapsed = PyMem_Malloc((size_t)collapsed_count * sizeof(char *));
-    if ((count && (!window_ids || !groups || !group_keys || !agents || !labels || !details || !states || !active)) ||
-        (collapsed_count && !collapsed)) {
+    if ((count && (!window_ids || !groups || !group_keys || !agents || !labels || !details || !states || !active)) || (collapsed_count && !collapsed)) {
         PyErr_NoMemory();
         goto cleanup;
     }

@@ -1523,7 +1523,6 @@ PYWRAP1(update_window_visibility) {
 }
 
 
-
 PYWRAP1(sync_os_window_title) {
     id_type os_window_id;
     PA("K", &os_window_id);

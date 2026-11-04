@@ -152,13 +152,11 @@ class HistoryWaiter(Waiter):
                     geometry = self.window.geometry
                     # Supply valid window-relative pixels even if the child has
                     # selected SGR pixel routing (no mode query is exposed).
-                    px = int((x + .5) * (geometry.right - geometry.left) / self.screen.columns)
-                    py = int((y + .5) * (geometry.bottom - geometry.top) / self.screen.lines)
+                    px = int((x + 0.5) * (geometry.right - geometry.left) / self.screen.columns)
+                    py = int((y + 0.5) * (geometry.bottom - geometry.top) / self.screen.lines)
                     # Native encoder expects X10 button numbers, not kitty's
                     # internal MOUSE_WHEEL_* constants (which are 8 and 9).
-                    if not self.sender(self.screen, x, y,
-                                       4 if action.direction == 'up' else 5,
-                                       PRESS, 0, px, py):
+                    if not self.sender(self.screen, x, y, 4 if action.direction == 'up' else 5, PRESS, 0, px, py):
                         if not self.sent:
                             output: dict[str, Any] = dict(self.fallback, target=self.identity, active_read=False, restoration='not_needed')
                             output['completeness'] = {**output['completeness'], 'reason': 'mouse_mode_unsupported'}

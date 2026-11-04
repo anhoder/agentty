@@ -11,6 +11,10 @@ on:
 
 jobs:
     CodeQL-Build:
+        # Code scanning upload requires GitHub Advanced Security on private
+        # repositories. Skip the scan instead of failing on repositories where
+        # it is not available.
+        if: ${{ !github.event.repository.private }}
 
         permissions:
             actions: read # to fetch workflow run status (github/codeql-action/analyze)
