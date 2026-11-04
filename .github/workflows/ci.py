@@ -295,7 +295,17 @@ IGNORED_DEPENDENCY_CVES = [
     'CVE-2025-11579',  # rardecode is version 2.2.1, not vulnerable
     # Newly flagged by grype, erroneously marked fixed in unreleased versions
     'CVE-2026-103995',  # python stdlib, fixed in unreleased python 3.16
-    'CVE-2026-119376',  # sqlite bundled in sw, fixed in unreleased sqlite 3.54
+    # sqlite bundled in sw, all fixed in unreleased sqlite 3.54
+    'CVE-2026-119371',
+    'CVE-2026-119372',
+    'CVE-2026-119373',
+    'CVE-2026-119374',
+    'CVE-2026-119375',
+    'CVE-2026-119376',
+    'CVE-2026-119377',
+    'CVE-2026-119378',
+    'CVE-2026-119379',
+    'CVE-2026-119591',
 ]
 
 
