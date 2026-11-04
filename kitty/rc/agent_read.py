@@ -7,7 +7,7 @@ from time import monotonic
 from kitty.agent_history import HistoryRead
 from kitty.agent_service import service_for
 from kitty.agents import detect_agent
-from kitty.fast_data_types import MOUSE_WHEEL_DOWN, MOUSE_WHEEL_UP, PRESS, add_timer, send_mouse_event
+from kitty.fast_data_types import PRESS, add_timer, send_mouse_event
 from kitty.types import AsyncResponse
 
 from .agent_wait import Waiter, pending
@@ -130,8 +130,10 @@ class HistoryWaiter(Waiter):
                     # selected SGR pixel routing (no mode query is exposed).
                     px = int((x + .5) * (geometry.right - geometry.left) / self.screen.columns)
                     py = int((y + .5) * (geometry.bottom - geometry.top) / self.screen.lines)
+                    # Native encoder expects X10 button numbers, not kitty's
+                    # internal MOUSE_WHEEL_* constants (which are 8 and 9).
                     if not self.sender(self.screen, x, y,
-                                       MOUSE_WHEEL_UP if action.direction == 'up' else MOUSE_WHEEL_DOWN,
+                                       4 if action.direction == 'up' else 5,
                                        PRESS, 0, px, py):
                         if not self.sent:
                             output = dict(self.fallback, target=self.identity, active_read=False,
