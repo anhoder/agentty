@@ -178,14 +178,19 @@ class Session:
         if t.next_title and not spec.opts.window_title:
             spec.opts.window_title = t.next_title
         spec.opts.cwd = spec.opts.cwd or t.cwd
+        startup_command = serialize_data.get('cmd_at_shell_startup', ())
         resume_argv = agent_resume_argv(serialize_data.get('agent'), spec.opts.var, resume_agents)
         if resume_argv:
-            # The agent is the program of the restored window rather than something run in its shell: a shell started by the macOS
-            # login wrapper does not source the shell integration, so a startup command is not reliably run. The window is held
-            # open when the agent exits, so its output and scrollback stay readable.
+            from .shell_integration import get_supported_shell_name, join
+
+            # Load the same login/interactive environment as a terminal before starting the agent.
+            # Use an explicit command rather than relying on shell integration being enabled.
+            shell = resolved_shell(get_options())
+            command = join(shell[0], resume_argv) if get_supported_shell_name(shell[0]) else shlex.join(resume_argv)
             spec.opts.hold = True
-            spec = spec._replace(args=list(resume_argv))
-        window_spec = WindowSpec(spec, serialized_id=serialize_data['id'], run_command_at_shell_startup=serialize_data.get('cmd_at_shell_startup', ()))
+            spec = spec._replace(args=[*shell, '-ilc', 'exec ' + command])
+            startup_command = ()  # The manifest resume command replaces the previously running command.
+        window_spec = WindowSpec(spec, serialized_id=serialize_data['id'], run_command_at_shell_startup=startup_command)
         window_spec.font_size_override = font_size_override
         t.windows.append(window_spec)
         t.next_title = None

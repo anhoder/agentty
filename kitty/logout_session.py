@@ -514,7 +514,7 @@ def load_snapshot(path: str, opts: Options, key_store: KeyStore | None) -> tuple
     raw = read_snapshot_file(path, key, SESSION_FILE).decode()
     saved_at = read_snapshot(path, key).saved_at
     sessions = tuple(parse_session(raw, opts))
-    marker = '\r\n\x1b[m\x1b[7m ' + _('Restored from {}').format(time.strftime('%c', time.localtime(saved_at))) + ' \x1b[m\r\n'
+    marker = '\r\n\r\n\r\n\x1b[m' + '-' * 60 + '\r\n\x1b[7m ' + _('Restored from {}').format(time.strftime('%c', time.localtime(saved_at))) + ' \x1b[m\r\n'
     for session in sessions:
         for tab in session.tabs:
             for window in tab.windows:
