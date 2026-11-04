@@ -30,7 +30,7 @@ jobs:
                - language: c
                  os: ubuntu-latest
                - language: c
-                 os: macos-15-intel
+                 os: macos-15
                - language: go
                  os: ubuntu-latest
                - language: actions

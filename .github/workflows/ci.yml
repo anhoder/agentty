@@ -131,10 +131,7 @@ jobs:
         runs-on: ${{ matrix.os }}
         strategy:
             matrix:
-                # GitHub-hosted arm64 macOS runners are currently capacity
-                # constrained and jobs get cancelled before they start. The
-                # bundle is universal, so test on Intel until that clears.
-                os: [ubuntu-latest, macos-15-intel]
+                os: [ubuntu-latest, macos-15]
         env:
             KITTY_BUNDLE: 1
             KITTY_SANITIZE: 1
@@ -158,7 +155,7 @@ jobs:
 
     brew:
         name: macOS Brew
-        runs-on: macos-15-intel
+        runs-on: macos-15
         steps:
           - name: Checkout source code
             uses: actions/checkout@v7.0.1
