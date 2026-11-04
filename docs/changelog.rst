@@ -10,6 +10,11 @@ Recent major new features
 ---------------------------
 
 
+- Load the configured shell's interactive login environment before restoring an
+  agent conversation, so resumed agents inherit shell-configured PATH and API
+  credentials even when shell integration is disabled.
+- Separate restored scrollback from new output with blank lines and a divider
+  before the restoration timestamp.
 - macOS: Keep kitty's ordinary tab bar visible and interactive alongside the
   Agents sidebar when :opt:`macos_native_tabs` is disabled, including vertical
   tab bars and sidebar resizing.

@@ -2,7 +2,12 @@
 # License: GPL v3 Copyright: 2026, Kovid Goyal <kovid at kovidgoyal.net>
 
 
+import json
+import os
 import shlex
+import shutil
+import subprocess
+import tempfile
 
 from kitty.constants import unserialize_launch_flag
 from kitty.fast_data_types import Screen
@@ -334,10 +339,15 @@ class TestSessions(BaseTest):
         (snapshot,) = claim_snapshots(base, 1, ks, alive.__contains__)
         self.ae((snapshot.path, snapshot.process_state[:3]), (os.path.join(base, '11.claimed-by-1'), state[:3]))
         (s,) = load_snapshot(snapshot.path, opts, ks)
-        # The scrollback is restored, without unsafe escape codes, followed by a line showing when it was saved
+        # History and new output are visibly separated, even when history ended mid-line.
         restored = s.tabs[0].windows[0].restored_scrollback
-        self.assertTrue(restored.startswith(b'seven\r\n'), restored)
-        self.assertIn(b'Restored from', restored)
+        screen = self.create_screen(cols=100, lines=10, scrollback=20)
+        screen.restore_scrollback(restored)
+        from kitty.window import as_text
+
+        lines = as_text(screen, add_history=True).splitlines()
+        self.ae(lines[:3], ['seven', '', ''])
+        self.assertTrue(lines[3].strip('-') == '' and len(lines[3]) >= 20)
         # A snapshot that repeatedly fails to be restored, for example, because kitty crashes, is deleted, with its key
         self.ae(len(claim_snapshots(base, 2, ks, alive.__contains__)), 1)
         self.ae(claim_snapshots(base, 3, ks, alive.__contains__), [])
@@ -515,9 +525,9 @@ class TestSessions(BaseTest):
             return session.tabs[0].windows[0]
 
         # The command is built from the manifest and the reported session id, and the window is held open so that the output of an
-        # agent that exits stays readable
+        # agent that exits stays readable. It runs through the configured shell so shell startup files are loaded first.
         w = window(f'launch {shlex.join((encoded,))} {session_var}')
-        self.ae(w.launch_spec.args, ['claude', '--resume', '019a90db-05e8-7c50'])
+        self.ae(w.launch_spec.args[-2:], ['-ilc', 'exec claude --resume 019a90db-05e8-7c50'])
         self.assertTrue(w.launch_spec.opts.hold)
 
         # Resuming is opt in: the window is restored as an ordinary one, keeping the vars so a later save does not lose them
@@ -551,5 +561,51 @@ class TestSessions(BaseTest):
             f'launch {shlex.join((encoded,))} --var=KITTY_AGENT_SESSION_PATH={session_path}', opts
         )
         window = session.tabs[0].windows[0]
-        self.ae(window.launch_spec.args, ['omp', f'--resume={session_path}'])
+        self.ae(window.launch_spec.args[-2:], ['-ilc', f'exec omp --resume={session_path}'])
         self.assertTrue(window.launch_spec.opts.hold)
+
+
+
+    def test_agent_resume_loads_shell_environment(self) -> None:
+        for shell_name in ('zsh', 'bash', 'fish'):
+            shell = shutil.which(shell_name)
+            if shell is None:
+                continue
+            with self.subTest(shell=shell_name), tempfile.TemporaryDirectory() as home:
+                home = os.path.realpath(home)
+                bindir = os.path.join(home, 'bin')
+                os.mkdir(bindir)
+                for agent in ('claude', 'omp'):
+                    executable = os.path.join(bindir, agent)
+                    with open(executable, 'w') as f:
+                        f.write('#!/bin/sh\nprintf "RESUMED:%s\\n" "$AGENT_RESUME_ENV" "$AGENT_LOGIN_ENV" "$PWD" "$@"\n')
+                    os.chmod(executable, 0o700)
+                if shell_name == 'fish':
+                    confdir = os.path.join(home, '.config', 'fish')
+                    os.makedirs(confdir)
+                    files = {'config.fish': f'set -gx AGENT_RESUME_ENV loaded\nset -gx PATH {shlex.quote(bindir)} $PATH\n'
+                             'if status is-login; set -gx AGENT_LOGIN_ENV login; end\n'}
+                else:
+                    confdir = home
+                    rc = f'export AGENT_RESUME_ENV=loaded\nexport PATH={shlex.quote(bindir)}:$PATH\n'
+                    files = ({'.zshrc': rc, '.zprofile': 'export AGENT_LOGIN_ENV=login\n'} if shell_name == 'zsh' else
+                             {'.bashrc': rc, '.bash_profile': 'export AGENT_LOGIN_ENV=login\n. "$HOME/.bashrc"\n'})
+                for name, content in files.items():
+                    with open(os.path.join(confdir, name), 'w') as f:
+                        f.write(content)
+                env = {'HOME': home, 'ZDOTDIR': home, 'XDG_CONFIG_HOME': os.path.join(home, '.config'),
+                       'PATH': '/usr/bin:/bin', 'TERM': 'xterm', 'BASH_SILENCE_DEPRECATION_WARNING': '1'}
+                opts = self.set_options({'resume_agents_on_restore': True, 'shell': shell, 'shell_integration': 'disabled'})
+                session_path = os.path.join(home, "a 'quoted' $dollar; (session).jsonl")
+                for agent, reference, expected in (
+                    ('claude', '--var=KITTY_AGENT_SESSION=019a90db-05e8-7c50', ['--resume', '019a90db-05e8-7c50']),
+                    ('omp', f'--var=KITTY_AGENT_SESSION_PATH={session_path}', [f'--resume={session_path}']),
+                ):
+                    encoded = unserialize_launch_flag + json.dumps({'id': 7, 'agent': agent, 'cmd_at_shell_startup': 'exit 99'})
+                    (session,) = parse_session(f'launch {shlex.join((encoded, reference, "--cwd=" + home))}', opts)
+                    spec = session.tabs[0].windows[0].launch_spec
+                    result = subprocess.run(spec.args, cwd=spec.opts.cwd, env=env, capture_output=True, text=True,
+                                            start_new_session=True, timeout=10)
+                    self.ae(result.returncode, 0, result.stderr)
+                    actual = [line.removeprefix('RESUMED:') for line in result.stdout.splitlines() if line.startswith('RESUMED:')]
+                    self.ae(actual, ['loaded', 'login', home, *expected])

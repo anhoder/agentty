@@ -134,6 +134,14 @@ To enable this, set in :file:`kitty.conf`::
 This is off by default, because resuming an agent starts it running again,
 which can consume API credits.
 
+Before resuming an agent, kitty starts the shell configured by :opt:`shell`
+as an interactive login shell, so its startup files can set PATH, API keys and
+other environment variables. The resume command runs after that initialization,
+in the saved working directory, even when shell integration is disabled. The
+window stays open when the agent exits so its output remains readable.
+Restored scrollback is followed by two blank lines and a divider before the
+``Restored from ...`` timestamp, marking where the restored history ends.
+
 An agent's conversation lives in the agent's own storage, not in kitty, so
 kitty needs two things to resume one: the conversation's id, and the command
 that reopens it. The command comes from the agent's manifest, which ships with
