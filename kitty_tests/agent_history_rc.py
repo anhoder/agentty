@@ -1,12 +1,13 @@
 """RC history safety checks, run using the kitty launcher test runner."""
 
 from types import SimpleNamespace
-from unittest.mock import Mock, patch
 from unittest import TestCase
+from unittest.mock import Mock, patch
 
+from kitty.fast_data_types import PRESS, send_mouse_event
 from kitty.rc.agent_read import HistoryWaiter, agent_read, mouse_guard, read_terminal
 from kitty.rc.agent_wait import clear_waiters, pending
-from kitty.fast_data_types import MOUSE_WHEEL_DOWN, MOUSE_WHEEL_UP, PRESS, send_mouse_event
+
 from .base import BaseTest
 
 

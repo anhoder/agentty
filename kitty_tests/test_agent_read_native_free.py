@@ -4,9 +4,10 @@ import ast
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
+from typing import Any
 
 tree = ast.parse((Path(__file__).resolve().parents[1] / 'kitty/rc/agent_read.py').read_text())
-namespace = {}
+namespace = {'Any': Any}
 exec(
     compile(
         ast.Module(
