@@ -313,7 +313,10 @@ cocoa_initialize_agents_sidebar_toggle(void *ptr) {
         resize_hovered = NO;
         collapsed_groups = [[KittyAgentsSidebarView sharedCollapsedGroups] retain];
         group_animation = [[KittyAgentsSidebarView sharedGroupAnimation] retain];
-        [[NSNotificationCenter defaultCenter] addObserver:self selector:@selector(sharedGroupStateChanged:) name:@"KittyAgentsSidebarGroupStateChanged" object:nil];
+        [[NSNotificationCenter defaultCenter] addObserver:self
+                                                 selector:@selector(sharedGroupStateChanged:)
+                                                     name:@"KittyAgentsSidebarGroupStateChanged"
+                                                   object:nil];
         // The translucent sidebar material has to sit behind the rows, but a
         // view's own drawRect paints *beneath* its subviews, so hosting the
         // material as a subview here would hide every row we draw. Keep it in
@@ -779,12 +782,15 @@ cocoa_initialize_agents_sidebar_toggle(void *ptr) {
     // Convert to sRGB before reading components (semantic colors crash otherwise)
     NSColor *rgb = [textColor colorUsingColorSpace:[NSColorSpace sRGBColorSpace]];
     if (!rgb) return nil;
-    NSString *hexColor = [NSString stringWithFormat:@"#%02X%02X%02X",
-        (int)(rgb.redComponent * 255.0), (int)(rgb.greenComponent * 255.0), (int)(rgb.blueComponent * 255.0)];
+    NSString *hexColor =
+        [NSString stringWithFormat:@"#%02X%02X%02X", (int)(rgb.redComponent * 255.0), (int)(rgb.greenComponent * 255.0), (int)(rgb.blueComponent * 255.0)];
     NSString *cacheKey = [NSString stringWithFormat:@"%@:%@", agent, hexColor];
     static NSCache<NSString *, NSImage *> *iconCache = nil;
     static dispatch_once_t once;
-    dispatch_once(&once, ^{ iconCache = [[NSCache alloc] init]; iconCache.countLimit = 100; });
+    dispatch_once(&once, ^{
+      iconCache = [[NSCache alloc] init];
+      iconCache.countLimit = 100;
+    });
     NSImage *cached = [iconCache objectForKey:cacheKey];
     if (cached) return cached;
     NSString *svgPath = [_iconsDir stringByAppendingPathComponent:[agent stringByAppendingString:@".svg"]];
@@ -799,9 +805,7 @@ cocoa_initialize_agents_sidebar_toggle(void *ptr) {
         }
         if (!icon) icon = [[[NSImage alloc] initWithContentsOfFile:svgPath] autorelease];
     }
-    if (!icon && [[NSFileManager defaultManager] fileExistsAtPath:pngPath]) {
-        icon = [[[NSImage alloc] initWithContentsOfFile:pngPath] autorelease];
-    }
+    if (!icon && [[NSFileManager defaultManager] fileExistsAtPath:pngPath]) { icon = [[[NSImage alloc] initWithContentsOfFile:pngPath] autorelease]; }
     if (icon) [iconCache setObject:icon forKey:cacheKey];
     return icon;
 }
@@ -871,8 +875,7 @@ cocoa_initialize_agents_sidebar_toggle(void *ptr) {
             };
             [self drawDisclosureForGroupKey:group_key atPoint:NSMakePoint(16.0, y + 12.0) hovered:hovered];
             const CGFloat group_text_left = 24.0;
-            NSRect group_text_rect = NSMakeRect(group_text_left, y + 5.0,
-                                                MAX(0.0, self.bounds.size.width - group_text_left - 10.0), 14.0);
+            NSRect group_text_rect = NSMakeRect(group_text_left, y + 5.0, MAX(0.0, self.bounds.size.width - group_text_left - 10.0), 14.0);
             [group drawWithRect:group_text_rect
                         options:NSStringDrawingUsesLineFragmentOrigin | NSStringDrawingTruncatesLastVisibleLine
                      attributes:group_attrs
@@ -916,17 +919,13 @@ cocoa_initialize_agents_sidebar_toggle(void *ptr) {
                 if (img_size.width > 0 && img_size.height > 0) {
                     CGFloat scale = MIN(icon_size / img_size.width, icon_size / img_size.height);
                     CGFloat scaled_w = img_size.width * scale, scaled_h = img_size.height * scale;
-                    NSRect fit_rect = NSMakeRect(
-                        icon_left + (icon_size - scaled_w) / 2.0,
-                        row_center - scaled_h / 2.0,
-                        scaled_w, scaled_h);
+                    NSRect fit_rect = NSMakeRect(icon_left + (icon_size - scaled_w) / 2.0, row_center - scaled_h / 2.0, scaled_w, scaled_h);
                     [[NSGraphicsContext currentContext] saveGraphicsState];
                     [[NSGraphicsContext currentContext] setImageInterpolation:NSImageInterpolationHigh];
-                    [icon drawInRect:fit_rect fromRect:NSZeroRect operation:NSCompositingOperationSourceOver
-                             fraction:1.0 respectFlipped:YES hints:nil];
+                    [icon drawInRect:fit_rect fromRect:NSZeroRect operation:NSCompositingOperationSourceOver fraction:1.0 respectFlipped:YES hints:nil];
                     [[NSGraphicsContext currentContext] restoreGraphicsState];
                 }
-                text_left = icon_left + icon_size + 6.0;  // icon + 6pt gap
+                text_left = icon_left + icon_size + 6.0; // icon + 6pt gap
             }
         }
         if (has_agent) {
@@ -983,8 +982,6 @@ cocoa_initialize_agents_sidebar_toggle(void *ptr) {
     else rail_color = [[NSColor separatorColor] colorWithAlphaComponent:0.55];
     [rail_color setFill];
     NSRectFill(NSMakeRect(rail_x, 0.0, rail_width, self.bounds.size.height));
-
-
 }
 - (void)dealloc {
     [self stopAnimating];

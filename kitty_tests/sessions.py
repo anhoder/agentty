@@ -580,8 +580,6 @@ class TestSessions(BaseTest):
         self.ae(window.launch_spec.args[-2:], ['-ilc', f'exec omp --resume={session_path}'])
         self.assertTrue(window.launch_spec.opts.hold)
 
-
-
     def test_agent_resume_loads_shell_environment(self) -> None:
         for shell_name in ('zsh', 'bash', 'fish'):
             shell = shutil.which(shell_name)
@@ -599,18 +597,29 @@ class TestSessions(BaseTest):
                 if shell_name == 'fish':
                     confdir = os.path.join(home, '.config', 'fish')
                     os.makedirs(confdir)
-                    files = {'config.fish': f'set -gx AGENT_RESUME_ENV loaded\nset -gx PATH {shlex.quote(bindir)} $PATH\n'
-                             'if status is-login; set -gx AGENT_LOGIN_ENV login; end\n'}
+                    files = {
+                        'config.fish': f'set -gx AGENT_RESUME_ENV loaded\nset -gx PATH {shlex.quote(bindir)} $PATH\n'
+                        'if status is-login; set -gx AGENT_LOGIN_ENV login; end\n'
+                    }
                 else:
                     confdir = home
                     rc = f'export AGENT_RESUME_ENV=loaded\nexport PATH={shlex.quote(bindir)}:$PATH\n'
-                    files = ({'.zshrc': rc, '.zprofile': 'export AGENT_LOGIN_ENV=login\n'} if shell_name == 'zsh' else
-                             {'.bashrc': rc, '.bash_profile': 'export AGENT_LOGIN_ENV=login\n. "$HOME/.bashrc"\n'})
+                    files = (
+                        {'.zshrc': rc, '.zprofile': 'export AGENT_LOGIN_ENV=login\n'}
+                        if shell_name == 'zsh'
+                        else {'.bashrc': rc, '.bash_profile': 'export AGENT_LOGIN_ENV=login\n. "$HOME/.bashrc"\n'}
+                    )
                 for name, content in files.items():
                     with open(os.path.join(confdir, name), 'w') as f:
                         f.write(content)
-                env = {'HOME': home, 'ZDOTDIR': home, 'XDG_CONFIG_HOME': os.path.join(home, '.config'),
-                       'PATH': '/usr/bin:/bin', 'TERM': 'xterm', 'BASH_SILENCE_DEPRECATION_WARNING': '1'}
+                env = {
+                    'HOME': home,
+                    'ZDOTDIR': home,
+                    'XDG_CONFIG_HOME': os.path.join(home, '.config'),
+                    'PATH': '/usr/bin:/bin',
+                    'TERM': 'xterm',
+                    'BASH_SILENCE_DEPRECATION_WARNING': '1',
+                }
                 opts = self.set_options({'resume_agents_on_restore': True, 'shell': shell, 'shell_integration': 'disabled'})
                 session_path = os.path.join(home, "a 'quoted' $dollar; (session).jsonl")
                 for agent, reference, expected in (
@@ -620,8 +629,7 @@ class TestSessions(BaseTest):
                     encoded = unserialize_launch_flag + json.dumps({'id': 7, 'agent': agent, 'cmd_at_shell_startup': 'exit 99'})
                     (session,) = parse_session(f'launch {shlex.join((encoded, reference, "--cwd=" + home))}', opts)
                     spec = session.tabs[0].windows[0].launch_spec
-                    result = subprocess.run(spec.args, cwd=spec.opts.cwd, env=env, capture_output=True, text=True,
-                                            start_new_session=True, timeout=10)
+                    result = subprocess.run(spec.args, cwd=spec.opts.cwd, env=env, capture_output=True, text=True, start_new_session=True, timeout=10)
                     self.ae(result.returncode, 0, result.stderr)
                     actual = [line.removeprefix('RESUMED:') for line in result.stdout.splitlines() if line.startswith('RESUMED:')]
                     self.ae(actual, ['loaded', 'login', home, *expected])
