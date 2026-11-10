@@ -405,6 +405,13 @@ class Freeze(object):
             if x == 'kitty':
                 shutil.rmtree(join(dest, 'launcher'))
         os.rename(join(kitty_dir, '__main__.py'), join(self.python_stdlib, 'kitty_main.py'))
+        # Agent manifests and icons are loaded by path from $kitty_base_dir/kitty,
+        # which is Contents/Resources/kitty in frozen builds. The package itself
+        # is interned below, so keep the data directories on disk.
+        for d in ('agent_manifests', 'agent_icons'):
+            src = join(self.python_stdlib, 'kitty', d)
+            if os.path.isdir(src):
+                shutil.copytree(src, join(self.resources_dir, 'kitty', 'kitty', d))
         shutil.rmtree(join(kitty_dir, '__pycache__'))
         pdir = join(dirname(self.python_stdlib), 'kitty-extensions')
         os.mkdir(pdir)

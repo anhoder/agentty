@@ -2,9 +2,9 @@
     {
         "name": "zlib 1.3.2",
         "unix": {
-            "file_extension": "tar.xz",
-            "hash": "sha256:d7a0654783a4da529d1bb793b7ad9c3318020af77667bcae35f95d0e42a792f3",
-            "urls": ["https://zlib.net/{filename}"]
+            "file_extension": "tar.gz",
+            "hash": "sha256:bb329a0a2cd0274d05519d61c667c062e06990d72e125ee2dfa8de64f0119d16",
+            "urls": ["https://zlib.net/fossils/{filename}"]
         }
     },
 

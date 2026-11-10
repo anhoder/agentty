@@ -20,6 +20,9 @@ Recent major new features
   tab bars and sidebar resizing.
 - Fix an uninitialized agent debounce timer causing a traceback on exit or when first scheduling an agent idle transition.
 - quick-access-terminal: Force kitty's built-in tab bar instead of macOS native tabs.
+- macOS: Build ``kitty.app`` with upstream's bypy packaging pipeline, which
+  freezes the app and links the bundled ``slangc`` into ``kitty-quick-access.app``
+  so custom shaders load in the quick access terminal.
 - macOS: Polish Agents sidebar hover feedback across the toggle, group headers, disclosures and agent rows, and show a visible right-edge resize rail.
 - macOS: Fix Agents sidebar row clipping hiding the resize rail outside agent rows and obscuring subsequent rows.
 - macOS: Do not highlight the Agents sidebar's empty placeholder or show a hand cursor over it.

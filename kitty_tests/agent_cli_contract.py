@@ -9,6 +9,8 @@ import types
 import unittest
 from pathlib import Path
 
+from . import requires_source_checkout
+
 ROOT = Path(__file__).resolve().parents[1]
 
 
@@ -105,6 +107,7 @@ def contracts():
     return result
 
 
+@requires_source_checkout
 class AgentCLIContract(unittest.TestCase):
     @classmethod
     def setUpClass(cls):

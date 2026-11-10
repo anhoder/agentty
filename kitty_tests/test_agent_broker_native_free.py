@@ -17,8 +17,11 @@ from kitty.agent_provider import (
     parse_opencode_event,
 )
 
+from . import requires_source_checkout
+
 
 class OpenCodeContractTest(unittest.TestCase):
+    @requires_source_checkout
     @unittest.skipUnless(shutil.which('node'), 'Node is required for reporter integration')
     def test_node_reporter(self):
         tree = ast.parse((Path(__file__).resolve().parents[1] / 'kitty/agent_integration.py').read_text())

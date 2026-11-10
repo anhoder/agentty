@@ -13,6 +13,8 @@ from pathlib import Path
 from types import ModuleType, SimpleNamespace
 from unittest.mock import Mock, patch
 
+from . import requires_source_checkout
+
 
 def load_command():
     class RemoteCommand:
@@ -88,6 +90,7 @@ class FakeWindow:
         self.events.append(('keys', keys))
 
 
+@requires_source_checkout
 class AgentControlRC(unittest.TestCase):
     def setUp(self):
         self.mod = load_command()

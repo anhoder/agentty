@@ -225,9 +225,23 @@ env COLORTERM
 
     def test_ssh_login_shell_fallback_quoting(self):
         bootstrap_utils = os.path.join(kitty_base_dir, 'shell-integration', 'ssh', 'bootstrap-utils.sh')
-        python = shutil.which('python3') or shutil.which('python2') or shutil.which('python')
+        candidates = [shutil.which(name) for name in ('python3.15', 'python3.14', 'python3.13', 'python3.12', 'python3', 'python2', 'python')]
+        python = None
+        for candidate in candidates:
+            if candidate is None:
+                continue
+            try:
+                # The bootstrap execs the interpreter with an argv[0] that starts
+                # with a dash. Apple's /usr/bin/python3 stub cannot handle that
+                # and asks xcodebuild to install command line tools instead.
+                cp = subprocess.run([candidate, '-c', 'import os, sys; os.execlp(sys.argv[1], "-" + sys.argv[2])', candidate, 'python'], capture_output=True)
+            except OSError:
+                continue
+            if cp.returncode == 0:
+                python = candidate
+                break
         if python is None:
-            self.skipTest('Python executable not found')
+            self.skipTest('No Python executable usable as a login shell')
         runners = [('execute_with_python', python, 'PYTHON_FOR_TEST')]
         if perl := shutil.which('perl'):
             runners.append(('execute_with_perl', perl, 'PERL_FOR_TEST'))

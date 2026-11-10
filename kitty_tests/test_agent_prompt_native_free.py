@@ -3,7 +3,10 @@ from types import SimpleNamespace
 
 from kitty_tests.test_agent_service_native_free import production_nodes
 
+from . import requires_source_checkout
 
+
+@requires_source_checkout
 class PromptNativeFree(unittest.TestCase):
     def test_activity_gate_and_timeout_precedence(self):
         namespace = dict(Waiter=object, monotonic=lambda: 6)

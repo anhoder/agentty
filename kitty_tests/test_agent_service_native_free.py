@@ -8,6 +8,8 @@ from unittest.mock import patch
 
 from kitty.agent_service import AgentService
 
+from . import requires_source_checkout
+
 
 class ServiceTest(unittest.TestCase):
     def setUp(self):
@@ -143,6 +145,7 @@ def production_nodes(path, names, namespace):
     exec(compile(ast.fix_missing_locations(module), path, 'exec'), namespace)
 
 
+@requires_source_checkout
 class SubscriberTest(unittest.TestCase):
     def setUp(self):
         self.timers = {}

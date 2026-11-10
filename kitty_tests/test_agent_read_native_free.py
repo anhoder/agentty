@@ -6,22 +6,26 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
-tree = ast.parse((Path(__file__).resolve().parents[1] / 'kitty/rc/agent_read.py').read_text())
-namespace = {'Any': Any}
-exec(
-    compile(
-        ast.Module(
-            body=[n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == 'read_terminal'],
-            type_ignores=[],
+src_path = Path(__file__).resolve().parents[1] / 'kitty/rc/agent_read.py'
+namespace: dict[str, Any] = {'Any': Any}
+read_terminal = None
+if src_path.is_file():  # absent in frozen builds, where sources are interned
+    tree = ast.parse(src_path.read_text())
+    exec(
+        compile(
+            ast.Module(
+                body=[n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == 'read_terminal'],
+                type_ignores=[],
+            ),
+            '<agent_read>',
+            'exec',
         ),
-        '<agent_read>',
-        'exec',
-    ),
-    namespace,
-)
-read_terminal = namespace['read_terminal']
+        namespace,
+    )
+    read_terminal = namespace['read_terminal']
 
 
+@unittest.skipUnless(read_terminal is not None, 'requires a source checkout')
 class AgentReadTest(unittest.TestCase):
     def test_history_wraps_and_completeness(self):
         calls = []

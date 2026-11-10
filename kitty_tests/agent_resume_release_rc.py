@@ -8,6 +8,8 @@ import unittest
 from types import ModuleType, SimpleNamespace
 from unittest.mock import Mock, patch
 
+from . import requires_source_checkout
+
 
 def load():
     launch = Mock(return_value=SimpleNamespace(id=99))
@@ -29,6 +31,7 @@ def load():
     return mod, launch, parse
 
 
+@requires_source_checkout
 class Policy(unittest.TestCase):
     def setUp(self):
         self.mod, self.launch, self.parse = load()

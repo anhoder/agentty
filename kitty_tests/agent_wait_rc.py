@@ -11,7 +11,10 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from unittest.mock import patch
 
+from . import requires_source_checkout
 
+
+@requires_source_checkout
 class AgentWaitTest(unittest.TestCase):
     def setUp(self):
         self.removed = []
