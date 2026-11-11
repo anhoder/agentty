@@ -2013,6 +2013,24 @@ disables all scaling of the window logo.
 )
 
 opt(
+    'window_jelly_duration',
+    '0.35',
+    option_type='positive_float',
+    ctype='double',
+    long_text="""
+macOS: Duration (in seconds) of native Core Animation spring transitions when
+kitty windows (panes) are resized or repositioned, including splitting, closing
+and layout changes. Set to zero to disable. The macOS Reduce Motion setting
+also disables these animations. This option has no effect on other platforms.
+
+Transitions animate pane contents refreshed after each terminal render, keeping
+cursor animations and terminal output visible throughout the transition. The PTY
+size and input hit regions change immediately to the final geometry. The OS
+window frame and interactive live resizing are not animated.
+""",
+)
+
+opt(
     'resize_debounce_time',
     '0.1 0.5',
     option_type='resize_debounce_time',

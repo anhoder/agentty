@@ -1136,6 +1136,9 @@ render_prepared_os_window(
     }
     draw_rounded_borders(br, active_window_bg, num_visible_windows, all_windows_have_same_bg, os_window);
     setup_os_window_for_rendering(os_window, tab, active_window, false, now);
+#ifdef __APPLE__
+    cocoa_animate_pane_layout(os_window);
+#endif
     if (global_state.thumbnail_callback.os_window == os_window->id) {
         thumbnail_callback(os_window);
         global_state.thumbnail_callback.os_window = 0;

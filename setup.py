@@ -785,6 +785,8 @@ def kitty_env(args: Options) -> Env:
             'IOKit',
             '-framework',
             'Security',
+            '-framework',
+            'QuartzCore',
         ]
         test_program_src = """#include <UserNotifications/UserNotifications.h>
         int main(void) { return 0; }\n"""

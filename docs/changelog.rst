@@ -10,6 +10,12 @@ Recent major new features
 ---------------------------
 
 
+- macOS: Add gentle native Core Animation spring transitions for pane resizing,
+  repositioning, splitting, closing and layout changes. Configure the duration
+  with :opt:`window_jelly_duration` (default: 0.35 seconds); zero or macOS Reduce
+  Motion disables it. Pane contents refresh during transitions so cursor animations
+  and terminal output remain visible, without delaying PTY resizing or input.
+  OS window frames and interactive live resizing are unchanged.
 - Record automatic session backup times, retain the latest three backups and
   their encryption keys after restoration, and restore only the newest available
   backup instead of launching instances for older backups.

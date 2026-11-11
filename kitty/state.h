@@ -79,6 +79,7 @@ typedef struct Options {
     color_type url_color, background, foreground, active_border_color, inactive_border_color, bell_border_color, tab_bar_background, tab_bar_margin_color,
         window_title_bar_active_foreground, window_title_bar_active_background, window_title_bar_inactive_foreground, window_title_bar_inactive_background;
     monotonic_t repaint_delay, input_delay;
+    double window_jelly_duration;
     struct {
         bool on_cross, on_drop;
     } focus_follows_mouse;

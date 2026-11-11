@@ -53,6 +53,7 @@ typedef enum {
 } CocoaPendingAction;
 
 void cocoa_focus_window(void *w);
+void cocoa_animate_pane_layout(void *os_window);
 long cocoa_window_number(void *w);
 void cocoa_set_native_tab_title(void *w, const char *title);
 void cocoa_application_lifecycle_event(bool);
