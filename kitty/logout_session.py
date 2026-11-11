@@ -3,11 +3,9 @@
 
 # Save the state of every kitty instance when the user logs out and restore it the next time kitty is started.
 #
-# Every kitty instance saves a snapshot, a directory in snapshots_dir() named by its pid, containing the session, the scrollback
-# of its windows and the command line, working directory and environment of the instance. When kitty is started, it claims all
-# snapshots by renaming them, restores the one saved by an instance with the same command line itself and starts a new kitty
-# instance for each of the others, so that every instance is restored with its own command line and environment. Snapshots are
-# deleted only after they have been restored.
+# Every kitty instance saves timestamped snapshots containing its session, scrollback and process state. The latest three
+# snapshots are retained. Startup claims only the newest available snapshot, and releases the claim after restoring its windows
+# so the backup remains available for a later startup.
 #
 # On macOS, snapshots are encrypted with a random key per snapshot, stored in the macOS Keychain. The Keychain is never allowed to
 # show any UI, if it needs user interaction, saving or restoring fails instead. The key is deleted before the snapshot is, so that
@@ -36,7 +34,7 @@ from contextlib import suppress
 from gettext import gettext as _
 from typing import TYPE_CHECKING, NamedTuple, Protocol
 
-from .constants import cache_dir, clear_handled_signals, is_macos, kitty_exe
+from .constants import cache_dir, is_macos, kitty_exe
 from .fast_data_types import AES256GCMDecrypt, AES256GCMEncrypt, Screen, Secret, application_logout_requested_at, get_options, monotonic, random_secret
 from .options.types import Options
 from .typing_compat import BossType
@@ -58,40 +56,10 @@ IV_SIZE, TAG_SIZE = 12, 16
 CLAIMED_MARKER = '.claimed-by-'
 # A snapshot that has failed to be restored this many times, for example because kitty crashed, is deleted
 MAX_RESTORE_ATTEMPTS = 2
-# The environment variable used to tell a kitty instance started to restore a snapshot which snapshot to restore
-SNAPSHOT_ENV_VAR = 'KITTY_RESTORE_LOGOUT_SNAPSHOT'
+MAX_SNAPSHOTS = 3
 # A quit confirmed by the user later than this many seconds after the OS asked kitty to quit for a logout is treated as an
 # ordinary quit, since the OS will have given up on the logout by then
 LOGOUT_CONFIRMATION_TIMEOUT = 60
-# Environment variables that refer to the login session, such as the display server and the session bus. A kitty instance started to
-# restore a snapshot gets these from the kitty instance that started it, as the saved values refer to the login session that ended.
-LOGIN_SESSION_ENV_VARS = frozenset(
-    (
-        'DBUS_SESSION_BUS_ADDRESS',
-        'DESKTOP_SESSION',
-        'DISPLAY',
-        'GPG_AGENT_INFO',
-        'HYPRLAND_INSTANCE_SIGNATURE',
-        'I3SOCK',
-        'NIRI_SOCKET',
-        'SESSION_MANAGER',
-        'SSH_AGENT_PID',
-        'SSH_AUTH_SOCK',
-        'SWAYSOCK',
-        'WAYLAND_DISPLAY',
-        'XAUTHORITY',
-        'XDG_CURRENT_DESKTOP',
-        'XDG_RUNTIME_DIR',
-        'XDG_SEAT',
-        'XDG_SESSION_CLASS',
-        'XDG_SESSION_DESKTOP',
-        'XDG_SESSION_ID',
-        'XDG_SESSION_TYPE',
-        'XDG_VTNR',
-    )
-)
-# Environment variables used to pass a single use token to a newly started application, never passed on to restored instances
-STARTUP_TOKEN_ENV_VARS = frozenset(('DESKTOP_STARTUP_ID', 'XDG_ACTIVATION_TOKEN', 'WAYLAND_SOCKET'))
 # The session states reported by the Inhibit desktop portal on Linux
 DESKTOP_SESSION_RUNNING, DESKTOP_SESSION_QUERY_END, DESKTOP_SESSION_ENDING = 1, 2, 3
 
@@ -248,20 +216,11 @@ def remove_snapshot(path: str, key_store: KeyStore | None) -> None:
 process_state = ProcessState((), '', {}, time.time())
 # The path and locked file descriptor of the snapshot saved by this kitty instance, if any
 saver_lock: tuple[str, int] | None = None
-# The snapshot this kitty instance was started to restore by the kitty instance that claimed it, if any
-snapshot_requested_by_parent = ''
 
 
 def record_process_state(argv: tuple[str, ...]) -> None:
-    # Must be called at startup, before kitty reads or changes the environment. Removes the snapshot requested by the parent from
-    # the environment, so that it is not inherited by child processes.
-    global process_state, snapshot_requested_by_parent
-    snapshot_requested_by_parent = os.environ.pop(SNAPSHOT_ENV_VAR, '')
-    if snapshot_requested_by_parent:
-        parent = os.path.dirname(os.path.realpath(snapshot_requested_by_parent))
-        if parent not in {os.path.realpath(snapshots_dir()), os.path.realpath(restore_snapshots_dir())}:
-            log_error('Ignoring a session snapshot requested by a different kitty installation')
-            snapshot_requested_by_parent = ''
+    # Must be called at startup, before kitty reads or changes the environment.
+    global process_state
     try:
         cwd = os.getcwd()
     except OSError:
@@ -401,8 +360,7 @@ def save_snapshot(base: str, pid: int, session: str, scrollback: Mapping[int, by
         pdata = {'argv': state.argv, 'cwd': state.cwd, 'environ': state.environ, 'saved_at': time.time()}
         write_snapshot_file(tdir, key, PROCESS_FILE, json.dumps(pdata).encode())
         write_snapshot_file(tdir, key, SESSION_FILE, session.encode())
-        path = os.path.join(base, str(pid))
-        remove_snapshot(path, key_store)
+        path = os.path.join(base, f'{pid}-{time.time_ns()}')
         os.rename(tdir, path)
     except BaseException:
         if tdir:
@@ -410,21 +368,26 @@ def save_snapshot(base: str, pid: int, session: str, scrollback: Mapping[int, by
         if key_store is not None:
             delete_key(key_store, key_id, tdir or base)
         raise
+    prune_snapshots(base, key_store)
     return path
 
 
-def remove_stale_snapshots(base: str, started_at: float, key_store: KeyStore | None) -> None:
-    # Must be called with the lock held. All kitty instances running at a logout quit, so the running instances were all started
-    # after it. Snapshots older than this instance are therefore from an earlier logout, and were never restored. With
-    # persist_session, instances save while other instances are still running, so the snapshot of an instance that still holds its
-    # saver lock is never stale, however old it is.
-    try:
-        with os.scandir(base) as entries:
-            for entry in entries:
-                if entry.stat(follow_symlinks=False).st_mtime < started_at and not is_saver_running(entry.path):
-                    remove_snapshot(entry.path, key_store)
-    except FileNotFoundError:
-        pass
+def prune_snapshots(base: str, key_store: KeyStore | None) -> None:
+    # Must be called with the lock held. Retention follows saved_at, not directory modification times or process lifetimes.
+    snapshots = []
+    with os.scandir(base) as entries:
+        for entry in entries:
+            name, claimer = parse_claimed_name(entry.name)
+            if not name or (claimer and is_pid_alive(claimer)):
+                continue
+            try:
+                snapshots.append(read_snapshot(entry.path, snapshot_key(entry.path, key_store)))
+            except Exception as e:
+                log_error(f'Failed to read the session saved at logout in {entry.path}, deleting it. Error: {e}')
+                remove_snapshot(entry.path, key_store)
+    snapshots.sort(key=lambda s: (s.saved_at, s.path), reverse=True)
+    for snapshot in snapshots[MAX_SNAPSHOTS:]:
+        remove_snapshot(snapshot.path, key_store)
     remove_orphaned_keys(base, key_store)
 
 
@@ -451,7 +414,6 @@ def save_session_snapshot(boss: BossType, with_scrollback: bool = True, only_if_
     os.makedirs(os.path.dirname(base), exist_ok=True)
     key_store = get_key_store()
     with lock_with_file(lock_path(base)):
-        remove_stale_snapshots(base, process_state.started_at, key_store)
         if not session:
             return ''
         scrollback = {}
@@ -478,7 +440,7 @@ def is_logout_in_progress() -> bool:
 def parse_claimed_name(name: str) -> tuple[str, int]:
     # Returns the name of the snapshot and the pid of the process that claimed it, which is zero if it is not claimed
     snapshot_name, sep, claimer = name.partition(CLAIMED_MARKER)
-    if not snapshot_name.isdigit() or (sep and not claimer.isdigit()):
+    if re.fullmatch(r'\d+(?:-\d+)?', snapshot_name) is None or (sep and not claimer.isdigit()):
         return '', 0
     return snapshot_name, int(claimer or 0)
 
@@ -496,20 +458,30 @@ def read_snapshot(path: str, key: Secret | None) -> Snapshot:
 
 
 def claim_snapshots(base: str, pid: int, key_store: KeyStore | None, is_alive: Callable[[int], bool] = is_pid_alive) -> list[Snapshot]:
-    # Claim all snapshots that are not being restored by a running kitty instance
+    # Claim only the latest available snapshot; older backups must not spawn additional instances.
     ans: list[Snapshot] = []
     if not os.path.isdir(base):
         return ans
     with lock_with_file(lock_path(base)):
         with os.scandir(base) as entries:
             names = [e.name for e in entries]
+        candidates = []
         for name in names:
             snapshot_name, claimer = parse_claimed_name(name)
             if not snapshot_name or (claimer and is_alive(claimer)):
                 continue
-            if not claimer and is_saver_running(os.path.join(base, name)):
-                # The instance that saved it is still running, for example, because the logout was cancelled
+            path = os.path.join(base, name)
+            if not claimer and is_saver_running(path):
                 continue
+            try:
+                candidates.append(read_snapshot(path, snapshot_key(path, key_store)))
+            except Exception as e:
+                log_error(f'Failed to read the session saved at logout in {path}, deleting it. Error: {e}')
+                remove_snapshot(path, key_store)
+        candidates.sort(key=lambda s: (s.saved_at, s.path), reverse=True)
+        for snapshot in candidates:
+            name = os.path.basename(snapshot.path)
+            snapshot_name, claimer = parse_claimed_name(name)
             path = os.path.join(base, f'{snapshot_name}{CLAIMED_MARKER}{pid}')
             try:
                 os.rename(os.path.join(base, name), path)
@@ -524,11 +496,11 @@ def claim_snapshots(base: str, pid: int, key_store: KeyStore | None, is_alive: C
                 with open(attempts_path, 'w') as f:
                     f.write(str(attempts + 1))
                 ans.append(read_snapshot(path, snapshot_key(path, key_store)))
+                break
             except Exception as e:
                 log_error(f'Failed to read the session saved at logout in {path}, deleting it. Error: {e}')
                 remove_snapshot(path, key_store)
         remove_orphaned_keys(base, key_store)
-    ans.sort(key=lambda s: s.saved_at)
     return ans
 
 
@@ -549,31 +521,6 @@ def load_snapshot(path: str, opts: Options, key_store: KeyStore | None) -> tuple
     return sessions
 
 
-def environment_for_snapshot(saved: Mapping[str, str], current: Mapping[str, str]) -> dict[str, str]:
-    env = {k: v for k, v in saved.items() if k not in LOGIN_SESSION_ENV_VARS and k not in STARTUP_TOKEN_ENV_VARS}
-    env.update((k, v) for k, v in current.items() if k in LOGIN_SESSION_ENV_VARS)
-    return env
-
-
-def start_instance_for_snapshot(snapshot: Snapshot) -> None:
-    import subprocess
-
-    env = environment_for_snapshot(snapshot.process_state.environ, process_state.environ)
-    env[SNAPSHOT_ENV_VAR] = snapshot.path
-    cwd = snapshot.process_state.cwd
-    if not os.path.isdir(cwd):
-        cwd = os.path.expanduser('~')
-    subprocess.Popen(
-        (kitty_exe(),) + snapshot.process_state.argv,
-        env=env,
-        cwd=cwd,
-        stdin=subprocess.DEVNULL,
-        start_new_session=True,
-        close_fds=True,
-        preexec_fn=clear_handled_signals,
-    )
-
-
 class RestoredSnapshot(NamedTuple):
     path: str
     sessions: tuple['Session', ...]
@@ -589,29 +536,15 @@ def load_or_discard_snapshot(path: str, opts: Options) -> RestoredSnapshot | Non
     return None
 
 
-def restore_snapshots(opts: Options, argv: tuple[str, ...], match_argv: bool = True) -> RestoredSnapshot | None:
-    """
-    Claims all snapshots, starting new kitty instances for the ones saved by kitty instances with a different command line and
-    returns the one to restore in this kitty instance, if any. Errors are logged, so that they never prevent kitty from starting.
-    When match_argv is False, the snapshot restored in this instance is the oldest one, whatever command line saved it, as the user
-    started kitty expecting their state back in the instance they started, not in another one.
-    """
+def restore_snapshots(opts: Options) -> RestoredSnapshot | None:
+    """Restore the newest available backup in this instance, regardless of its original command line."""
     try:
         base = restore_snapshots_dir()
         snapshots = claim_snapshots(base, os.getpid(), get_key_store(base))
     except Exception as e:
         log_error(f'Failed to restore the saved sessions, ignoring. Error: {e}')
         return None
-    own = next((s for s in snapshots if s.process_state.argv == argv), None)
-    if own is None and not match_argv and snapshots:
-        own = snapshots[0]
-    for s in snapshots:
-        if s is not own:
-            try:
-                start_instance_for_snapshot(s)
-            except Exception as e:
-                log_error(f'Failed to start kitty to restore the saved session in {s.path}. Error: {e}')
-    return None if own is None else load_or_discard_snapshot(own.path, opts)
+    return None if not snapshots else load_or_discard_snapshot(snapshots[0].path, opts)
 
 
 def delete_snapshot(path: str) -> None:
@@ -621,8 +554,13 @@ def delete_snapshot(path: str) -> None:
 
 
 def finish_restore(path: str) -> None:
-    # Called once the windows of a restored snapshot have been created, as a snapshot is restored only once
-    delete_snapshot(path)
+    # Keep the backup and its key, but release the claim and reset failure accounting after a successful restore.
+    base = os.path.dirname(path)
+    with lock_with_file(lock_path(base)):
+        name, _ = parse_claimed_name(os.path.basename(path))
+        with suppress(FileNotFoundError):
+            os.remove(os.path.join(path, ATTEMPTS_FILE))
+        os.rename(path, os.path.join(base, name))
 
 
 def remove_all_snapshots() -> None:

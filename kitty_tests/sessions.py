@@ -282,7 +282,6 @@ class TestSessions(BaseTest):
             patch.object(ls, 'is_macos', True),
             patch.object(ls, 'process_state', ls.ProcessState((), root, {}, 0)),
             patch.object(ls, 'last_saved_session', ''),
-            patch.object(ls, 'snapshot_requested_by_parent', ''),
             patch.object(ls, 'saver_lock', None),
             patch.object(fdt, 'cocoa_keychain_store_secret', store, create=True),
             patch.object(fdt, 'cocoa_keychain_read_secret', read, create=True),
@@ -323,24 +322,18 @@ class TestSessions(BaseTest):
             with patch.object(ls, 'kitty_exe', return_value=app_a):
                 new_base = ls.snapshots_dir()
                 os.makedirs(new_base)
-                self.assertIsNone(ls.restore_snapshots(self.set_options(), (), match_argv=False))
+                self.assertIsNone(ls.restore_snapshots(self.set_options()))
                 self.assertTrue(os.path.isdir(old_path))
                 os.rmdir(new_base)
-                started = []
-                with patch.object(ls, 'start_instance_for_snapshot', side_effect=lambda snapshot: started.append(snapshot.path)):
-                    restored = ls.restore_snapshots(self.set_options(), (), match_argv=False)
-                assert restored is not None
-                self.ae(restored.sessions[0].tabs[0].windows[0].launch_spec.opts.cwd, '/legacy')
-                self.ae(started, [f'{other_path}{ls.CLAIMED_MARKER}{os.getpid()}'])
-                ls.finish_restore(restored.path)
-                with patch.dict(os.environ, {ls.SNAPSHOT_ENV_VAR: started[0]}):
-                    ls.record_process_state(())
-                self.ae(ls.snapshot_requested_by_parent, started[0])
-                restored = ls.load_or_discard_snapshot(started[0], self.set_options())
+                restored = ls.restore_snapshots(self.set_options())
                 assert restored is not None
                 self.ae(restored.sessions[0].tabs[0].windows[0].launch_spec.opts.cwd, '/legacy-other')
                 ls.finish_restore(restored.path)
-                self.ae(keys, {})
+                self.assertTrue(os.path.isdir(other_path))
+                self.assertTrue(os.path.isdir(old_path))
+                self.ae(len(keys), 2)
+                ls.remove_snapshot(old_path, legacy_store)
+                ls.remove_snapshot(other_path, legacy_store)
             os.makedirs(legacy)
 
             with patch.object(ls, 'kitty_exe', return_value=app_a):
@@ -352,24 +345,17 @@ class TestSessions(BaseTest):
             with open(app_a, 'wb') as f:
                 f.write(b'new build')
             with patch.object(ls, 'kitty_exe', return_value=os.path.join(alias, 'Contents', 'MacOS', 'kitty')):
-                self.ae(save('/app-a'), path_a)
+                alias_path = save('/app-a')
+                self.ae(os.path.dirname(alias_path), os.path.dirname(path_a))
+                self.assertNotEqual(alias_path, path_a)
+                path_a = alias_path
                 key_a = ls.read_key_id(path_a)
             with patch.object(ls, 'kitty_exe', return_value=app_b):
                 path_b = save('/app-b')
-                # An inherited restore request cannot bypass installation isolation.
-                errors = []
-                with patch.dict(os.environ, {ls.SNAPSHOT_ENV_VAR: path_a}), patch('kitty.logout_session.log_error', side_effect=errors.append):
-                    ls.record_process_state(())
-                self.ae(ls.snapshot_requested_by_parent, '')
-                self.ae(len(errors), 1)
-                with patch.dict(os.environ, {ls.SNAPSHOT_ENV_VAR: path_b}):
-                    ls.record_process_state(())
-                    self.assertNotIn(ls.SNAPSHOT_ENV_VAR, os.environ)
-                self.ae(ls.snapshot_requested_by_parent, path_b)
                 self.assertNotEqual(path_a, path_b)
                 self.assertTrue(os.path.isdir(path_a))
                 # Orphan cleanup and restoring B must leave A's encryption key intact.
-                restored = ls.restore_snapshots(self.set_options(), (), match_argv=False)
+                restored = ls.restore_snapshots(self.set_options())
                 assert restored is not None
                 self.ae(restored.sessions[0].tabs[0].windows[0].launch_spec.opts.cwd, '/app-b')
                 ls.finish_restore(restored.path)
@@ -381,10 +367,12 @@ class TestSessions(BaseTest):
 
             with patch.object(ls, 'kitty_exe', return_value=app_a):
                 # The same installation still restores its own snapshot after B's cleanup.
-                restored = ls.restore_snapshots(self.set_options(), (), match_argv=False)
+                restored = ls.restore_snapshots(self.set_options())
                 assert restored is not None
                 self.ae(restored.sessions[0].tabs[0].windows[0].launch_spec.opts.cwd, '/app-a')
                 ls.finish_restore(restored.path)
+                self.assertIsNotNone(store_a.read(key_a))
+                ls.remove_all_snapshots()
                 self.ae(keys, {})
             self.assertTrue(os.path.isdir(legacy))
 
@@ -415,10 +403,11 @@ class TestSessions(BaseTest):
             lock_snapshot_for_saver,
             new_key_id,
             read_key_id,
+            read_snapshot,
             release_saver_lock,
             remove_all_snapshots,
             remove_orphaned_keys,
-            remove_stale_snapshots,
+            remove_snapshot,
             restore_snapshots,
             save_snapshot,
         )
@@ -474,26 +463,36 @@ class TestSessions(BaseTest):
         self.ae(list(ks.keys), [read_key_id(path)])
         for name, plaintext in (('process.json', b'SECRET_VAR'), ('session.kitty-session', b'launch'), ('scrollback/7', b'seven')):
             self.assertNotIn(plaintext, raw(path, name))
-        # Snapshots from before this instance was started are from an earlier logout and were never restored, their keys are deleted
-        stale = save(10)
+        # Repeated saves by the same process retain the three newest backups and their keys, ordered by saved_at, not mtime.
+        paths = [path]
+        for saved_at in (time.time() + 1, time.time() + 2, time.time() + 3):
+            with patch('kitty.logout_session.time.time', return_value=saved_at):
+                paths.append(save(11))
+                key = ks.read(read_key_id(paths[-1]))
+                self.ae(read_snapshot(paths[-1], key).saved_at, saved_at)
+        self.assertFalse(os.path.exists(paths[0]))
+        self.ae(set(os.listdir(base)), {os.path.basename(p) for p in paths[1:]})
+        self.ae(set(ks.keys), {read_key_id(p) for p in paths[1:]})
+        path = paths[-1]
         day_ago = time.time() - 86400
-        os.utime(stale, (day_ago, day_ago))
-        remove_stale_snapshots(base, time.time() - 3600, ks)
-        self.ae((os.listdir(base), list(ks.keys)), (['11'], [read_key_id(path)]))
+        os.utime(path, (day_ago, day_ago))
+        for old in paths[1:-1]:
+            remove_snapshot(old, ks)
         # Nothing is saved if the key cannot be stored, for example because the keychain needs user interaction
         ks.fail = True
         with self.assertRaises(OSError):
             save(12)
         ks.fail = False
-        self.ae(os.listdir(base), ['11'])
+        self.ae(os.listdir(base), [os.path.basename(path)])
 
         # Snapshots claimed by a running kitty instance are not claimed again, but those claimed by an instance that died are
         alive = {99}
-        os.rename(path, os.path.join(base, '11.claimed-by-99'))
+        snapshot_name = os.path.basename(path)
+        os.rename(path, os.path.join(base, f'{snapshot_name}.claimed-by-99'))
         self.ae(claim_snapshots(base, 1, ks, alive.__contains__), [])
         alive.clear()
         (snapshot,) = claim_snapshots(base, 1, ks, alive.__contains__)
-        self.ae((snapshot.path, snapshot.process_state[:3]), (os.path.join(base, '11.claimed-by-1'), state[:3]))
+        self.ae((snapshot.path, snapshot.process_state[:3]), (os.path.join(base, f'{snapshot_name}.claimed-by-1'), state[:3]))
         (s,) = load_snapshot(snapshot.path, opts, ks)
         # History and new output are visibly separated, even when history ended mid-line.
         restored = s.tabs[0].windows[0].restored_scrollback
@@ -544,7 +543,7 @@ class TestSessions(BaseTest):
         self.ae(sorted(ks.keys), sorted((read_key_id(path), foreign)))
         # Orphans are removed when saving and claiming, and all keys when all snapshots are removed
         ks.keys[orphan] = ks.keys[foreign]
-        remove_stale_snapshots(base, 0, ks)
+        remove_orphaned_keys(base, ks)
         self.assertNotIn(orphan, ks.keys)
         ks.keys[orphan] = ks.keys[foreign]
         self.ae(len(claim_snapshots(base, 1, ks, alive.__contains__)), 1)
@@ -597,6 +596,11 @@ class TestSessions(BaseTest):
         (s,) = load_snapshot(snapshot.path, opts, None)
         self.assertTrue(s.tabs[0].windows[0].restored_scrollback.startswith(b'seven\r\n'))
         finish_restore(snapshot.path)
+        self.assertTrue(os.path.isdir(path))
+        (snapshot,) = claim_snapshots(base, 1, None, alive.__contains__)
+        finish_restore(snapshot.path)
+        self.assertTrue(os.path.isdir(path))
+        shutil.rmtree(base)
         # An encrypted snapshot cannot be read without a key store and an unencrypted one is not accepted when there is a key store
         errors.clear()
         save_snapshot(base, 32, session, {}, state, None)
@@ -609,28 +613,27 @@ class TestSessions(BaseTest):
         shutil.rmtree(base)
         ks.keys.clear()
 
-        # The snapshot of the kitty instance with the same command line is restored in this instance, others in new instances
-        save(21, ('a',)), save(22, ('b',))
-        started: list[str] = []
+        # Only the latest backup is restored, regardless of argv. Successful restoration keeps its data and encryption key.
+        older = save(21, ('b',))
+        latest = save(22, ('a',))
+        os.utime(latest, (day_ago, day_ago))
         with (
             patch('kitty.logout_session.snapshots_dir', return_value=base),
             patch('kitty.logout_session.get_key_store', return_value=ks),
-            patch('kitty.logout_session.start_instance_for_snapshot', side_effect=lambda s: started.append(s.path)),
         ):
-            r = restore_snapshots(opts, ('b',))
-            assert r is not None
-            self.ae((os.path.basename(r.path), len(r.sessions)), (f'22.claimed-by-{os.getpid()}', 1))
-            self.ae([os.path.basename(x) for x in started], [f'21.claimed-by-{os.getpid()}'])
-            # Snapshots and their keys are deleted only once they have been restored
-            self.assertTrue(os.path.exists(r.path))
-            self.ae(len(ks.keys), 2)
-            finish_restore(r.path)
-            self.ae((os.listdir(base), list(ks.keys)), ([os.path.basename(started[0])], [read_key_id(started[0])]))
-            self.assertIsNone(restore_snapshots(opts, ('b',)))
+            for _ in range(4):
+                r = restore_snapshots(opts)
+                assert r is not None
+                self.ae(os.path.basename(r.path), f'{os.path.basename(latest)}.claimed-by-{os.getpid()}')
+                self.ae(len(r.sessions), 1)
+                finish_restore(r.path)
+                self.assertTrue(os.path.isdir(latest))
+                self.assertTrue(os.path.isdir(older))
+                self.ae(set(ks.keys), {read_key_id(latest), read_key_id(older)})
             remove_all_snapshots()
             self.assertFalse(os.path.exists(base))
             self.ae(ks.keys, {})
-            self.assertIsNone(restore_snapshots(opts, ('b',)))
+            self.assertIsNone(restore_snapshots(opts))
 
         # On Linux, the snapshot is saved when the desktop portal says the session is about to end and is deleted if the logout is
         # cancelled
@@ -642,26 +645,14 @@ class TestSessions(BaseTest):
         self.set_options()  # on_desktop_session_state_changed consults persist_session
         boss = SimpleNamespace(snapshot_saved_for_logout='', save_session_snapshot=lambda: save_snapshot(base, 41, session, {}, state, None))
         for new_state, expected in (
-            (DESKTOP_SESSION_QUERY_END, ['41']),
-            (DESKTOP_SESSION_RUNNING, []),
-            (DESKTOP_SESSION_QUERY_END, ['41']),
-            (DESKTOP_SESSION_ENDING, ['41']),
+            (DESKTOP_SESSION_QUERY_END, True),
+            (DESKTOP_SESSION_RUNNING, False),
+            (DESKTOP_SESSION_QUERY_END, True),
+            (DESKTOP_SESSION_ENDING, True),
         ):
             Boss.on_desktop_session_state_changed(boss, new_state)  # type: ignore[arg-type]
-            self.ae(os.listdir(base), expected)
+            self.ae(bool(os.listdir(base)), expected)
         shutil.rmtree(base)
-
-        # Restored instances get variables that refer to the login session, such as the display, from the current login session and
-        # never get single use startup tokens
-        from kitty.logout_session import environment_for_snapshot
-
-        self.ae(
-            environment_for_snapshot(
-                {'HOME': '/h', 'WAYLAND_DISPLAY': 'wayland-1', 'XAUTHORITY': '/old', 'DISPLAY': ':1', 'XDG_ACTIVATION_TOKEN': 'x'},
-                {'HOME': '/other', 'DISPLAY': ':0', 'XAUTHORITY': '/new', 'XDG_ACTIVATION_TOKEN': 'y'},
-            ),
-            {'HOME': '/h', 'DISPLAY': ':0', 'XAUTHORITY': '/new'},
-        )
 
         # A quit confirmed long after the OS asked kitty to quit for a logout is an ordinary quit
         for requested_at, now, expected in ((-1, 10, False), (5, 10, True), (5, 6 + LOGOUT_CONFIRMATION_TIMEOUT, False)):

@@ -3281,11 +3281,11 @@ If enabled, when you log out, restart or shut down the computer while kitty is r
 kitty saves its current state as a :ref:`session <sessions>`, including the size, position
 and state of every :term:`OS Window <os_window>` and the scrollback of every window. The next
 time kitty is started, it restores that session, instead of using :opt:`startup_session`.
-If several kitty instances were running, each is restored as a separate kitty instance, with the
-command line arguments and environment it originally had. Programs that were running in windows,
-other than the shell, are not started again. The saved session is used only once, and only when
-kitty is started without :option:`kitty --session` or a command to run. The saved state is deleted
-once it has been restored. On macOS, it is encrypted, with a key stored in your login keychain. Note
+The latest backup is restored, even if several kitty instances were running. Programs that were
+running in windows, other than the shell, are not started again. Restoration happens only when
+kitty is started without :option:`kitty --session` or a command to run. Each backup records its
+save time, and the latest three backups are retained even after restoration. On macOS, backups
+are encrypted, with keys stored in your login keychain. Note
 that despite the encryption any process that runs as you can access the stored session data.
 On Linux, it is not encrypted and this requires a desktop portal that supports monitoring the
 session state. See :ref:`restore_after_logout` for details.
@@ -3319,9 +3319,10 @@ The possible values are:
 The saved state includes the size, position and state of every :term:`OS Window <os_window>`,
 the layout of every tab, the working directory of every window and the scrollback. Programs
 that were running in windows, other than the shell, are not started again, since they could
-have been run for their effects. The saved state is used only once, and only when kitty is
-started without :option:`kitty --session` or a command to run. See :ref:`persist_session` for
-details.
+have been run for their effects. Each backup records its save time, the latest three backups
+are retained even after restoration, and startup restores the newest available backup. This
+happens only when kitty is started without :option:`kitty --session` or a command to run.
+See :ref:`persist_session` for details.
 """,
 )
 

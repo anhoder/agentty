@@ -290,16 +290,19 @@ collapsed group state when the sidebar is enabled. Agent activity is detected
 again after the restored processes start; transient hover and animation state is
 not saved.
 
-The saved state is used only once, and only when kitty is started without
-:option:`kitty --session` or a command to run, and it is deleted once it has
-been restored. Programs that were running in windows, other than the shell and
-:ref:`resumable AI agents <agent_resume>`, are not started again, since they
-could have been run for their effects, like :file:`rm`.
+The newest available backup is restored when kitty is started without
+:option:`kitty --session` or a command to run. Programs that were running in
+windows, other than the shell and :ref:`resumable AI agents <agent_resume>`,
+are not started again, since they could have been run for their effects, like
+:file:`rm`.
 
-If several kitty instances were running, the instance you start restores one of
-them and a separate kitty instance is started for each of the others, with the
-command line arguments, working directory and environment variables it
-originally had.
+Each backup records its save time in the ``saved_at`` field of :file:`process.json`.
+The latest three backups are retained per installation, including after a
+successful restoration. Each save creates a separate backup instead of replacing
+the previous one. Older backups and their encryption keys are removed when a new
+backup is saved. Backups currently being restored are protected from removal.
+If several kitty instances saved backups, only the newest available one is
+restored; older backups do not launch additional kitty instances.
 
 Automatic snapshots are isolated by the resolved absolute path of the kitty executable.
 For example, :file:`/Applications/kitty.app` and a development copy on your Desktop
@@ -321,8 +324,8 @@ exist, restoration falls back to the older :file:`saved-at-logout/` directory an
 its original macOS keychain service. An existing but empty installation directory
 does not trigger this fallback. Legacy snapshots have no application-path identity,
 so whichever installation first claims an available legacy snapshot restores it;
-the existing locks prevent duplicate restoration. Restored legacy snapshots and
-their keys are deleted normally. New saves always use the installation-scoped
+the existing locks prevent concurrent claims. Restored legacy snapshots and
+their keys are retained too. New saves always use the installation-scoped
 directory, and disabling persistence does not clear the shared legacy directory.
 
 On macOS with :opt:`macos_native_tabs` enabled, saved sessions also preserve
@@ -353,10 +356,10 @@ This works on macOS and on Linux, where it needs a desktop portal that supports
 monitoring the session state (version 3 of the Inhibit portal), such as the one
 used by GNOME. The state of every kitty instance is saved as a session file,
 including the size, position and state of every OS Window, and the scrollback
-of every window. The next time kitty is started, it restores
-the state of the instance that had the same command line arguments, and starts
-a separate kitty instance for each of the others, with the command line
-arguments, working directory and environment variables they originally had.
+of every window. The next time kitty is started, it restores the newest
+available backup, regardless of the command line arguments that saved it.
+The latest three backups are retained even after restoration, as described
+in :ref:`persist_session`.
 
 The scrollback of every window is restored before the shell starts, followed by
 a line showing when it was saved. Only text and its formatting and hyperlinks
@@ -367,11 +370,11 @@ not started again, since they could have been run for their effects, like
 
 On macOS, the saved state, which includes the scrollback and the environment
 variables of every kitty instance, is encrypted, with a separate random key for
-every kitty instance, stored in your login keychain. Note that despite the
-encryption any process that runs as you can read the saved session data. The
-keys are deleted when the state is restored, so any copies of it left on disk or
-in backups cannot be read. kitty never shows any keychain prompts for this. If the keychain needs
-user interaction, the state is not saved or not restored. This happens if:
+every backup, stored in your login keychain. Note that despite the
+encryption any process that runs as you can read the saved session data. Keys
+are retained with their backups and deleted when those backups are removed,
+not when they are restored. kitty never shows any keychain prompts for this.
+If the keychain needs user interaction, the state is not saved or not restored. This happens if:
 
 * your login keychain is locked, for example, because it has a different
   password from your login password or because it is set to lock itself after

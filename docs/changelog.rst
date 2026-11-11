@@ -10,6 +10,9 @@ Recent major new features
 ---------------------------
 
 
+- Record automatic session backup times, retain the latest three backups and
+  their encryption keys after restoration, and restore only the newest available
+  backup instead of launching instances for older backups.
 - Load the configured shell's interactive login environment before restoring an
   agent conversation, so resumed agents inherit shell-configured PATH and API
   credentials even when shell integration is disabled.

@@ -10,7 +10,6 @@ from collections.abc import Generator, Sequence
 from contextlib import contextmanager, suppress
 from gettext import gettext as _
 
-from . import logout_session
 from .boss import Boss
 from .child import set_default_env, set_LANG_in_default_env
 from .cli import create_opts, parse_args
@@ -58,7 +57,6 @@ from .fonts.render import dump_font_debug, set_font_family
 from .logout_session import (
     RestoredSnapshot,
     finish_restore,
-    load_or_discard_snapshot,
     record_process_state,
     remove_all_snapshots,
     restore_snapshots,
@@ -290,13 +288,9 @@ def list_monitors(json_output: bool = False) -> None:
 
 
 def snapshot_to_restore(opts: Options, args: CLIOptions) -> RestoredSnapshot | None:
-    if path := logout_session.snapshot_requested_by_parent:
-        return load_or_discard_snapshot(path, opts)
     if session_persistence_enabled(opts):
         if not args.session and not args.args and not getattr(sys, 'cmdline_args_for_open', None):
-            # At a logout every instance is restored, each by an instance started with its own command line. With persist_session
-            # kitty is started by the user, so this instance restores a session even if a differing command line saved it.
-            return restore_snapshots(opts, tuple(sys.argv[1:]), match_argv=opts.persist_session == 'no')
+            return restore_snapshots(opts)
     elif not args.config and not args.override:
         # Both options are disabled in the default configuration, so the saved state will never be restored
         try:
@@ -380,7 +374,7 @@ def _run_app(opts: Options, args: CLIOptions, bad_lines: Sequence[BadLine] = (),
             try:
                 finish_restore(restored.path)
             except OSError as e:
-                log_error(f'Failed to delete the restored session saved at logout in {restored.path}. Error: {e}')
+                log_error(f'Failed to release the restored session backup in {restored.path}. Error: {e}')
         if args.debug_font_fallback:
             dump_font_debug()
         if bad_lines or boss.misc_config_errors:
