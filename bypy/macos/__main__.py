@@ -519,13 +519,15 @@ class Freeze(object):
                 sign_app(appdir, self.notarize)
             print('Signing completed in {} minutes {} seconds'.format(*times))
         os.symlink('/Applications', join(tdir, 'Applications'))
-        size_in_mb = int(subprocess.check_output(['du', '-s', '-k', tdir]).decode('utf-8').split()[0]) / 1024.0
-        cmd = ['/usr/bin/hdiutil', 'create', '-srcfolder', tdir, '-volname', volname, '-format', format]
-        if 190 < size_in_mb < 250:
-            # We need -size 255m because of a bug in hdiutil. When the size of
-            # srcfolder is close to 200MB hdiutil fails with
-            # diskimages-helper: resize request is above maximum size allowed.
-            cmd += ['-size', '255m']
+        diskutil = '/usr/sbin/diskutil'
+        if subprocess.run([diskutil, 'image', 'create', 'from', '--help'], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL).returncode == 0:
+            cmd = [diskutil, 'image', 'create', 'from', '--volumeName', volname, '--format', format, tdir]
+        else:
+            size_in_mb = int(subprocess.check_output(['du', '-s', '-k', tdir]).decode('utf-8').split()[0]) / 1024.0
+            cmd = ['/usr/bin/hdiutil', 'create', '-srcfolder', tdir, '-volname', volname, '-format', format]
+            if 190 < size_in_mb < 250:
+                # Older hdiutil needs extra space for source folders close to 200MB.
+                cmd += ['-size', '255m']
         print('\nCreating dmg...')
         with timeit() as times:
             subprocess.check_call(cmd + [dmg])

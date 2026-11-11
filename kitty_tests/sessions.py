@@ -250,6 +250,144 @@ class TestSessions(BaseTest):
             with self.subTest(unsafe=unsafe):
                 self.ae(s(f'a{unsafe}b'), expected)
 
+    def test_session_snapshot_app_isolation(self) -> None:
+        from types import SimpleNamespace
+        from unittest.mock import patch
+
+        from kitty import fast_data_types as fdt
+        from kitty import logout_session as ls
+        from .crypto import is_rlimit_memlock_too_low
+
+        if is_rlimit_memlock_too_low():
+            self.skipTest('RLIMIT_MEMLOCK is too low')
+
+        self.set_options({'persist_session': 'always'})
+        keys = {}
+
+        def store(service, account, label, key):
+            keys[service, account] = key
+
+        def read(service, account):
+            return keys.get((service, account))
+
+        def delete(service, account):
+            keys.pop((service, account), None)
+
+        def list_ids(service):
+            return [account for svc, account in keys if svc == service]
+
+        with (
+            tempfile.TemporaryDirectory() as root,
+            patch.object(ls, 'cache_dir', return_value=root),
+            patch.object(ls, 'is_macos', True),
+            patch.object(ls, 'process_state', ls.ProcessState((), root, {}, 0)),
+            patch.object(ls, 'last_saved_session', ''),
+            patch.object(ls, 'snapshot_requested_by_parent', ''),
+            patch.object(ls, 'saver_lock', None),
+            patch.object(fdt, 'cocoa_keychain_store_secret', store, create=True),
+            patch.object(fdt, 'cocoa_keychain_read_secret', read, create=True),
+            patch.object(fdt, 'cocoa_keychain_delete', delete, create=True),
+            patch.object(fdt, 'cocoa_keychain_list_accounts', list_ids, create=True),
+        ):
+            app_a = os.path.join(root, 'Applications', 'kitty.app', 'Contents', 'MacOS', 'kitty')
+            app_b = os.path.join(root, 'Desktop', 'kitty.app', 'Contents', 'MacOS', 'kitty')
+            legacy = os.path.join(root, 'saved-at-logout', '123')
+            os.makedirs(legacy)
+            for exe in (app_a, app_b):
+                os.makedirs(os.path.dirname(exe))
+                with open(exe, 'wb') as f:
+                    f.write(b'old build')
+            alias = os.path.join(root, 'kitty-alias.app')
+            os.symlink(os.path.join(root, 'Applications', 'kitty.app'), alias)
+
+            def save(cwd):
+                boss = SimpleNamespace(serialize_state_as_session=lambda *args: [f'launch --cwd={cwd}'])
+                try:
+                    return ls.save_session_snapshot(boss, with_scrollback=False)
+                finally:
+                    ls.release_saver_lock()
+
+            # Old snapshots use the shared keychain service. They are considered only
+            # while this installation has no snapshot directory, not when it is empty.
+            legacy_store = SimpleNamespace(
+                store=lambda account, key: store(ls.KEYCHAIN_SERVICE, account, '', key),
+                read=lambda account: read(ls.KEYCHAIN_SERVICE, account),
+                delete=lambda account: delete(ls.KEYCHAIN_SERVICE, account),
+                list_ids=lambda: list_ids(ls.KEYCHAIN_SERVICE),
+            )
+            legacy_base = os.path.dirname(legacy)
+            shutil.rmtree(legacy)
+            state = ls.ProcessState((), root, {}, 0)
+            old_path = ls.save_snapshot(legacy_base, 11, 'launch --cwd=/legacy', {}, state, legacy_store)
+            other_path = ls.save_snapshot(legacy_base, 12, 'launch --cwd=/legacy-other', {}, state._replace(argv=('other',)), legacy_store)
+            with patch.object(ls, 'kitty_exe', return_value=app_a):
+                new_base = ls.snapshots_dir()
+                os.makedirs(new_base)
+                self.assertIsNone(ls.restore_snapshots(self.set_options(), (), match_argv=False))
+                self.assertTrue(os.path.isdir(old_path))
+                os.rmdir(new_base)
+                started = []
+                with patch.object(ls, 'start_instance_for_snapshot', side_effect=lambda snapshot: started.append(snapshot.path)):
+                    restored = ls.restore_snapshots(self.set_options(), (), match_argv=False)
+                assert restored is not None
+                self.ae(restored.sessions[0].tabs[0].windows[0].launch_spec.opts.cwd, '/legacy')
+                self.ae(started, [f'{other_path}{ls.CLAIMED_MARKER}{os.getpid()}'])
+                ls.finish_restore(restored.path)
+                with patch.dict(os.environ, {ls.SNAPSHOT_ENV_VAR: started[0]}):
+                    ls.record_process_state(())
+                self.ae(ls.snapshot_requested_by_parent, started[0])
+                restored = ls.load_or_discard_snapshot(started[0], self.set_options())
+                assert restored is not None
+                self.ae(restored.sessions[0].tabs[0].windows[0].launch_spec.opts.cwd, '/legacy-other')
+                ls.finish_restore(restored.path)
+                self.ae(keys, {})
+            os.makedirs(legacy)
+
+            with patch.object(ls, 'kitty_exe', return_value=app_a):
+                path_a = save('/app-a')
+                key_a = ls.read_key_id(path_a)
+                store_a = ls.get_key_store()
+                assert store_a is not None
+            # An alias and an in-place binary upgrade must still use A's snapshot.
+            with open(app_a, 'wb') as f:
+                f.write(b'new build')
+            with patch.object(ls, 'kitty_exe', return_value=os.path.join(alias, 'Contents', 'MacOS', 'kitty')):
+                self.ae(save('/app-a'), path_a)
+                key_a = ls.read_key_id(path_a)
+            with patch.object(ls, 'kitty_exe', return_value=app_b):
+                path_b = save('/app-b')
+                # An inherited restore request cannot bypass installation isolation.
+                errors = []
+                with patch.dict(os.environ, {ls.SNAPSHOT_ENV_VAR: path_a}), patch('kitty.logout_session.log_error', side_effect=errors.append):
+                    ls.record_process_state(())
+                self.ae(ls.snapshot_requested_by_parent, '')
+                self.ae(len(errors), 1)
+                with patch.dict(os.environ, {ls.SNAPSHOT_ENV_VAR: path_b}):
+                    ls.record_process_state(())
+                    self.assertNotIn(ls.SNAPSHOT_ENV_VAR, os.environ)
+                self.ae(ls.snapshot_requested_by_parent, path_b)
+                self.assertNotEqual(path_a, path_b)
+                self.assertTrue(os.path.isdir(path_a))
+                # Orphan cleanup and restoring B must leave A's encryption key intact.
+                restored = ls.restore_snapshots(self.set_options(), (), match_argv=False)
+                assert restored is not None
+                self.ae(restored.sessions[0].tabs[0].windows[0].launch_spec.opts.cwd, '/app-b')
+                ls.finish_restore(restored.path)
+                self.assertIsNotNone(store_a.read(key_a))
+                save('/app-b-again')
+                ls.remove_all_snapshots()
+                self.assertTrue(os.path.isdir(path_a))
+                self.assertIsNotNone(store_a.read(key_a))
+
+            with patch.object(ls, 'kitty_exe', return_value=app_a):
+                # The same installation still restores its own snapshot after B's cleanup.
+                restored = ls.restore_snapshots(self.set_options(), (), match_argv=False)
+                assert restored is not None
+                self.ae(restored.sessions[0].tabs[0].windows[0].launch_spec.opts.cwd, '/app-a')
+                ls.finish_restore(restored.path)
+                self.ae(keys, {})
+            self.assertTrue(os.path.isdir(legacy))
+
     def test_logout_snapshots(self) -> None:
         from .crypto import is_rlimit_memlock_too_low
 

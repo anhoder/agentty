@@ -301,6 +301,30 @@ them and a separate kitty instance is started for each of the others, with the
 command line arguments, working directory and environment variables it
 originally had.
 
+Automatic snapshots are isolated by the resolved absolute path of the kitty executable.
+For example, :file:`/Applications/kitty.app` and a development copy on your Desktop
+save, restore and clean up separate sessions. Symlink aliases of the same executable
+share a session store, and replacing the executable in place keeps its session store.
+Moving or renaming the application selects a different store.
+
+Snapshots are stored in :file:`saved-sessions/<installation-id>/` inside kitty's
+cache directory (normally :file:`~/Library/Caches/kitty/` on macOS). The installation
+id is the SHA-256 hash of the resolved executable path, not the binary contents.
+The macOS keychain service and snapshot locks are isolated by the same id, so
+installation-scoped snapshots and keys are not restored or cleaned up by another
+installation.
+This applies to both :opt:`persist_session` and :opt:`restore_session_after_logout`;
+manually saved session files are unaffected.
+
+For backward compatibility, if this installation's snapshot directory does not
+exist, restoration falls back to the older :file:`saved-at-logout/` directory and
+its original macOS keychain service. An existing but empty installation directory
+does not trigger this fallback. Legacy snapshots have no application-path identity,
+so whichever installation first claims an available legacy snapshot restores it;
+the existing locks prevent duplicate restoration. Restored legacy snapshots and
+their keys are deleted normally. New saves always use the installation-scoped
+directory, and disabling persistence does not clear the shared legacy directory.
+
 On macOS with :opt:`macos_native_tabs` enabled, saved sessions also preserve
 native tab groups and their tab order. Separate OS windows remain separate;
 split layouts are restored within their original tabs. The session directive

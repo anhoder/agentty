@@ -251,9 +251,16 @@ func TestWatchForConfigChanges(t *testing.T) {
 	write_file(t, extra_conf, "background black\n")
 	write_file(t, extra2_conf, "background black\n")
 
-	var action_count atomic.Int32
-	action := func() error {
-		action_count.Add(1)
+	// Callbacks for other paths can arrive late, even after a debounce interval.
+	// Count by source so they cannot satisfy or invalidate another file's assertion.
+	action_counts := make(map[string]*atomic.Int32)
+	for _, path := range []string{main_conf, included_conf, dark_theme, unrelated, extra_conf, extra2_conf} {
+		action_counts[path] = new(atomic.Int32)
+	}
+	action := func(path string) error {
+		if counter := action_counts[path]; counter != nil {
+			counter.Add(1)
+		}
 		return nil
 	}
 
@@ -269,36 +276,40 @@ func TestWatchForConfigChanges(t *testing.T) {
 	// Confirm the watcher is ready by writing to the dark-theme auto conf (an
 	// always-watched file that does not affect the include graph) and waiting for
 	// an action to fire.  This replaces the blind time.Sleep used previously.
-	prime_watcher(t, dark_theme, &action_count, debounce)
+	prime_watcher(t, dark_theme, action_counts[dark_theme], debounce)
 
 	t.Run("main config change triggers action", func(t *testing.T) {
+		action_count := action_counts[main_conf]
 		before := action_count.Load()
 		write_file(t, main_conf, "include sub/included.conf\nfont_size 13\n")
-		if wait_for_count(&action_count, before+1, 2*time.Second) <= before {
+		if wait_for_count(action_count, before+1, 2*time.Second) <= before {
 			t.Fatalf("Expected action to be called after main config change, count=%d", action_count.Load())
 		}
 	})
 	time.Sleep(debounce + 20*time.Millisecond)
 
 	t.Run("included file change triggers action", func(t *testing.T) {
+		action_count := action_counts[included_conf]
 		before := action_count.Load()
 		write_file(t, included_conf, "background white\n")
-		if wait_for_count(&action_count, before+1, 2*time.Second) <= before {
+		if wait_for_count(action_count, before+1, 2*time.Second) <= before {
 			t.Fatalf("Expected action to be called after included file change, count=%d", action_count.Load())
 		}
 	})
 	time.Sleep(debounce + 20*time.Millisecond)
 
 	t.Run("auto color scheme file change triggers action", func(t *testing.T) {
+		action_count := action_counts[dark_theme]
 		before := action_count.Load()
 		write_file(t, dark_theme, "background #111111\n")
-		if wait_for_count(&action_count, before+1, 2*time.Second) <= before {
+		if wait_for_count(action_count, before+1, 2*time.Second) <= before {
 			t.Fatalf("Expected action to be called after dark-theme.auto.conf change, count=%d", action_count.Load())
 		}
 	})
 	time.Sleep(debounce + 20*time.Millisecond)
 
 	t.Run("unrelated file change does not trigger action", func(t *testing.T) {
+		action_count := action_counts[unrelated]
 		before := action_count.Load()
 		write_file(t, unrelated, "still unrelated\n")
 		time.Sleep(debounce + 200*time.Millisecond)
@@ -311,16 +322,18 @@ func TestWatchForConfigChanges(t *testing.T) {
 	// sync_watched_dirs() runs before action() in the event loop, so by the time
 	// wait_for_count returns the new directory is already registered.
 	t.Run("include added to main config is watched", func(t *testing.T) {
+		action_count := action_counts[main_conf]
 		before := action_count.Load()
 		write_file(t, main_conf, "include sub/included.conf\ninclude extra/custom.conf\n")
-		if wait_for_count(&action_count, before+1, 2*time.Second) <= before {
+		if wait_for_count(action_count, before+1, 2*time.Second) <= before {
 			t.Fatalf("Expected action after kitty.conf gained include directive")
 		}
 		// Let the debounce window clear before writing to the newly watched file.
 		time.Sleep(debounce + 20*time.Millisecond)
+		action_count = action_counts[extra_conf]
 		before = action_count.Load()
 		write_file(t, extra_conf, "background white\n")
-		if wait_for_count(&action_count, before+1, 2*time.Second) <= before {
+		if wait_for_count(action_count, before+1, 2*time.Second) <= before {
 			t.Fatalf("Expected action after modifying newly included file")
 		}
 	})
@@ -331,16 +344,18 @@ func TestWatchForConfigChanges(t *testing.T) {
 		// Add an include to sub/included.conf that points into extra2dir, which is
 		// not currently watched.  The watcher re-scans the full include graph on
 		// every conf-file change, so extra2dir must be added to the watch set.
+		action_count := action_counts[included_conf]
 		before := action_count.Load()
 		write_file(t, included_conf, "include ../extra2/another.conf\n")
-		if wait_for_count(&action_count, before+1, 2*time.Second) <= before {
+		if wait_for_count(action_count, before+1, 2*time.Second) <= before {
 			t.Fatalf("Expected action after sub/included.conf gained include directive")
 		}
 		time.Sleep(debounce + 20*time.Millisecond)
 		// extra2dir is now watched; a change to extra2/another.conf must fire.
+		action_count = action_counts[extra2_conf]
 		before = action_count.Load()
 		write_file(t, extra2_conf, "background blue\n")
-		if wait_for_count(&action_count, before+1, 2*time.Second) <= before {
+		if wait_for_count(action_count, before+1, 2*time.Second) <= before {
 			t.Fatalf("Expected action after modifying file included from an already-included conf file")
 		}
 	})
@@ -348,14 +363,22 @@ func TestWatchForConfigChanges(t *testing.T) {
 
 	// include removed from main config: extradir must be dropped from the watch set.
 	t.Run("include removed from main config is no longer watched", func(t *testing.T) {
+		action_count := action_counts[main_conf]
 		before := action_count.Load()
 		write_file(t, main_conf, "include sub/included.conf\n")
-		if wait_for_count(&action_count, before+1, 2*time.Second) <= before {
+		if wait_for_count(action_count, before+1, 2*time.Second) <= before {
 			t.Fatalf("Expected action after kitty.conf lost include directive")
 		}
 		time.Sleep(debounce + 20*time.Millisecond)
+		action_count = action_counts[extra_conf]
+		before_theme := action_counts[dark_theme].Load()
 		before = action_count.Load()
 		write_file(t, extra_conf, "background green\n")
+		// Another watched file can notify concurrently with the removed include.
+		write_file(t, dark_theme, "background #222222\n")
+		if wait_for_count(action_counts[dark_theme], before_theme+1, 2*time.Second) <= before_theme {
+			t.Fatal("Expected action for the still-watched theme after removing include")
+		}
 		time.Sleep(debounce + 200*time.Millisecond)
 		if after := action_count.Load(); after != before {
 			t.Fatalf("Expected NO action after modifying removed-include file, count went from %d to %d", before, after)
@@ -382,7 +405,7 @@ func TestWatchForConfigChangesEmptyConfigDir(t *testing.T) {
 	// main_conf intentionally does not exist — simulates a fresh empty config directory.
 
 	var action_count atomic.Int32
-	action := func() error {
+	action := func(string) error {
 		action_count.Add(1)
 		return nil
 	}
@@ -424,7 +447,7 @@ func TestWatchForConfigChangesDebounce(t *testing.T) {
 	write_file(t, main_conf, "font_size 12\n")
 
 	var action_count atomic.Int32
-	action := func() error {
+	action := func(string) error {
 		action_count.Add(1)
 		return nil
 	}

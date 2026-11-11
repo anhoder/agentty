@@ -116,12 +116,12 @@ func get_set_of_config_files(config_paths []string) *utils.Set[string] {
 }
 
 // watch_for_config_changes watches the parent directories of every conf file (main configs,
-// includes, and auto color-scheme files) and calls action whenever one of those files changes.
+// includes, and auto color-scheme files) and calls action with the changed path.
 // Watching is non-recursive (top-level only): only the immediate parent directories are added.
 // When a conf file change is detected the full set of conf files is re-scanned so that newly
 // added or removed include directives are reflected in the watched-directory set.
 // It runs until ctx is cancelled.
-func watch_for_config_changes(ctx context.Context, action func() error, debounce_time time.Duration, config_paths []string) error {
+func watch_for_config_changes(ctx context.Context, action func(string) error, debounce_time time.Duration, config_paths []string) error {
 	event_chan := make(chan fswatcher.WatchEvent)
 
 	all_paths := get_set_of_config_files(config_paths)
@@ -193,7 +193,8 @@ func watch_for_config_changes(ctx context.Context, action func() error, debounce
 			sync_watched_dirs()
 
 			new_all_paths := get_set_of_config_files(config_paths)
-			if new_all_paths.Has(resolve_path(event.Path)) {
+			path := resolve_path(event.Path)
+			if new_all_paths.Has(path) {
 				// A conf file changed: rebuild desired_dirs from the new include set and
 				// sync the watcher so new include directories are watched and stale ones dropped.
 				new_desired := utils.NewSet[string]()
@@ -203,7 +204,7 @@ func watch_for_config_changes(ctx context.Context, action func() error, debounce
 				desired_dirs = new_desired
 				sync_watched_dirs()
 
-				if err := action(); err != nil {
+				if err := action(path); err != nil {
 					fmt.Fprintf(os.Stderr, "failed to signal kitty in event: %s with error: %s\n", event, err)
 				}
 			}
@@ -223,7 +224,7 @@ func watch_for_kitty_config_changes(action func() error, debounce_time time.Dura
 		_ = scanner.Err()
 		cancel()
 	}()
-	return watch_for_config_changes(ctx, action, debounce_time, config_paths)
+	return watch_for_config_changes(ctx, func(string) error { return action() }, debounce_time, config_paths)
 }
 
 func signal_kitty_to_reload_config(kitty_pid int) error {

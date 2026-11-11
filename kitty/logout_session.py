@@ -23,6 +23,7 @@
 # instance dies, however it dies.
 
 import fcntl
+import hashlib
 import json
 import os
 import re
@@ -117,30 +118,34 @@ class KeyStore(Protocol):
 
 
 class MacOSKeychain:
+    def __init__(self, service: str | None = None) -> None:
+        self.service = service if service is not None else f'{KEYCHAIN_SERVICE}.{session_storage_id()}'
+
     def store(self, key_id: str, key: Secret) -> None:
         from .fast_data_types import cocoa_keychain_store_secret
 
-        cocoa_keychain_store_secret(KEYCHAIN_SERVICE, key_id, _('kitty session saved at logout'), key)
+        cocoa_keychain_store_secret(self.service, key_id, _('kitty session saved at logout'), key)
 
     def read(self, key_id: str) -> Secret | None:
         from .fast_data_types import cocoa_keychain_read_secret
 
-        return cocoa_keychain_read_secret(KEYCHAIN_SERVICE, key_id)
+        return cocoa_keychain_read_secret(self.service, key_id)
 
     def delete(self, key_id: str) -> None:
         from .fast_data_types import cocoa_keychain_delete
 
-        cocoa_keychain_delete(KEYCHAIN_SERVICE, key_id)
+        cocoa_keychain_delete(self.service, key_id)
 
     def list_ids(self) -> list[str]:
         from .fast_data_types import cocoa_keychain_list_accounts
 
-        return cocoa_keychain_list_accounts(KEYCHAIN_SERVICE)
+        return cocoa_keychain_list_accounts(self.service)
 
 
-def get_key_store() -> KeyStore | None:
-    # Snapshots are encrypted only on platforms that have a key store that can be used without user interaction
-    return MacOSKeychain() if is_macos else None
+def get_key_store(base: str | None = None) -> KeyStore | None:
+    # Old snapshots were encrypted using the shared, unscoped keychain service.
+    legacy = base is not None and os.path.realpath(base) == os.path.realpath(legacy_snapshots_dir())
+    return MacOSKeychain(KEYCHAIN_SERVICE if legacy else None) if is_macos else None
 
 
 def encrypt(key: Secret, name: str, data: bytes) -> bytes:
@@ -252,6 +257,11 @@ def record_process_state(argv: tuple[str, ...]) -> None:
     # the environment, so that it is not inherited by child processes.
     global process_state, snapshot_requested_by_parent
     snapshot_requested_by_parent = os.environ.pop(SNAPSHOT_ENV_VAR, '')
+    if snapshot_requested_by_parent:
+        parent = os.path.dirname(os.path.realpath(snapshot_requested_by_parent))
+        if parent not in {os.path.realpath(snapshots_dir()), os.path.realpath(restore_snapshots_dir())}:
+            log_error('Ignoring a session snapshot requested by a different kitty installation')
+            snapshot_requested_by_parent = ''
     try:
         cwd = os.getcwd()
     except OSError:
@@ -294,8 +304,23 @@ def is_saver_running(path: str) -> bool:
     return False
 
 
+def session_storage_id() -> str:
+    # Resolve aliases to the same installation, but retain identity across in-place upgrades.
+    return hashlib.sha256(os.fsencode(os.path.realpath(kitty_exe()))).hexdigest()
+
+
 def snapshots_dir() -> str:
+    # Keep the old unscoped root separate: older kitty builds can delete everything in it.
+    return os.path.join(cache_dir(), 'saved-sessions', session_storage_id())
+
+
+def legacy_snapshots_dir() -> str:
     return os.path.join(cache_dir(), 'saved-at-logout')
+
+
+def restore_snapshots_dir() -> str:
+    base = snapshots_dir()
+    return base if os.path.exists(base) else legacy_snapshots_dir()
 
 
 def lock_path(base: str) -> str:
@@ -555,7 +580,7 @@ class RestoredSnapshot(NamedTuple):
 
 
 def load_or_discard_snapshot(path: str, opts: Options) -> RestoredSnapshot | None:
-    key_store = get_key_store()
+    key_store = get_key_store(os.path.dirname(path))
     try:
         return RestoredSnapshot(path, load_snapshot(path, opts, key_store))
     except Exception as e:
@@ -572,7 +597,8 @@ def restore_snapshots(opts: Options, argv: tuple[str, ...], match_argv: bool = T
     started kitty expecting their state back in the instance they started, not in another one.
     """
     try:
-        snapshots = claim_snapshots(snapshots_dir(), os.getpid(), get_key_store())
+        base = restore_snapshots_dir()
+        snapshots = claim_snapshots(base, os.getpid(), get_key_store(base))
     except Exception as e:
         log_error(f'Failed to restore the saved sessions, ignoring. Error: {e}')
         return None
@@ -590,7 +616,7 @@ def restore_snapshots(opts: Options, argv: tuple[str, ...], match_argv: bool = T
 
 def delete_snapshot(path: str) -> None:
     with lock_with_file(lock_path(os.path.dirname(path))):
-        remove_snapshot(path, get_key_store())
+        remove_snapshot(path, get_key_store(os.path.dirname(path)))
         release_saver_lock(path)
 
 

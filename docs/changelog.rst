@@ -23,6 +23,18 @@ Recent major new features
 - macOS: Build ``kitty.app`` with upstream's bypy packaging pipeline, which
   freezes the app and links the bundled ``slangc`` into ``kitty-quick-access.app``
   so custom shaders load in the quick access terminal.
+- macOS: Match ``who`` when counting login sessions for ``/etc/issue`` by
+  ignoring records whose terminal device no longer exists.
+- macOS: Use ``diskutil image`` when available to create DMG installers,
+  avoiding failures in the deprecated ``hdiutil create`` path on newer systems.
+- Fix spurious configuration watcher test failures caused by attributing
+  delayed notifications for other files to a removed include.
+- Isolate automatic session snapshots, restoration and cleanup by application
+  installation path, including their macOS keychain services. Sessions from
+  separate installed and development copies of kitty no longer interfere.
+- Preserve restoration of older session snapshots by falling back to the legacy
+  directory and keychain service only when the installation-scoped directory
+  does not exist. New saves remain isolated by application path.
 - macOS: Polish Agents sidebar hover feedback across the toggle, group headers, disclosures and agent rows, and show a visible right-edge resize rail.
 - macOS: Fix Agents sidebar row clipping hiding the resize rail outside agent rows and obscuring subsequent rows.
 - macOS: Do not highlight the Agents sidebar's empty placeholder or show a hand cursor over it.
