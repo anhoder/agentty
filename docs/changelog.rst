@@ -97,6 +97,10 @@ Recent major new features
 - Fix first-launch integration prompts being skipped when Pi rewrites its
   process title and macOS can no longer read its environment. Recognize Pi's
   resolved Node package entry point as well as its executable name.
+- Fix first-launch integration prompts being skipped for agents whose shell
+  exports :code:`XDG_CONFIG_HOME` or another config-home variable after Kitty
+  starts, because the guard compared raw environment values instead of the
+  directories they resolve to.
 - macOS: Display brand icons for each AI agent in the Agents sidebar. Icons
   are loaded from ``kitty/agent_icons/`` and adapt to light/dark appearance
   by substituting ``currentColor`` in SVG sources with the label color. Non-square

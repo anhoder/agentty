@@ -97,6 +97,43 @@ class TestAgentOnboarding(BaseTest):
             self.calls[0][1]('i')
             install.assert_called_once_with('pi')
 
+    def test_shell_exported_config_home_does_not_block_prompt(self):
+        _, window = self.setup_prompt()
+        window.child.foreground_processes = [{'cmdline': ['omp']}]
+        window.child.foreground_environ = {'HOME': '/home/user', 'XDG_CONFIG_HOME': '/home/user/.config'}
+        window.child.environ = dict(window.child.foreground_environ)
+        with (
+            patch.dict(os.environ, {'HOME': '/home/user'}, clear=True),
+            patch('kitty.agent_onboarding.inspect_integration', return_value=self.inspection),
+        ):
+            self.prompts.poll()
+        self.ae(len(self.calls), 1)
+
+    def test_same_config_directory_exported_by_shell_still_prompts(self):
+        _, window = self.setup_prompt()
+        window.child.foreground_processes = [{'cmdline': ['opencode']}]
+        window.child.foreground_environ = {'HOME': '/home/user', 'XDG_CONFIG_HOME': '/home/user/.config'}
+        window.child.environ = dict(window.child.foreground_environ)
+        with (
+            patch.dict(os.environ, {'HOME': '/home/user'}, clear=True),
+            patch('kitty.agent_onboarding.inspect_integration', return_value=self.inspection),
+        ):
+            self.prompts.poll()
+        self.ae(len(self.calls), 1)
+
+    def test_agent_using_another_config_directory_does_not_prompt(self):
+        _, window = self.setup_prompt()
+        window.child.foreground_processes = [{'cmdline': ['claude']}]
+        window.child.foreground_environ = {'HOME': '/home/user', 'CLAUDE_CONFIG_DIR': '/elsewhere/claude'}
+        window.child.environ = dict(window.child.foreground_environ)
+        with (
+            patch.dict(os.environ, {'HOME': '/home/user'}, clear=True),
+            patch('kitty.agent_onboarding.inspect_integration') as inspect,
+        ):
+            self.prompts.poll()
+        inspect.assert_not_called()
+        self.ae(self.calls, [])
+
     def test_remote_background_and_different_home_do_not_prompt(self):
         _, window = self.setup_prompt()
         with patch('kitty.agent_onboarding.inspect_integration') as inspect:

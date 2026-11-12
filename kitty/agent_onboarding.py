@@ -5,11 +5,19 @@
 
 import os
 from gettext import gettext as _
-from typing import Any
+from typing import Any, Mapping
 
-from .agent_integration import AGENTS, inspect_integration, install
+from .agent_integration import AGENTS, Agent, inspect_integration, install
 from .agents import detect_agent
 from .child import cached_process_data, environ_of_process
+
+
+def _config_home(env: Mapping[str, str], name: str, default: str) -> str:
+    # A shell can export a variable (for example XDG_CONFIG_HOME in fish's
+    # config.fish) after Kitty launched it, so Kitty's own environment may lack
+    # a value that resolves to the very same directory. Compare the resolved
+    # directories instead of the raw values.
+    return os.path.abspath(os.path.expanduser(env.get(name) or default))
 
 
 class AgentIntegrationPrompts:
@@ -19,7 +27,7 @@ class AgentIntegrationPrompts:
         self.prompt_open = False
 
     @staticmethod
-    def local_environment(window: Any) -> bool:
+    def local_environment(agent: Agent, window: Any) -> bool:
         env = {}
         agent_id = detect_agent(window.child.foreground_processes)
         for process in window.child.foreground_processes:
@@ -34,8 +42,12 @@ class AgentIntegrationPrompts:
         # process environment cannot be read. Do not confuse that with a remote
         # or differently configured agent.
         env = env or window.child.foreground_environ or window.child.environ
-        for name in ('HOME', 'XDG_CONFIG_HOME', 'CLAUDE_CONFIG_DIR', 'CODEX_HOME', 'PI_CODING_AGENT_DIR', 'OPENCODE_CONFIG_DIR'):
-            if env.get(name) != os.environ.get(name):
+        if env.get('HOME') != os.environ.get('HOME'):
+            return False
+        config_env = agent.config_env
+        if config_env is not None:
+            name, default = config_env
+            if _config_home(env, name, default) != _config_home(os.environ, name, default):
                 return False
         return not (env.get('SSH_CONNECTION') or env.get('SSH_TTY'))
 
@@ -60,7 +72,7 @@ class AgentIntegrationPrompts:
             return
         # Do not install into Kitty's config home when this agent uses another
         # home or is itself running inside a remote/container environment.
-        if not self.local_environment(window):
+        if not self.local_environment(agent, window):
             return
         self.checked.add(key)
         inspection = inspect_integration(agent)
@@ -89,7 +101,7 @@ class AgentIntegrationPrompts:
                     or target.child_is_remote
                     or target.ssh_kitten_cmdline()
                     or detect_agent(target.child.foreground_processes) != agent.id
-                    or not self.local_environment(target)
+                    or not self.local_environment(agent, target)
                 ):
                     return
                 try:

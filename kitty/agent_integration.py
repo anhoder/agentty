@@ -324,6 +324,8 @@ class Agent(NamedTuple):
     # Official integration mechanism. Plugin-only agents cannot use kitty's generic shell hook safely.
     integration_kind: str = 'hook'
     hook_event: str = 'SessionStart'
+    # Environment variable and Kitty-side default that select the config home, if any
+    config_env: tuple[str, str] | None = None
 
 
 class IntegrationInspection(NamedTuple):
@@ -498,19 +500,15 @@ def is_kitty_hook(entry: Any) -> bool:
     return isinstance(entry, dict) and isinstance(entry.get('command'), str) and entry['command'].startswith(hook_dir() + os.sep)
 
 
-def claude_settings_path() -> str:
-    return os.path.join(os.path.expanduser(os.environ.get('CLAUDE_CONFIG_DIR') or '~/.claude'), 'settings.json')
-
-
-def codex_hooks_path() -> str:
-    return os.path.join(os.path.expanduser(os.environ.get('CODEX_HOME') or '~/.codex'), 'hooks.json')
-
-
 def home_config_path(env_name: str, default: str, filename: str) -> Callable[[], str]:
     def resolve() -> str:
         return os.path.join(os.path.expanduser(os.environ.get(env_name) or default), filename)
 
     return resolve
+
+
+claude_settings_path = home_config_path('CLAUDE_CONFIG_DIR', '~/.claude', 'settings.json')
+codex_hooks_path = home_config_path('CODEX_HOME', '~/.codex', 'hooks.json')
 
 
 def unsupported_config_path() -> str:
@@ -676,8 +674,8 @@ def inspect_integration(agent: Agent) -> IntegrationInspection:
 
 
 AGENTS: tuple[Agent, ...] = (
-    Agent('claude', 'Claude Code', 'CLAUDE_CODE_SESSION_ID', claude_settings_path, 'hook'),
-    Agent('codex', 'Codex', '', codex_hooks_path, 'hook'),
+    Agent('claude', 'Claude Code', 'CLAUDE_CODE_SESSION_ID', claude_settings_path, 'hook', config_env=('CLAUDE_CONFIG_DIR', '~/.claude')),
+    Agent('codex', 'Codex', '', codex_hooks_path, 'hook', config_env=('CODEX_HOME', '~/.codex')),
     Agent('copilot', 'GitHub Copilot CLI', '', home_config_path('COPILOT_HOME', '~/.copilot', 'settings.json'), 'adapter-required'),
     Agent('devin', 'Devin CLI', '', home_config_path('XDG_CONFIG_HOME', '~/.config', 'devin/config.json'), 'adapter-required'),
     Agent('droid', 'Droid', '', home_config_path('FACTORY_HOME', '~/.factory', 'settings.json'), 'adapter-required'),
@@ -689,9 +687,30 @@ AGENTS: tuple[Agent, ...] = (
     Agent('grok', 'Grok CLI', '', home_config_path('GROK_HOME', '~/.grok', 'hooks/herdr.json'), 'adapter-required'),
     Agent('agy', 'Antigravity CLI', '', home_config_path('ANTIGRAVITY_CLI_CONFIG_DIR', '~/.gemini/config', 'hooks.json'), 'adapter-required'),
     Agent('mastracode', 'MastraCode', '', home_config_path('MASTRACODE_HOME', '~/.mastracode', 'hooks.json'), 'adapter-required'),
-    Agent('pi', 'Pi', '', home_config_path('PI_CODING_AGENT_DIR', '~/.pi/agent', 'extensions/kitty-agent-state.ts'), 'native'),
-    Agent('omp', 'OMP', '', home_config_path('PI_CODING_AGENT_DIR', '~/.omp/agent', 'extensions/kitty-agent-state.ts'), 'native'),
-    Agent('opencode', 'OpenCode', '', home_config_path('XDG_CONFIG_HOME', '~/.config', 'opencode/kitty-agent-state.js'), 'tui-plugin'),
+    Agent(
+        'pi',
+        'Pi',
+        '',
+        home_config_path('PI_CODING_AGENT_DIR', '~/.pi/agent', 'extensions/kitty-agent-state.ts'),
+        'native',
+        config_env=('PI_CODING_AGENT_DIR', '~/.pi/agent'),
+    ),
+    Agent(
+        'omp',
+        'OMP',
+        '',
+        home_config_path('PI_CODING_AGENT_DIR', '~/.omp/agent', 'extensions/kitty-agent-state.ts'),
+        'native',
+        config_env=('PI_CODING_AGENT_DIR', '~/.omp/agent'),
+    ),
+    Agent(
+        'opencode',
+        'OpenCode',
+        '',
+        home_config_path('XDG_CONFIG_HOME', '~/.config', 'opencode/kitty-agent-state.js'),
+        'tui-plugin',
+        config_env=('XDG_CONFIG_HOME', '~/.config'),
+    ),
     Agent('kilo', 'Kilo Code CLI', '', home_config_path('XDG_CONFIG_HOME', '~/.config', 'kilo/plugin/herdr-agent-state.js'), 'plugin-required'),
     Agent('hermes', 'Hermes Agent', '', home_config_path('HERMES_HOME', '~/.hermes', 'plugins/herdr-agent-state/plugin.yaml'), 'plugin-required'),
 )
