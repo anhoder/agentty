@@ -1033,6 +1033,32 @@ convert_from_opts_window_jelly_duration(PyObject *py_opts, Options *opts) {
 }
 
 static void
+convert_from_python_window_jelly_bounce(PyObject *val, Options *opts) {
+    opts->window_jelly_bounce = PyFloat_AsDouble(val);
+}
+
+static void
+convert_from_opts_window_jelly_bounce(PyObject *py_opts, Options *opts) {
+    PyObject *ret = PyObject_GetAttrString(py_opts, "window_jelly_bounce");
+    if (ret == NULL) return;
+    convert_from_python_window_jelly_bounce(ret, opts);
+    Py_DECREF(ret);
+}
+
+static void
+convert_from_python_window_jelly_bounce_max(PyObject *val, Options *opts) {
+    opts->window_jelly_bounce_max = PyFloat_AsDouble(val);
+}
+
+static void
+convert_from_opts_window_jelly_bounce_max(PyObject *py_opts, Options *opts) {
+    PyObject *ret = PyObject_GetAttrString(py_opts, "window_jelly_bounce_max");
+    if (ret == NULL) return;
+    convert_from_python_window_jelly_bounce_max(ret, opts);
+    Py_DECREF(ret);
+}
+
+static void
 convert_from_python_resize_debounce_time(PyObject *val, Options *opts) {
     resize_debounce_time(val, opts);
 }
@@ -1841,6 +1867,10 @@ convert_opts_from_python_opts(PyObject *py_opts, Options *opts) {
     convert_from_opts_window_logo_scale(py_opts, opts);
     if (PyErr_Occurred()) return false;
     convert_from_opts_window_jelly_duration(py_opts, opts);
+    if (PyErr_Occurred()) return false;
+    convert_from_opts_window_jelly_bounce(py_opts, opts);
+    if (PyErr_Occurred()) return false;
+    convert_from_opts_window_jelly_bounce_max(py_opts, opts);
     if (PyErr_Occurred()) return false;
     convert_from_opts_resize_debounce_time(py_opts, opts);
     if (PyErr_Occurred()) return false;

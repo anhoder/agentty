@@ -129,13 +129,32 @@ pane_snapshot(OSWindow *osw) {
     return image;
 }
 
+// Peak overshoot of an underdamped spring, as a fraction of the distance it
+// travels, is exp(-z*pi / sqrt(1 - z*z)) for damping ratio z. For mass 1,
+// stiffness f*f and critical damping 2*f, so damping is 2*z*f. Invert the
+// overshoot formula to express the configured amplitude as a damping ratio.
+static double
+jelly_damping(double overshoot_fraction) {
+    if (!(overshoot_fraction > 0)) return 2.0;
+    if (overshoot_fraction > 0.999) overshoot_fraction = 0.999;
+    double l = log(overshoot_fraction);
+    return -2.0 * l / sqrt(M_PI * M_PI + l * l);
+}
+
+static double
+jelly_overshoot_fraction(double travel, double percentage, double max_overshoot) {
+    double fraction = percentage / 100.0;
+    if (!(travel > 0) || !(max_overshoot > 0)) return fraction;
+    return MIN(fraction, max_overshoot / travel);
+}
+
 static CASpringAnimation *
-pane_spring(NSString *key, id from, id to, double duration) {
+pane_spring(NSString *key, id from, id to, double duration, double overshoot_fraction) {
     CASpringAnimation *animation = [CASpringAnimation animationWithKeyPath:key];
     animation.mass = 1;
     double frequency = 12.0 / duration;
     animation.stiffness = frequency * frequency;
-    animation.damping = 1.3 * frequency;
+    animation.damping = jelly_damping(overshoot_fraction) * frequency;
     animation.fromValue = from;
     animation.toValue = to;
     animation.duration = duration;
@@ -202,6 +221,7 @@ pane_spring(NSString *key, id from, id to, double duration) {
     NSWindow *window = glfwGetCocoaWindow(osw->handle);
     NSView *content = window.contentView;
     double duration = OPT(window_jelly_duration);
+    double bounce = OPT(window_jelly_bounce), max_bounce = OPT(window_jelly_bounce_max);
     BOOL enabled = duration > 0 && !NSWorkspace.sharedWorkspace.accessibilityDisplayShouldReduceMotion;
     BOOL compatible = tab_id == tab->id && pixel_width == (unsigned)osw->viewport_width && pixel_height == (unsigned)osw->viewport_height;
     BOOL changed = NO;
@@ -283,17 +303,23 @@ pane_spring(NSString *key, id from, id to, double duration) {
             }
             layer.contentsScale = scale;
             layer.frame = target;
+            double position_bounce = MIN(
+                jelly_overshoot_fraction(fabs(CGRectGetMidX(target) - CGRectGetMidX(start)), bounce, max_bounce),
+                jelly_overshoot_fraction(fabs(CGRectGetMidY(target) - CGRectGetMidY(start)), bounce, max_bounce));
+            double bounds_bounce = MIN(
+                jelly_overshoot_fraction(fabs(target.size.width - start.size.width), bounce, max_bounce),
+                jelly_overshoot_fraction(fabs(target.size.height - start.size.height), bounce, max_bounce));
             [layer addAnimation:pane_spring(
                                     @"position",
                                     [NSValue valueWithPoint:NSMakePoint(CGRectGetMidX(start), CGRectGetMidY(start))],
                                     [NSValue valueWithPoint:NSMakePoint(CGRectGetMidX(target), CGRectGetMidY(target))],
-                                    duration)
+                                    duration, position_bounce)
                          forKey:@"pane-position"];
             [layer addAnimation:pane_spring(
                                     @"bounds",
                                     [NSValue valueWithRect:NSMakeRect(0, 0, start.size.width, start.size.height)],
                                     [NSValue valueWithRect:NSMakeRect(0, 0, target.size.width, target.size.height)],
-                                    duration)
+                                    duration, bounds_bounce)
                          forKey:@"pane-bounds"];
             next[key] = layer;
         }

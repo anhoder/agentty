@@ -520,6 +520,8 @@ option_names = (
     'window_border_radius',
     'window_border_width',
     'window_drag_tolerance',
+    'window_jelly_bounce',
+    'window_jelly_bounce_max',
     'window_jelly_duration',
     'window_logo_alpha',
     'window_logo_path',
@@ -749,6 +751,8 @@ class Options:
     window_border_radius: tuple[float, str] = (0, 'pt')
     window_border_width: tuple[float, str] = (0.5, 'pt')
     window_drag_tolerance: float = 2.0
+    window_jelly_bounce: float = 6.8
+    window_jelly_bounce_max: float = 0
     window_jelly_duration: float = 0.35
     window_logo_alpha: float = 0.5
     window_logo_path: str | None = None

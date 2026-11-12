@@ -2031,6 +2031,35 @@ window frame and interactive live resizing are not animated.
 )
 
 opt(
+    'window_jelly_bounce',
+    '6.8',
+    option_type='positive_float',
+    ctype='double',
+    long_text="""
+macOS: Amplitude of the :opt:`window_jelly_duration` spring transitions,
+expressed as a percentage of the distance a pane travels during the transition.
+The value is the peak overshoot past the final geometry: zero produces a
+critically damped transition with no bounce, larger values produce a more
+pronounced rebound. The default preserves the original spring behavior.
+The macOS Reduce Motion setting and a zero :opt:`window_jelly_duration`
+disable the transitions entirely.
+""",
+)
+
+opt(
+    'window_jelly_bounce_max',
+    '0',
+    option_type='positive_float',
+    ctype='double',
+    long_text="""
+macOS: Upper limit, in points (logical pixels), on the rebound distance along
+any axis during a :opt:`window_jelly_duration` spring transition. This caps the
+overshoot for large panes and long distances while leaving small transitions
+untouched. Set to zero (the default) for no limit.
+""",
+)
+
+opt(
     'resize_debounce_time',
     '0.1 0.5',
     option_type='resize_debounce_time',

@@ -16,6 +16,10 @@ Recent major new features
   Motion disables it. Pane contents refresh during transitions so cursor animations
   and terminal output remain visible, without delaying PTY resizing or input.
   OS window frames and interactive live resizing are unchanged.
+- macOS: Control the pane spring rebound amplitude with
+  :opt:`window_jelly_bounce` (percentage of the animated distance, default 6.8)
+  and cap it with :opt:`window_jelly_bounce_max` (points, zero meaning no limit),
+  in addition to the existing :opt:`window_jelly_duration`.
 - Record automatic session backup times, retain the latest three backups and
   their encryption keys after restoration, and restore only the newest available
   backup instead of launching instances for older backups.

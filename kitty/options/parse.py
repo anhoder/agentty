@@ -1574,6 +1574,12 @@ class Parser:
     def window_drag_tolerance(self, val: str, ans: dict[str, typing.Any]) -> None:
         ans['window_drag_tolerance'] = float(val)
 
+    def window_jelly_bounce(self, val: str, ans: dict[str, typing.Any]) -> None:
+        ans['window_jelly_bounce'] = positive_float(val)
+
+    def window_jelly_bounce_max(self, val: str, ans: dict[str, typing.Any]) -> None:
+        ans['window_jelly_bounce_max'] = positive_float(val)
+
     def window_jelly_duration(self, val: str, ans: dict[str, typing.Any]) -> None:
         ans['window_jelly_duration'] = positive_float(val)
 
