@@ -673,6 +673,7 @@ class Pair:
 class SplitsLayoutOpts(LayoutOpts):
     default_axis_is_horizontal: bool | None = True
     equalize_on_close: bool = False
+    equalize_on_change: bool = False
     proportional: bool = False
 
     def __init__(self, data: dict[str, str]):
@@ -682,12 +683,14 @@ class SplitsLayoutOpts(LayoutOpts):
         else:
             self.default_axis_is_horizontal = q == 'horizontal'
         self.equalize_on_close = to_bool(data.get('equalize_on_window_close', 'n'))
+        self.equalize_on_change = to_bool(data.get('equalize_on_window_change', 'n'))
         self.proportional = to_bool(data.get('proportional', 'n'))
 
     def serialized(self) -> dict[str, str]:
         return {
             'split_axis': 'auto' if self.default_axis_is_horizontal is None else ('horizontal' if self.default_axis_is_horizontal else 'vertical'),
             'equalize_on_window_close': 'y' if self.equalize_on_close else 'n',
+            'equalize_on_window_change': 'y' if self.equalize_on_change else 'n',
             'proportional': 'y' if self.proportional else 'n',
         }
 
@@ -832,6 +835,7 @@ class Splits(Layout):
                     horizontal = wwidth >= wheight
                 target_group = all_windows.add_window(window, next_to=aw, before=not after)
                 self.split_and_add_window(pair, group_id, target_group.id, horizontal, after, bias)
+                self.equalize_after_window_add(bias)
                 return
         all_windows.add_window(window)
         g = all_windows.group_for_window(window)
@@ -839,6 +843,12 @@ class Splits(Layout):
         p = self.pairs_root.balanced_add(g.id) if bias is not None else self.balanced_add_window(g.id)
         if bias is not None:
             p.bias = bias
+        self.equalize_after_window_add(bias)
+
+    def equalize_after_window_add(self, bias: float | None = None) -> None:
+        """Restore equal shares after adding a window unless an explicit bias was requested"""
+        if bias is None and self.layout_opts.equalize_on_change:
+            self.equalize_biases()
 
     def modify_size_of_window(self, all_windows: WindowList, window_id: int, increment: float, is_horizontal: bool = True) -> bool:
         grp = all_windows.group_for_window(window_id)
@@ -940,7 +950,7 @@ class Splits(Layout):
         return True
 
     def on_window_removed(self, all_windows: WindowList) -> bool:
-        if self.layout_opts.equalize_on_close:
+        if self.layout_opts.equalize_on_change or self.layout_opts.equalize_on_close:
             return self.equalize_biases()
         return False
 

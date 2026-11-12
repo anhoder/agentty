@@ -207,9 +207,15 @@ width and ``maximize vertical`` to fill the full height. Calling it again
 restores the original split sizes. The ``equalize`` action redistributes space
 so that all windows along each split axis receive an equal share.
 
-This layout takes three options. ``equalize_on_window_close`` automatically equalizes
-split sizes whenever a window is closed, keeping remaining windows balanced
-without needing an explicit keybinding::
+This layout takes four options. ``equalize_on_window_change`` automatically
+equalizes split sizes whenever a window is created or closed, giving every pane
+an equal share of the available space along each split axis without needing an
+explicit keybinding::
+
+    enabled_layouts splits:equalize_on_window_change=true
+
+``equalize_on_window_close`` provides the same behavior only when a window is
+closed::
 
     enabled_layouts splits:equalize_on_window_close=true
 
@@ -223,9 +229,10 @@ windows are closed. Splits along the other axis keep their relative sizes::
     enabled_layouts splits:proportional=true
 
 This option is disabled by default. An explicit :option:`launch --bias` overrides
-proportional sizing for that new window. If ``equalize_on_window_close`` is also
-enabled, closing a window equalizes the layout instead of preserving its weights.
-The option is saved as part of a :doc:`session <sessions>`.
+proportional sizing for that new window, and also suppresses equalization for
+that one addition. If an ``equalize`` option is also enabled, creating or
+closing a window equalizes the layout instead of preserving its weights. The
+options are saved as part of a :doc:`session <sessions>`.
 
 Dragging a divider resizes only the two adjacent regions along its axis. Other
 dividers in the same row or column stay in place, including after repositioning

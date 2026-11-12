@@ -10,6 +10,10 @@ Recent major new features
 ---------------------------
 
 
+- The Splits layout adds ``equalize_on_window_change`` to automatically give all
+  panes an equal share of the available space whenever a window is created or
+  closed. The existing close-only ``equalize_on_window_close`` option remains
+  available.
 - macOS: Add gentle native Core Animation spring transitions for pane resizing,
   repositioning, splitting, closing and layout changes. Configure the duration
   with :opt:`window_jelly_duration` (default: 0.35 seconds); zero or macOS Reduce

@@ -628,6 +628,60 @@ class TestLayout(BaseTest):
         opts = SplitsLayoutOpts({})
         s = opts.serialized()
         self.ae(s, SplitsLayoutOpts(s).serialized())
+        opts = SplitsLayoutOpts({'equalize_on_window_change': 'y'})
+        self.assertTrue(opts.equalize_on_change)
+        self.assertTrue(SplitsLayoutOpts(opts.serialized()).equalize_on_change)
+
+    def test_splits_equalize_on_window_change(self):
+        q = create_layout(Splits)
+        q.layout_opts = SplitsLayoutOpts({'equalize_on_window_change': 'y'})
+        all_windows = create_windows(q, num=0)
+        q.add_window(all_windows, Window(1))
+        q.add_window(all_windows, Window(2), location='vsplit')
+        root = q.pairs_root
+        self.assertAlmostEqual(root.bias, 0.5, places=5)
+
+        # Creating a window equalizes the tree even after a manual resize
+        root.bias = 0.9
+        q.add_window(all_windows, Window(3), location='vsplit')
+        inner = root.two
+        self.assertIsInstance(inner, Pair)
+        self.assertAlmostEqual(root.bias, 1 / 3, places=5)
+        self.assertAlmostEqual(inner.bias, 0.5, places=5)
+
+        # An explicit launch --bias takes precedence for that addition
+        root.bias = 0.9
+        q.add_window(all_windows, Window(4), location='vsplit', bias=80)
+        self.assertAlmostEqual(root.bias, 0.9, places=5)
+
+        # The option defaults to off
+        q2 = create_layout(Splits)
+        aw2 = create_windows(q2, num=0)
+        q2.add_window(aw2, Window(10))
+        q2.add_window(aw2, Window(11), location='vsplit')
+        q2.pairs_root.bias = 0.9
+        q2.add_window(aw2, Window(12), location='vsplit')
+        self.assertAlmostEqual(q2.pairs_root.bias, 0.9, places=5)
+
+    def test_splits_equalize_on_window_change_removal(self):
+        q = create_layout(Splits)
+        q.layout_opts = SplitsLayoutOpts({'equalize_on_window_change': 'y'})
+        all_windows = create_windows(q, num=0)
+        q.add_window(all_windows, Window(1))
+        q.add_window(all_windows, Window(2), location='vsplit')
+        w3 = Window(3)
+        q.add_window(all_windows, w3, location='vsplit')
+        root = q.pairs_root
+        inner = root.two if isinstance(root.two, Pair) else root.one
+        self.assertIsInstance(inner, Pair)
+
+        root.bias = 0.9
+        inner.bias = 0.9
+        q.remove_windows(all_windows.group_for_window(w3).id)
+
+        self.assertTrue(q.on_window_removed(all_windows))
+        self.assertAlmostEqual(root.bias, 0.5, places=5)
+        self.assertIsInstance(root.two, int)
 
     def test_splits_equalize_on_close(self):
         q = create_layout(Splits)
