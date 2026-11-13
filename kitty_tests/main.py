@@ -414,7 +414,9 @@ def spawn_test_workers(tests: list[unittest.TestCase]) -> tuple[list[subprocess.
     Used on macOS where fork() + threading is unsafe."""
     from kitty.constants import kitty_exe
 
-    n = min(os.cpu_count() or 4, 8, len(tests))
+    # Concurrent macOS executable admission can stall in dyld before main().
+    # Bound workers and their children without relaxing subprocess deadlines.
+    n = min(os.cpu_count() or 2, 2, len(tests))
     chunks: list[list[unittest.TestCase]] = [[] for _ in range(n)]
     for i, test in enumerate(tests):
         chunks[i % n].append(test)

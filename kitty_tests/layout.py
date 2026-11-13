@@ -4,7 +4,7 @@
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from kitty.borders import Border, BorderColor, add_borders
+from kitty.borders import Border, BorderColor, Borders, add_borders
 from kitty.config import defaults
 from kitty.fast_data_types import BOTTOM_EDGE, LEFT_EDGE, RIGHT_EDGE, TOP_EDGE, Region
 from kitty.layout.base import blank_rects_for_window, layout_dimension, lgd
@@ -111,6 +111,33 @@ class TestLayout(BaseTest):
     def setUp(self):
         super().setUp()
         self.set_options({'tab_bar_style': 'hidden'})
+
+    def test_border_refresh_during_window_creation(self):
+        self.set_options({'draw_minimal_borders': False, 'window_border_radius': (8, 'px')})
+        tab_bar = Border(0, 0, 120, 10, BorderColor.tab_bar_bg)
+        for layout_type in (Splits, Stack):
+            layout = create_layout(layout_type)
+            windows = create_windows(layout, 0)
+            for count in range(3):
+                if count:
+                    window = Window(count)
+                    window.needs_attention = False
+                    window.screen = SimpleNamespace(color_profile=SimpleNamespace(default_bg=defaults.background))
+                    windows.add_window(window)
+                    window.set_geometry(WindowGeometry(10, 20, 110, 120, 0, 0))
+                for enabled in (False, True):
+                    with self.subTest(layout=layout.name, count=count, enabled=enabled), patch('kitty.borders.set_borders_rects') as submit:
+                        Borders(1, 1)(windows, layout, [tab_bar], draw_window_borders=enabled)
+                        rects = submit.call_args.args[2]
+                        self.assertIn(tab_bar, rects)
+                        frames = [r for r in rects if r.radius]
+                        self.ae(len(frames), len(tuple(windows.iter_visible_groups())) if enabled else 0)
+                        if frames:
+                            self.assertTrue(all(r.thickness > 0 for r in frames))
+                            self.ae([r.color for r in frames], [
+                                BorderColor.active if g is windows.active_group else BorderColor.inactive
+                                for g in windows.iter_visible_groups()
+                            ])
 
     def test_window_border_radius_geometry(self):
         q = create_layout(Splits)

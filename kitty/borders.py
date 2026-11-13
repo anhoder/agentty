@@ -90,15 +90,19 @@ class Borders:
         opts = get_options()
         draw_active_borders = opts.active_border_color is not None
         rects: list[Border] = []
+        active_group = all_windows.active_group
+        blank_color = BorderColor.default_bg
+        if current_layout.name == 'stack' and active_group is not None:
+            # The inset area belongs to the active pane, not the OS background.
+            blank_color = (color_as_int(active_group.default_bg) << 8) | BorderColor.window_bg
         for br in current_layout.blank_rects:
-            rects.append(Border(*br, BorderColor.default_bg))
+            rects.append(Border(*br, blank_color))
         rects.extend(tab_bar_rects)
         bw = 0
         groups = tuple(all_windows.iter_visible_groups())
         if groups:
             bw = groups[0].effective_border()
         draw_borders = bw > 0 and draw_window_borders
-        active_group = all_windows.active_group
 
         # Count visible windows
         num_visible_groups = len(groups)
@@ -109,6 +113,8 @@ class Borders:
             draw_minimal_borders = False
         else:
             draw_minimal_borders = opts.draw_minimal_borders and max(opts.window_margin_width) < 1
+        if current_layout.name == 'stack':
+            draw_minimal_borders = False
 
         # For single window with the option enabled, check OS window focus state
         # When unfocused, the border should appear inactive
@@ -118,12 +124,13 @@ class Borders:
 
         radius_val, radius_unit = opts.window_border_radius
         radius = pt_to_px(radius_val, self.os_window_id) if radius_unit == 'pt' else round(radius_val)
+        if current_layout.name == 'stack' and radius < 1:
+            radius = max(8, round(pt_to_px(8, self.os_window_id)))
 
         if draw_borders and not draw_minimal_borders:
             for i, wg in enumerate(groups):
                 window_bg = color_as_int(wg.default_bg)
                 window_bg = (window_bg << 8) | BorderColor.window_bg
-                # Draw the border rectangles
                 if wg is active_group and draw_active_borders and os_window_focused:
                     color = BorderColor.active
                 else:

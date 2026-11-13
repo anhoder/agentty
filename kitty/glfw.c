@@ -1993,6 +1993,7 @@ init_window_chrome_state(WindowChromeState *s, color_type active_window_bg, floa
     s->background_blur = should_blur ? OPT(background_blur) : 0;
     s->hide_window_decorations = OPT(hide_window_decorations);
     s->show_title_in_titlebar = (OPT(macos_show_window_title_in) & WINDOW) != 0;
+    s->stack_window_floating = false;
     s->background_opacity = background_opacity;
 }
 
@@ -2009,7 +2010,8 @@ apply_window_chrome_state(GLFWwindow *w, WindowChromeState new_state, int width,
         new_state.show_title_in_titlebar,
         new_state.macos_colorspace,
         new_state.background_opacity,
-        new_state.resizable);
+        new_state.resizable,
+        new_state.stack_window_floating);
     // Need to resize the window again after hiding decorations or title bar to take up screen space
     if (window_decorations_changed) glfwSetWindowSize(w, width, height);
 #else
@@ -2046,6 +2048,7 @@ set_os_window_chrome(OSWindow *w) {
 
     WindowChromeState new_state;
     init_window_chrome_state(&new_state, bg, effective_os_window_alpha(w));
+    new_state.stack_window_floating = w->num_tabs > w->active_tab && w->tabs[w->active_tab].layout_name[0] != 0 && strcmp(w->tabs[w->active_tab].layout_name, "stack") == 0;
     if (memcmp(&new_state, &w->last_window_chrome, sizeof(WindowChromeState)) != 0) {
         int width, height;
         glfwGetWindowSize(w->handle, &width, &height);

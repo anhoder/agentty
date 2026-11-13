@@ -540,6 +540,7 @@ typedef struct WindowChromeState {
     unsigned hide_window_decorations;
     bool show_title_in_titlebar;
     bool resizable;
+    bool stack_window_floating;
     int macos_colorspace;
     float background_opacity;
 } WindowChromeState;

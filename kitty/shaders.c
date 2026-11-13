@@ -455,20 +455,26 @@ draw_rounded_rect(
     unsigned framebuffer_height,
     float thickness,
     unsigned corner_radius_px,
+    float shadow_radius,
     color_type srgb_color,
     color_type srgb_background,
     float bg_alpha,
     color_type srgb_outer,
     float outer_alpha) {
     bind_program(ROUNDED_RECT_PROGRAM);
-    color_vec4(program_uniform_location(ROUNDED_RECT_PROGRAM, "color"), srgb_color, 1.f);
-    color_vec4(program_uniform_location(ROUNDED_RECT_PROGRAM, "background_color"), srgb_background, bg_alpha);
+    // Shadow opacity belongs to the shadow itself, never to its underlay.
+    color_vec4(program_uniform_location(ROUNDED_RECT_PROGRAM, "color"), srgb_color, shadow_radius > 0.f ? bg_alpha : 1.f);
+    color_vec4(program_uniform_location(ROUNDED_RECT_PROGRAM, "background_color"), srgb_background, shadow_radius > 0.f ? 0.f : bg_alpha);
     color_vec4(program_uniform_location(ROUNDED_RECT_PROGRAM, "outer_color"), srgb_outer, outer_alpha);
-    // y co-ord has to be changed to co-ord system with origin at bottom left
-    float y = (float)framebuffer_height - (float)(rect.top + rect.height);
-    glUniform4f(program_uniform_location(ROUNDED_RECT_PROGRAM, "rect"), rect.left, y, rect.width, rect.height);
-    glUniform2f(program_uniform_location(ROUNDED_RECT_PROGRAM, "params"), thickness, corner_radius_px);
-    save_viewport_using_top_left_origin(rect.left, rect.top, rect.width, rect.height, framebuffer_height);
+    // Shadow viewports may extend past the framebuffer edge. Keep the origin
+    // signed so wider shadows cannot wrap unsigned pane coordinates.
+    const GLint spread = (GLint)shadow_radius;
+    const GLint left = (GLint)rect.left - spread, top = (GLint)rect.top - spread;
+    const GLsizei width = (GLsizei)rect.width + 2 * spread, height = (GLsizei)rect.height + 2 * spread;
+    float y = (float)framebuffer_height - (float)(top + height);
+    glUniform4f(program_uniform_location(ROUNDED_RECT_PROGRAM, "rect"), left, y, width, height);
+    glUniform4f(program_uniform_location(ROUNDED_RECT_PROGRAM, "params"), thickness, corner_radius_px, shadow_radius, 0.f);
+    save_viewport_using_top_left_origin(left, top, width, height, framebuffer_height);
     draw_quad(true, 0);
     restore_viewport();
 }
@@ -1774,7 +1780,7 @@ render_a_bar(const UIRenderData *ui, WindowBarData *bar, PyObject *title, bool a
     restore_viewport();
     free_texture(&data.texture_id);
     // finally draw border with transparent bg
-    draw_rounded_rect(border_rect, sh, (float)thickness_as_float(ui->os_window, 1), ui->cell_width, fg, bg, 0.f, 0, 0.f);
+    draw_rounded_rect(border_rect, sh, (float)thickness_as_float(ui->os_window, 1), ui->cell_width, 0.f, fg, bg, 0.f, 0, 0.f);
     return border_rect.height;
 }
 
@@ -2133,7 +2139,7 @@ draw_scrollbar(const UIRenderData *ui) {
         glUniform4f(program_uniform_location(ROUNDED_RECT_PROGRAM, "rect"), (float)scrollbar_left, y, (float)scrollbar_width_px, (float)thumb_height_px);
 
         float thickness = (float)MAX(scrollbar_width_px, thumb_height_px);
-        glUniform2f(program_uniform_location(ROUNDED_RECT_PROGRAM, "params"), thickness, (float)scrollbar_radius);
+        glUniform4f(program_uniform_location(ROUNDED_RECT_PROGRAM, "params"), thickness, (float)scrollbar_radius, 0.f, 0.f);
 
         save_viewport_using_top_left_origin(scrollbar_left, thumb_top_px, scrollbar_width_px, thumb_height_px, ui->full_framebuffer_height);
         draw_quad(true, 0);
@@ -2885,11 +2891,6 @@ draw_rounded_borders(BorderRects *br, color_type active_window_bg, unsigned int 
     if (!br->num_rounded_rects) return;
     GLuint colors[9];
     populate_border_colors(colors, active_window_bg, num_visible_windows, all_windows_have_same_bg, w);
-    // The corner regions between the rounded outline and its bounding rect
-    // must be painted every frame: when not rendering in layers the
-    // framebuffer is never cleared, kitty relies on full pixel coverage.
-    // Fill them with the default background at the same opacity draw_borders()
-    // uses for non-border rects, so corners match the surrounding gaps.
     float corner_bg_alpha = has_bgimage(w) ? OPT(background_tint) * OPT(background_tint_gaps) : effective_os_window_alpha(w);
     bind_vertex_array(br->vao_idx);
     if (!w->needs_layers) glEnable(GL_FRAMEBUFFER_SRGB);
@@ -2900,13 +2901,15 @@ draw_rounded_borders(BorderRects *br, color_type active_window_bg, unsigned int 
         unsigned radius = MIN(r->radius, MIN(rect.width, rect.height) / 2);
         unsigned color_index = r->color & 0xff;
         color_type color = color_index == 3 ? r->color >> 8 : colors[MIN(color_index, 8u)];
-        draw_rounded_rect(rect, w->viewport_height, (float)r->thickness, radius, color, 0, 0.f, colors[0], corner_bg_alpha);
+        bool is_stack = w->num_tabs && w->active_tab < w->num_tabs && strcmp(w->tabs[w->active_tab].layout_name, "stack") == 0;
+        if (is_stack) {
+            const unsigned shadow_radius = 40;
+            draw_rounded_rect(rect, w->viewport_height, 0.f, radius, (float)shadow_radius, 0, 0, 0.58f, 0, 0.f);
+        }
+        draw_rounded_rect(rect, w->viewport_height, (float)r->thickness, radius, 0.f, color, 0, 0.f, colors[0], corner_bg_alpha);
     }
     if (!w->needs_layers) glDisable(GL_FRAMEBUFFER_SRGB);
     unbind_program();
-    // Deliberately leave the VAO bound: this runs after all cell drawing and
-    // subsequent draw_quad() calls (e.g. the fullscreen blit in
-    // stop_os_window_rendering()) need some VAO bound in a core profile context.
 }
 
 // }}}

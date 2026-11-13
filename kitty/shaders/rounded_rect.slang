@@ -36,7 +36,7 @@ rounded_rectangle_sdf(float2 p, float2 b, float r) {
 float4
 fragment_main(
     uniform float4 rect,
-    uniform float2 params,
+    uniform float4 params,
     uniform float4 color,
     uniform float4 background_color,
     uniform float4 outer_color,
@@ -47,13 +47,22 @@ fragment_main(
     float2 origin = rect.xy;
     float thickness = params[0];
     float corner_radius = params[1];
+    float shadow_radius = params[2];
 
-    // Position must be relative to the center of the rectangle of (size) located at (origin)
-    // frag_coord.xy maps directly to gl_FragCoord.xy
     float2 position = frag_coord.xy - size / 2.0 - origin;
+    float2 sdf_size = size;
+    if (shadow_radius > 0.0) sdf_size -= 2.0 * shadow_radius;
+    float dist = rounded_rectangle_sdf(position, sdf_size * 0.5 - corner_radius, corner_radius);
 
-    // Calculate distance to rounded rectangle
-    float dist = rounded_rectangle_sdf(position, size * 0.5 - corner_radius, corner_radius);
+    if (shadow_radius > 0.0) {
+        // The centered shadow shares the pane contour. Preserve all pixels
+        // inside it and diffuse only into the surrounding background.
+        if (dist <= 1.0) return float4(0.0);
+        float fade = 1.0 - smoothstep(0.0, shadow_radius, max(0.0, dist));
+        float4 ans = color;
+        ans.a *= fade;
+        return alpha_blend(ans, float4(0.0));
+    }
 
     // The border is outer - inner rects
     float outer_edge = -dist;

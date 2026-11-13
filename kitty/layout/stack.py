@@ -3,15 +3,22 @@
 
 from kitty.types import NeighborsMap
 from kitty.typing_compat import WindowType
-from kitty.window_list import WindowList
+from kitty.window_list import WindowGroup, WindowList
 
-from .base import Layout
-
+from .base import Layout, layout_single_window, lgd
 
 class Stack(Layout):
     name = 'stack'
-    needs_window_borders = False
+    needs_window_borders = True
+    must_draw_borders = True
     only_active_window_visible = True
+
+    def layout_single_window_group(self, wg: WindowGroup) -> None:
+        # Leave enough background visible for the shadow to read as depth.
+        inset = max(16, min(lgd.cell_width, lgd.cell_height) * 2)
+        xdecoration_pairs = ((wg.decoration('left') + inset, wg.decoration('right') + inset),)
+        ydecoration_pairs = ((wg.decoration('top') + inset, wg.decoration('bottom') + inset),)
+        wg.set_geometry(layout_single_window(xdecoration_pairs, ydecoration_pairs, xalignment=lgd.alignment_x, yalignment=lgd.alignment_y))
 
     def do_layout(self, windows: WindowList) -> None:
         for group in windows.iter_all_layoutable_groups():

@@ -9,6 +9,17 @@ To update |kitty|, :doc:`follow the instructions <binary>`.
 Recent major new features
 ---------------------------
 
+- Fix startup crashing during pane creation because the border visibility state
+  was not initialized; preserve tab bar background rectangles during refresh.
+- Limit macOS Python test workers to two to avoid subprocess startup timeouts
+  when concurrent executable admission stalls in dyld; keep test deadlines and
+  assertions unchanged.
+- Render stack (zoom) panes as inset rounded cards with an outside-only dark
+  shadow diffused symmetrically around all four sides and across the outer margin.
+  Preserve the terminal content's original colors, brightness and alpha instead
+  of compositing a black underlay over the foreground.
+  Use :opt:`active_border_color` for the focused stack pane, matching other layouts.
+
 
 - macOS: Encrypt automatic session backup keys with a persistent local master
   key instead of tying new backups to Keychain code-signature authorization.

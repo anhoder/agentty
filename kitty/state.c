@@ -806,6 +806,7 @@ pyset_tab_layout_name(PyObject *self UNUSED, PyObject *args) {
     // Truncation only costs an active_layout directive its match, see
     // MAX_LAYOUT_NAME_LEN.
     snprintf(tab->layout_name, sizeof(tab->layout_name), "%s", name);
+    set_os_window_chrome(osw);
     END_WITH_TAB
     Py_RETURN_NONE;
 }

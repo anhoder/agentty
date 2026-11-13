@@ -4282,7 +4282,8 @@ glfwCocoaSetWindowChrome(
     bool show_text_in_titlebar,
     int color_space,
     float background_opacity,
-    bool resizable) {
+    bool resizable,
+    bool stack_window_floating) {
     @autoreleasepool {
         _GLFWwindow *window = (_GLFWwindow *)w;
         if (window->ns.layer_shell.is_active) return;
@@ -4355,9 +4356,9 @@ glfwCocoaSetWindowChrome(
                 has_shadow = true;
                 break;
         }
-        // shadow causes burn-in/ghosting because cocoa doesnt invalidate it on OS window resize/minimize/restore.
-        // https://github.com/kovidgoyal/kitty/issues/6439
-        if (is_transparent) has_shadow = false;
+        // Transparent stack windows retain the native shadow for the floating-card effect.
+        // Other transparent windows retain the existing workaround for shadow ghosting.
+        if (is_transparent && !stack_window_floating) has_shadow = false;
         bool hide_titlebar_buttons = !in_fullscreen && window->ns.titlebar_hidden;
         [nsw setTitlebarAppearsTransparent:window->ns.last_applied_titlebar_settings.transparent];
         [nsw setHasShadow:has_shadow];
