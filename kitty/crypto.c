@@ -28,6 +28,9 @@
 #endif
 
 #include <sys/mman.h>
+#include <errno.h>
+#include <limits.h>
+#include <unistd.h>
 #include <structmember.h>
 
 #ifdef LIBRESSL_VERSION_NUMBER
@@ -67,7 +70,7 @@ typedef struct {
     PyObject_HEAD
 
         void *secret;
-    size_t secret_len;
+    size_t secret_len, allocation_len;
 } Secret;
 
 static PyObject *
@@ -80,7 +83,7 @@ static Secret *alloc_secret(size_t len);
 
 static void
 dealloc_secret(Secret *self) {
-    if (self->secret) OPENSSL_clear_free(self->secret, self->secret_len);
+    if (self->secret) OPENSSL_clear_free(self->secret, self->allocation_len);
     Py_TYPE(self)->tp_free((PyObject *)self);
 }
 
@@ -103,6 +106,15 @@ static PySequenceMethods sequence_methods = {
 
 static PyObject *richcmp(PyObject *obj1, PyObject *obj2, int op);
 
+static PyObject *secret_from_fd(PyObject *cls, PyObject *args, PyObject *kwds);
+static PyObject *secret_write_to_fd(Secret *self, PyObject *args, PyObject *kwds);
+
+static PyMethodDef secret_methods[] = {
+    {"from_fd", (PyCFunction)(void (*)(void))secret_from_fd, METH_CLASS | METH_VARARGS | METH_KEYWORDS, "Read a secret directly from a file descriptor"},
+    {"write_to_fd", (PyCFunction)(void (*)(void))secret_write_to_fd, METH_VARARGS | METH_KEYWORDS, "Write a secret directly to a file descriptor"},
+    {NULL} /* Sentinel */
+};
+
 static PyTypeObject Secret_Type = {
     PyVarObject_HEAD_INIT(NULL, 0).tp_name = "fast_data_types.Secret",
     .tp_basicsize = sizeof(Secret),
@@ -112,6 +124,7 @@ static PyTypeObject Secret_Type = {
     .tp_new = new_secret,
     .tp_richcompare = richcmp,
     .tp_as_sequence = &sequence_methods,
+    .tp_methods = secret_methods,
 };
 
 RICHCMP(Secret)
@@ -120,7 +133,7 @@ static Secret *
 alloc_secret(size_t len) {
     Secret *self = (Secret *)Secret_Type.tp_alloc(&Secret_Type, 0);
     if (self) {
-        self->secret_len = len;
+        self->secret_len = self->allocation_len = len;
         if (NULL == (self->secret = OPENSSL_malloc(len))) {
             Py_CLEAR(self);
             return (Secret *)set_error_from_openssl("Failed to malloc");
@@ -131,6 +144,72 @@ alloc_secret(size_t len) {
         }
     }
     return self;
+}
+
+static PyObject *
+secret_from_fd(PyObject *cls UNUSED, PyObject *args, PyObject *kwds) {
+    static const char *kwlist[] = {"fd", "length", NULL};
+    int fd;
+    Py_ssize_t length = 32;
+    if (!PyArg_ParseTupleAndKeywords(args, kwds, "i|n", (char **)kwlist, &fd, &length)) return NULL;
+    if (length <= 0) {
+        PyErr_SetString(PyExc_ValueError, "The length of a secret must be positive");
+        return NULL;
+    }
+    Secret *ans = alloc_secret(length);
+    if (!ans) return NULL;
+    size_t offset = 0;
+    while (offset < ans->secret_len) {
+        ssize_t count;
+        int saved_errno;
+        Py_BEGIN_ALLOW_THREADS count = read(fd, (unsigned char *)ans->secret + offset, ans->secret_len - offset);
+        saved_errno = errno;
+        Py_END_ALLOW_THREADS if (count < 0) {
+            if (saved_errno == EINTR) {
+                if (PyErr_CheckSignals() == 0) continue;
+            } else {
+                errno = saved_errno;
+                PyErr_SetFromErrno(PyExc_OSError);
+            }
+            Py_CLEAR(ans);
+            return NULL;
+        }
+        if (!count) {
+            Py_CLEAR(ans);
+            PyErr_SetString(PyExc_EOFError, "Unexpected EOF while reading a secret");
+            return NULL;
+        }
+        offset += count;
+    }
+    return (PyObject *)ans;
+}
+
+static PyObject *
+secret_write_to_fd(Secret *self, PyObject *args, PyObject *kwds) {
+    static const char *kwlist[] = {"fd", NULL};
+    int fd;
+    if (!PyArg_ParseTupleAndKeywords(args, kwds, "i", (char **)kwlist, &fd)) return NULL;
+    size_t offset = 0;
+    while (offset < self->secret_len) {
+        ssize_t count;
+        int saved_errno;
+        Py_BEGIN_ALLOW_THREADS count = write(fd, (const unsigned char *)self->secret + offset, self->secret_len - offset);
+        saved_errno = errno;
+        Py_END_ALLOW_THREADS if (count < 0) {
+            if (saved_errno == EINTR) {
+                if (PyErr_CheckSignals() == 0) continue;
+                return NULL;
+            }
+            errno = saved_errno;
+            return PyErr_SetFromErrno(PyExc_OSError);
+        }
+        if (!count) {
+            errno = EIO;
+            return PyErr_SetFromErrno(PyExc_OSError);
+        }
+        offset += count;
+    }
+    Py_RETURN_NONE;
 }
 
 PyObject *
@@ -429,15 +508,15 @@ cipher_ctx_tag_length(const EVP_CIPHER_CTX *ctx) {
 }
 
 static PyObject *
-add_data_to_be_encrypted(AES256GCMEncrypt *self, PyObject *args) {
+encrypt_data(AES256GCMEncrypt *self, const unsigned char *plaintext, Py_ssize_t plaintext_len, int finish_encryption) {
     if (self->state > 1) {
         PyErr_SetString(Crypto_Exception, "Encryption has been finished");
         return NULL;
     }
-    const char *plaintext;
-    Py_ssize_t plaintext_len;
-    int finish_encryption = 0;
-    if (!PyArg_ParseTuple(args, "y#|p", &plaintext, &plaintext_len, &finish_encryption)) return NULL;
+    if (plaintext_len > INT_MAX - 2 * KITTY_EVP_CIPHER_CTX_BLOCK_SIZE(self->ctx)) {
+        PyErr_SetString(PyExc_OverflowError, "Too much data to encrypt in one call");
+        return NULL;
+    }
     PyObject *ciphertext = PyBytes_FromStringAndSize(NULL, plaintext_len + 2 * KITTY_EVP_CIPHER_CTX_BLOCK_SIZE(self->ctx));
     if (!ciphertext) return NULL;
     self->state = 1;
@@ -479,8 +558,36 @@ add_data_to_be_encrypted(AES256GCMEncrypt *self, PyObject *args) {
     return ciphertext;
 }
 
+static PyObject *
+add_data_to_be_encrypted(AES256GCMEncrypt *self, PyObject *args) {
+    const unsigned char *plaintext;
+    Py_ssize_t plaintext_len;
+    int finish_encryption = 0;
+    if (!PyArg_ParseTuple(args, "y#|p", &plaintext, &plaintext_len, &finish_encryption)) return NULL;
+    return encrypt_data(self, plaintext, plaintext_len, finish_encryption);
+}
+
+static PyObject *
+add_secret_to_be_encrypted(AES256GCMEncrypt *self, PyObject *args, PyObject *kwds) {
+    static const char *kwlist[] = {"secret", "finished", NULL};
+    Secret *secret;
+    int finish_encryption = 0;
+    if (!PyArg_ParseTupleAndKeywords(args, kwds, "O!|p", (char **)kwlist, &Secret_Type, &secret, &finish_encryption)) return NULL;
+    if (secret->secret_len > INT_MAX) {
+        PyErr_SetString(PyExc_OverflowError, "Too much data to encrypt in one call");
+        return NULL;
+    }
+    return encrypt_data(self, secret->secret, secret->secret_len, finish_encryption);
+}
+
 static PyMethodDef aes256gcmencrypt_methods[] = {
-    METHODB(add_authenticated_but_unencrypted_data, METH_VARARGS), METHODB(add_data_to_be_encrypted, METH_VARARGS), {NULL, NULL, 0, NULL} /* Sentinel */
+    METHODB(add_authenticated_but_unencrypted_data, METH_VARARGS),
+    METHODB(add_data_to_be_encrypted, METH_VARARGS),
+    {"add_secret_to_be_encrypted",
+     (PyCFunction)(void (*)(void))add_secret_to_be_encrypted,
+     METH_VARARGS | METH_KEYWORDS,
+     "Encrypt a secret without exposing its contents"},
+    {NULL, NULL, 0, NULL} /* Sentinel */
 };
 
 static PyMemberDef aes256gcmencrypt_members[] = {
@@ -615,8 +722,56 @@ add_data_to_be_decrypted(AES256GCMDecrypt *self, PyObject *args) {
     return plaintext;
 }
 
+static PyObject *
+add_data_to_be_decrypted_as_secret(AES256GCMDecrypt *self, PyObject *args, PyObject *kwds) {
+    static const char *kwlist[] = {"data", "finished", NULL};
+    if (self->state > 1) {
+        PyErr_SetString(Crypto_Exception, "Decryption has been finished");
+        return NULL;
+    }
+    const unsigned char *ciphertext;
+    Py_ssize_t ciphertext_len;
+    int finish_decryption = 1;
+    if (!PyArg_ParseTupleAndKeywords(args, kwds, "y#|p", (char **)kwlist, &ciphertext, &ciphertext_len, &finish_decryption)) return NULL;
+    if (!finish_decryption) {
+        PyErr_SetString(PyExc_ValueError, "Decryption to a secret must finish to authenticate its contents");
+        return NULL;
+    }
+    int padding = 2 * KITTY_EVP_CIPHER_CTX_BLOCK_SIZE(self->ctx);
+    if (ciphertext_len > INT_MAX - padding) {
+        PyErr_SetString(PyExc_OverflowError, "Too much data to decrypt in one call");
+        return NULL;
+    }
+    Secret *plaintext = alloc_secret(ciphertext_len + padding);
+    if (!plaintext) return NULL;
+    self->state = 2;
+    int offset = 0;
+    if (ciphertext_len) {
+        int len = plaintext->allocation_len;
+        if (1 != EVP_DecryptUpdate(self->ctx, plaintext->secret, &len, ciphertext, ciphertext_len)) {
+            Py_CLEAR(plaintext);
+            return set_error_from_openssl("Failed to decrypt");
+        }
+        offset = len;
+    }
+    int len = plaintext->allocation_len - offset;
+    if (EVP_DecryptFinal_ex(self->ctx, (unsigned char *)plaintext->secret + offset, &len) <= 0) {
+        Py_CLEAR(plaintext);
+        PyErr_SetString(Crypto_Exception, "Failed to finish decrypt");
+        return NULL;
+    }
+    plaintext->secret_len = offset + len;
+    return (PyObject *)plaintext;
+}
+
 static PyMethodDef aes256gcmdecrypt_methods[] = {
-    METHODB(add_data_to_be_authenticated_but_not_decrypted, METH_VARARGS), METHODB(add_data_to_be_decrypted, METH_VARARGS), {NULL, NULL, 0, NULL} /* Sentinel */
+    METHODB(add_data_to_be_authenticated_but_not_decrypted, METH_VARARGS),
+    METHODB(add_data_to_be_decrypted, METH_VARARGS),
+    {"add_data_to_be_decrypted_as_secret",
+     (PyCFunction)(void (*)(void))add_data_to_be_decrypted_as_secret,
+     METH_VARARGS | METH_KEYWORDS,
+     "Decrypt directly into an authenticated secret"},
+    {NULL, NULL, 0, NULL} /* Sentinel */
 };
 
 static PyTypeObject AES256GCMDecrypt_Type = {

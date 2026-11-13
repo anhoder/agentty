@@ -2013,6 +2013,19 @@ disables all scaling of the window logo.
 )
 
 opt(
+    'window_jelly_enabled',
+    'yes',
+    option_type='to_bool',
+    ctype='bool',
+    long_text="""
+macOS: Enable native spring transitions when kitty windows (panes) are resized
+or repositioned, including splitting, closing and layout changes. Set to no to
+disable these transitions without changing their duration or rebound settings.
+The macOS Reduce Motion setting also disables them.
+""",
+)
+
+opt(
     'window_jelly_duration',
     '0.35',
     option_type='positive_float',
@@ -2020,8 +2033,10 @@ opt(
     long_text="""
 macOS: Duration (in seconds) of native Core Animation spring transitions when
 kitty windows (panes) are resized or repositioned, including splitting, closing
-and layout changes. Set to zero to disable. The macOS Reduce Motion setting
-also disables these animations. This option has no effect on other platforms.
+and layout changes. Set to zero to disable, or use :opt:`window_jelly_enabled`
+to toggle them without changing the duration.
+The macOS Reduce Motion setting also disables these animations. This option
+has no effect on other platforms.
 
 Transitions animate pane contents refreshed after each terminal render, keeping
 cursor animations and terminal output visible throughout the transition. The PTY
@@ -3331,9 +3346,10 @@ time kitty is started, it restores that session, instead of using :opt:`startup_
 The latest backup is restored, even if several kitty instances were running. Programs that were
 running in windows, other than the shell, are not started again. Restoration happens only when
 kitty is started without :option:`kitty --session` or a command to run. Each backup records its
-save time, and the latest three backups are retained even after restoration. On macOS, backups
-are encrypted, with keys stored in your login keychain. Note
-that despite the encryption any process that runs as you can access the stored session data.
+save time, and the latest three ordinary backups are retained even after restoration. On macOS,
+backups are encrypted using independent keys wrapped by a persistent local master key outside
+the application and cache directories. Failed backups are retained for recovery. Note that
+other programs running as your user can access both the keys and the stored session data.
 On Linux, it is not encrypted and this requires a desktop portal that supports monitoring the
 session state. See :ref:`restore_after_logout` for details.
 """,

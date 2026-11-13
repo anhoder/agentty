@@ -80,6 +80,7 @@ typedef struct Options {
         window_title_bar_active_foreground, window_title_bar_active_background, window_title_bar_inactive_foreground, window_title_bar_inactive_background;
     monotonic_t repaint_delay, input_delay;
     double window_jelly_duration, window_jelly_bounce, window_jelly_bounce_max;
+    bool window_jelly_enabled;
     struct {
         bool on_cross, on_drop;
     } focus_follows_mouse;

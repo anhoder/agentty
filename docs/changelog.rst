@@ -10,16 +10,22 @@ Recent major new features
 ---------------------------
 
 
+- macOS: Encrypt automatic session backup keys with a persistent local master
+  key instead of tying new backups to Keychain code-signature authorization.
+  Migrate readable legacy keys only after validating the complete backup.
+  Preserve failed or unreadable backups and their keys across automatic rotation,
+  disabled persistence and repeated restoration crashes, with explicit retry.
 - The Splits layout adds ``equalize_on_window_change`` to automatically give all
   panes an equal share of the available space whenever a window is created or
   closed. The existing close-only ``equalize_on_window_close`` option remains
   available.
 - macOS: Add gentle native Core Animation spring transitions for pane resizing,
-  repositioning, splitting, closing and layout changes. Configure the duration
-  with :opt:`window_jelly_duration` (default: 0.35 seconds); zero or macOS Reduce
-  Motion disables it. Pane contents refresh during transitions so cursor animations
-  and terminal output remain visible, without delaying PTY resizing or input.
-  OS window frames and interactive live resizing are unchanged.
+  repositioning, splitting, closing and layout changes. Toggle them with
+  :opt:`window_jelly_enabled` (default: yes) and configure the duration with
+  :opt:`window_jelly_duration` (default: 0.35 seconds); zero or macOS Reduce
+  Motion disables them. Pane contents refresh during transitions without
+  delaying PTY resizing or input. OS window frames and interactive live resizing
+  are unchanged.
 - macOS: Control the pane spring rebound amplitude with
   :opt:`window_jelly_bounce` (percentage of the animated distance, default 6.8)
   and cap it with :opt:`window_jelly_bounce_max` (points, zero meaning no limit),

@@ -222,7 +222,7 @@ pane_spring(NSString *key, id from, id to, double duration, double overshoot_fra
     NSView *content = window.contentView;
     double duration = OPT(window_jelly_duration);
     double bounce = OPT(window_jelly_bounce), max_bounce = OPT(window_jelly_bounce_max);
-    BOOL enabled = duration > 0 && !NSWorkspace.sharedWorkspace.accessibilityDisplayShouldReduceMotion;
+    BOOL enabled = OPT(window_jelly_enabled) && duration > 0 && !NSWorkspace.sharedWorkspace.accessibilityDisplayShouldReduceMotion;
     BOOL compatible = tab_id == tab->id && pixel_width == (unsigned)osw->viewport_width && pixel_height == (unsigned)osw->viewport_height;
     BOOL changed = NO;
     size_t visible = 0;
@@ -303,23 +303,25 @@ pane_spring(NSString *key, id from, id to, double duration, double overshoot_fra
             }
             layer.contentsScale = scale;
             layer.frame = target;
-            double position_bounce = MIN(
-                jelly_overshoot_fraction(fabs(CGRectGetMidX(target) - CGRectGetMidX(start)), bounce, max_bounce),
-                jelly_overshoot_fraction(fabs(CGRectGetMidY(target) - CGRectGetMidY(start)), bounce, max_bounce));
-            double bounds_bounce = MIN(
-                jelly_overshoot_fraction(fabs(target.size.width - start.size.width), bounce, max_bounce),
-                jelly_overshoot_fraction(fabs(target.size.height - start.size.height), bounce, max_bounce));
+            double position_bounce =
+                MIN(jelly_overshoot_fraction(fabs(CGRectGetMidX(target) - CGRectGetMidX(start)), bounce, max_bounce),
+                    jelly_overshoot_fraction(fabs(CGRectGetMidY(target) - CGRectGetMidY(start)), bounce, max_bounce));
+            double bounds_bounce =
+                MIN(jelly_overshoot_fraction(fabs(target.size.width - start.size.width), bounce, max_bounce),
+                    jelly_overshoot_fraction(fabs(target.size.height - start.size.height), bounce, max_bounce));
             [layer addAnimation:pane_spring(
                                     @"position",
                                     [NSValue valueWithPoint:NSMakePoint(CGRectGetMidX(start), CGRectGetMidY(start))],
                                     [NSValue valueWithPoint:NSMakePoint(CGRectGetMidX(target), CGRectGetMidY(target))],
-                                    duration, position_bounce)
+                                    duration,
+                                    position_bounce)
                          forKey:@"pane-position"];
             [layer addAnimation:pane_spring(
                                     @"bounds",
                                     [NSValue valueWithRect:NSMakeRect(0, 0, start.size.width, start.size.height)],
                                     [NSValue valueWithRect:NSMakeRect(0, 0, target.size.width, target.size.height)],
-                                    duration, bounds_bounce)
+                                    duration,
+                                    bounds_bounce)
                          forKey:@"pane-bounds"];
             next[key] = layer;
         }

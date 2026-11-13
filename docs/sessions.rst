@@ -297,12 +297,12 @@ are not started again, since they could have been run for their effects, like
 :file:`rm`.
 
 Each backup records its save time in the ``saved_at`` field of :file:`process.json`.
-The latest three backups are retained per installation, including after a
-successful restoration. Each save creates a separate backup instead of replacing
-the previous one. Older backups and their encryption keys are removed when a new
-backup is saved. Backups currently being restored are protected from removal.
-If several kitty instances saved backups, only the newest available one is
-restored; older backups do not launch additional kitty instances.
+The latest three ordinary backups are retained per installation, including after a
+successful restoration. Each save creates a separate backup. Backups with failed
+restoration, unavailable keys or unreadable data are retained separately and are
+not removed by automatic rotation or by disabling persistence. Live backups are
+also protected. If several kitty instances saved backups, only the newest
+available one is restored; older backups do not launch additional instances.
 
 Automatic snapshots are isolated by the resolved absolute path of the kitty executable.
 For example, :file:`/Applications/kitty.app` and a development copy on your Desktop
@@ -313,7 +313,7 @@ Moving or renaming the application selects a different store.
 Snapshots are stored in :file:`saved-sessions/<installation-id>/` inside kitty's
 cache directory (normally :file:`~/Library/Caches/kitty/` on macOS). The installation
 id is the SHA-256 hash of the resolved executable path, not the binary contents.
-The macOS keychain service and snapshot locks are isolated by the same id, so
+The local encryption keys and snapshot locks are isolated by the same id, so
 installation-scoped snapshots and keys are not restored or cleaned up by another
 installation.
 This applies to both :opt:`persist_session` and :opt:`restore_session_after_logout`;
@@ -336,8 +336,8 @@ tab group. It is ignored when native tabs are disabled. Older saved sessions
 without this metadata cannot reconstruct native tab grouping.
 
 The state is saved in the same place, and with the same protections, as the
-state saved at logout, described below. On macOS it is encrypted with a key in
-your login keychain; on Linux it is protected only by its file permissions.
+state saved at logout, described below. On macOS it uses persistent local
+encryption keys; on Linux it is protected only by its file permissions.
 Treat it like your shell history: it contains the scrollback and the
 environment variables of every window.
 
@@ -368,20 +368,41 @@ not started again, since they could have been run for their effects, like
 :file:`rm`. To save OS Window geometry in your own session files, use the
 ``--os-window-geometry`` option of :ac:`save_as_session`.
 
-On macOS, the saved state, which includes the scrollback and the environment
-variables of every kitty instance, is encrypted, with a separate random key for
-every backup, stored in your login keychain. Note that despite the
-encryption any process that runs as you can read the saved session data. Keys
-are retained with their backups and deleted when those backups are removed,
-not when they are restored. kitty never shows any keychain prompts for this.
-If the keychain needs user interaction, the state is not saved or not restored. This happens if:
+On macOS, each backup is encrypted with its own random AES-256-GCM key. These
+keys are wrapped with a persistent random 256-bit master key stored in
+:file:`~/Library/Application Support/agentty/session-keys/<installation-id>/master.key`.
+The directory is private (0700) and key files are readable only by their owner
+(0600). New backups do not use the login keychain, so replacing kitty in place
+or changing its code signature does not change access to the keys. Symlinked,
+hard-linked, incorrectly owned or overly permissive key files are rejected.
 
-* your login keychain is locked, for example, because it has a different
-  password from your login password or because it is set to lock itself after
-  a period of inactivity
-* the kitty you are running is not signed by the same developer as the kitty
-  that saved the state, for example, because you build kitty yourself, in
-  which case every new build counts as a different application
+Keep the entire installation's key directory with your backups, separately from
+the application and cache. Losing the master key or a wrapped backup key makes
+the corresponding backup unreadable; kitty will not silently replace a missing
+master while local encrypted backups or wrapped keys remain. A copy of the
+snapshots without the keys cannot be decrypted. This does not protect against
+other programs running as your user, or anyone who obtains both snapshots and
+keys. Snapshots can contain sensitive scrollback and environment variables.
+
+Older keychain-encrypted backups are migrated only after the whole snapshot has
+been decrypted and parsed successfully. The migrated key is wrapped and read
+back for verification before its old keychain entry is deleted. If the keychain
+is locked or the old signature is not authorized, the backup and key are kept;
+restoring access to the old key is required to migrate it. No keychain prompts
+are shown automatically.
+The old shared :file:`saved-at-logout/` backups use the :file:`legacy/` key
+directory instead of an installation id, preserving their existing shared
+restoration behavior. New installation-scoped backups never use those keys.
+
+
+After repeated restoration crashes a backup is skipped, not deleted. Once the
+cause is fixed, explicitly retry it with the same installation of kitty::
+
+    kitty +runpy 'from kitty.logout_session import retry_snapshot; retry_snapshot("/absolute/path/to/backup")'
+
+Then start kitty without a command or ``--session``. The backup remains protected
+from automatic removal until restoration succeeds. Errors include its path in
+the system log. Corrupt backups are never executed just to bypass a failure.
 
 On Linux, the saved state is not encrypted, as there is no way to store the key
 securely without asking you for a password. It is stored in the kitty cache

@@ -523,6 +523,7 @@ option_names = (
     'window_jelly_bounce',
     'window_jelly_bounce_max',
     'window_jelly_duration',
+    'window_jelly_enabled',
     'window_logo_alpha',
     'window_logo_path',
     'window_logo_position',
@@ -754,6 +755,7 @@ class Options:
     window_jelly_bounce: float = 6.8
     window_jelly_bounce_max: float = 0
     window_jelly_duration: float = 0.35
+    window_jelly_enabled: bool = True
     window_logo_alpha: float = 0.5
     window_logo_path: str | None = None
     window_logo_position: choices_for_window_logo_position = 'bottom-right'

@@ -256,6 +256,8 @@ class TestSessions(BaseTest):
 
         from kitty import fast_data_types as fdt
         from kitty import logout_session as ls
+        from kitty import session_keys as sk
+
         from .crypto import is_rlimit_memlock_too_low
 
         if is_rlimit_memlock_too_low():
@@ -279,6 +281,7 @@ class TestSessions(BaseTest):
         with (
             tempfile.TemporaryDirectory() as root,
             patch.object(ls, 'cache_dir', return_value=root),
+            patch.object(sk, 'key_storage_root', return_value=os.path.join(os.path.realpath(root), 'keys')),
             patch.object(ls, 'is_macos', True),
             patch.object(ls, 'process_state', ls.ProcessState((), root, {}, 0)),
             patch.object(ls, 'last_saved_session', ''),
@@ -331,9 +334,10 @@ class TestSessions(BaseTest):
                 ls.finish_restore(restored.path)
                 self.assertTrue(os.path.isdir(other_path))
                 self.assertTrue(os.path.isdir(old_path))
-                self.ae(len(keys), 2)
-                ls.remove_snapshot(old_path, legacy_store)
-                ls.remove_snapshot(other_path, legacy_store)
+                self.ae(len(keys), 1)  # Only the validated legacy snapshot has migrated out of the Keychain.
+                self.assertIsNotNone(ls.get_key_store(legacy_base).read(ls.read_key_id(other_path)))
+                ls.remove_snapshot(old_path, ls.get_key_store(legacy_base))
+                ls.remove_snapshot(other_path, ls.get_key_store(legacy_base))
             os.makedirs(legacy)
 
             with patch.object(ls, 'kitty_exe', return_value=app_a):
@@ -394,14 +398,18 @@ class TestSessions(BaseTest):
         from kitty.fast_data_types import Secret
         from kitty.logout_session import (
             LOGOUT_CONFIRMATION_TIMEOUT,
+            RESTORE_FAILED_FILE,
+            RETRY_REQUESTED_FILE,
             ProcessState,
             claim_snapshots,
             delete_snapshot,
             finish_restore,
             is_logout_in_progress,
             load_snapshot,
+            load_snapshot_for_restore,
             lock_snapshot_for_saver,
             new_key_id,
+            prune_snapshots,
             read_key_id,
             read_snapshot,
             release_saver_lock,
@@ -409,6 +417,7 @@ class TestSessions(BaseTest):
             remove_orphaned_keys,
             remove_snapshot,
             restore_snapshots,
+            retry_snapshot,
             save_snapshot,
         )
         from kitty.utils import log_error
@@ -503,14 +512,23 @@ class TestSessions(BaseTest):
         lines = as_text(screen, add_history=True).splitlines()
         self.ae(lines[:3], ['seven', '', ''])
         self.assertTrue(lines[3].strip('-') == '' and len(lines[3]) >= 20)
-        # A snapshot that repeatedly fails to be restored, for example, because kitty crashes, is deleted, with its key
+        # Repeated crashes cap automatic attempts, but retain both the normal backup name and its encryption key.
         self.ae(len(claim_snapshots(base, 2, ks, alive.__contains__)), 1)
         self.ae(claim_snapshots(base, 3, ks, alive.__contains__), [])
-        self.ae((os.listdir(base), ks.keys), ([], {}))
+        self.ae(os.listdir(base), [snapshot_name])
+        self.assertIsNotNone(ks.read(read_key_id(path)))
+        self.assertTrue(os.path.exists(os.path.join(path, RESTORE_FAILED_FILE)))
         self.assertTrue(errors)
+        retry_snapshot(path)
+        self.assertFalse(os.path.exists(os.path.join(path, 'attempts')))
+        self.assertTrue(os.path.exists(os.path.join(path, RESTORE_FAILED_FILE)))
+        (snapshot,) = claim_snapshots(base, 3, ks, alive.__contains__)
+        load_snapshot(snapshot.path, opts, ks)
+        finish_restore(snapshot.path)
+        self.assertFalse(os.path.exists(os.path.join(path, RESTORE_FAILED_FILE)))
+        remove_snapshot(path, ks)
 
-        # Snapshots that cannot be decrypted are deleted: key not in the keychain, keychain needs user interaction, modified or
-        # swapped files
+        # Inaccessible keys and corrupt ciphertext are retained, with durable protection from later pruning.
         def modify(path: str) -> None:
             data = bytearray(raw(path, 'process.json'))
             data[-1] ^= 1
@@ -529,10 +547,124 @@ class TestSessions(BaseTest):
         ):
             with self.subTest(name):
                 errors.clear()
-                damage(save(13))
+                damaged_path = save(13)
+                original_keys = dict(ks.keys)
+                damage(damaged_path)
                 self.ae(claim_snapshots(base, 1, ks, alive.__contains__), [])
                 ks.fail = False
-                self.ae((os.listdir(base), len(errors)), ([], num_errors))
+                self.ae((os.listdir(base), len(errors)), ([os.path.basename(damaged_path)], num_errors))
+                self.assertTrue(os.path.exists(os.path.join(damaged_path, RESTORE_FAILED_FILE)))
+                if name != 'missing key':
+                    self.ae(ks.keys, original_keys)
+                remove_snapshot(damaged_path, ks)
+
+        # A transient key failure stays protected even after reads work again and newer saves trigger retention.
+        protected = save(13)
+        protected_key = read_key_id(protected)
+        ks.fail = True
+        prune_snapshots(base, ks)
+        ks.fail = False
+        for pid in range(50, 54):
+            save_snapshot(base, pid, 'launch --cwd=/newer-empty', {}, state, ks)
+        self.assertTrue(os.path.isdir(protected))
+        self.assertIsNotNone(ks.read(protected_key))
+        self.ae(len(os.listdir(base)), 4)  # Protected backup plus the newest three ordinary backups.
+        retry_snapshot(protected)
+        self.assertTrue(os.path.exists(os.path.join(protected, RETRY_REQUESTED_FILE)))
+        with (
+            patch('kitty.logout_session.snapshots_dir', return_value=base),
+            patch('kitty.logout_session.get_key_store', return_value=ks),
+        ):
+            restored = restore_snapshots(opts)
+        assert restored is not None
+        self.ae(restored.path, protected + f'.claimed-by-{os.getpid()}')
+        self.assertTrue(restored.sessions[0].tabs[0].windows[0].restored_scrollback.startswith(b'seven'))
+        finish_restore(restored.path)
+        self.assertFalse(os.path.exists(os.path.join(protected, RETRY_REQUESTED_FILE)))
+        self.assertFalse(os.path.exists(os.path.join(protected, RESTORE_FAILED_FILE)))
+        shutil.rmtree(base)
+        ks.keys.clear()
+
+        # Failed parsing releases the claim, but preserves attempts and protection; disabling only deletes ordinary backups.
+        protected = save(13)
+        key = ks.read(read_key_id(protected))
+        assert key is not None
+        from kitty.logout_session import encrypt
+
+        with open(os.path.join(protected, 'session.kitty-session'), 'wb') as f:
+            f.write(encrypt(key, 'session.kitty-session', b'invalid-session-command'))
+        (snapshot,) = claim_snapshots(base, 1, ks, alive.__contains__)
+        with patch('kitty.logout_session.get_key_store', return_value=ks):
+            self.assertIsNone(load_snapshot_for_restore(snapshot.path, opts))
+        self.assertTrue(os.path.isdir(protected))
+        self.assertFalse(os.path.exists(snapshot.path))
+        self.ae(raw(protected, 'attempts'), b'1')
+        self.assertTrue(os.path.exists(os.path.join(protected, RESTORE_FAILED_FILE)))
+        ordinary = save(14)
+        unreadable = save(15)
+        modify(unreadable)
+        with (
+            patch('kitty.logout_session.snapshots_dir', return_value=base),
+            patch('kitty.logout_session.get_key_store', return_value=ks),
+        ):
+            remove_all_snapshots()
+            self.assertTrue(os.path.isdir(base))
+            self.assertTrue(os.path.isdir(protected))
+            self.assertTrue(os.path.isdir(unreadable))
+            self.assertFalse(os.path.exists(ordinary))
+            self.ae(set(ks.keys), {read_key_id(protected), read_key_id(unreadable)})
+            delete_snapshot(protected)
+            delete_snapshot(unreadable)
+        shutil.rmtree(base)
+        self.ae(ks.keys, {})
+
+        # Invalid attempt bookkeeping is recoverable rather than a reason to delete the backup.
+        path = save(13)
+        with open(os.path.join(path, 'attempts'), 'w') as f:
+            f.write('invalid')
+        self.ae(claim_snapshots(base, 1, ks, alive.__contains__), [])
+        self.assertTrue(os.path.isdir(path))
+        self.assertTrue(os.path.exists(os.path.join(path, RESTORE_FAILED_FILE)))
+        retry_snapshot(path)
+        (snapshot,) = claim_snapshots(base, os.getpid(), ks, alive.__contains__)
+        with (
+            patch('kitty.logout_session.MAX_SNAPSHOTS', 0),
+            patch('kitty.logout_session.snapshots_dir', return_value=base),
+            patch('kitty.logout_session.get_key_store', return_value=ks),
+        ):
+            prune_snapshots(base, ks)
+            remove_all_snapshots()
+        self.assertTrue(os.path.isdir(snapshot.path))
+        load_snapshot(snapshot.path, opts, ks)
+        finish_restore(snapshot.path)
+        self.assertFalse(os.path.exists(os.path.join(path, 'attempts')))
+        self.assertFalse(os.path.exists(os.path.join(path, RESTORE_FAILED_FILE)))
+        remove_snapshot(path, ks)
+
+        # Even before a restore is attempted, corrupted session or scrollback files are not pruned.
+        for name in ('session.kitty-session', 'scrollback/8'):
+            path = save(13)
+            data = bytearray(raw(path, name))
+            data[-1] ^= 1
+            with open(os.path.join(path, name), 'wb') as f:
+                f.write(data)
+            with patch('kitty.logout_session.MAX_SNAPSHOTS', 0):
+                prune_snapshots(base, ks)
+            self.assertTrue(os.path.isdir(path))
+            self.assertTrue(os.path.exists(os.path.join(path, RESTORE_FAILED_FILE)))
+            self.assertIsNotNone(ks.read(read_key_id(path)))
+            remove_snapshot(path, ks)
+
+        # An unreadable key id prevents unsafe orphan cleanup of that backup's key.
+        path = save(13)
+        key_id = read_key_id(path)
+        os.unlink(os.path.join(path, 'key-id'))
+        os.mkdir(os.path.join(path, 'key-id'))
+        remove_orphaned_keys(base, ks)
+        self.assertIsNotNone(ks.read(key_id))
+        self.assertTrue(os.path.exists(os.path.join(path, RESTORE_FAILED_FILE)))
+        shutil.rmtree(base)
+        ks.keys.clear()
 
         # Keys of snapshots deleted by something other than kitty are deleted, but not the keys of existing snapshots or keys
         # not created by kitty
@@ -576,6 +708,9 @@ class TestSessions(BaseTest):
         self.ae(claim_snapshots(base, 1, ks, alive.__contains__), [])
         release_saver_lock(os.path.join(base, 'other'))
         self.ae(claim_snapshots(base, 1, ks, alive.__contains__), [])
+        with patch('kitty.logout_session.MAX_SNAPSHOTS', 0):
+            prune_snapshots(base, ks)
+        self.assertTrue(os.path.isdir(path))
         release_saver_lock(path)
         self.ae(len(claim_snapshots(base, 1, ks, alive.__contains__)), 1)
         alive.clear()
@@ -603,13 +738,16 @@ class TestSessions(BaseTest):
         shutil.rmtree(base)
         # An encrypted snapshot cannot be read without a key store and an unencrypted one is not accepted when there is a key store
         errors.clear()
-        save_snapshot(base, 32, session, {}, state, None)
+        plain = save_snapshot(base, 32, session, {}, state, None)
         self.ae(claim_snapshots(base, 1, ks, alive.__contains__), [])
-        save(33)
-        self.ae(claim_snapshots(base, 1, None, alive.__contains__), [])
-        self.ae((os.listdir(base), len(errors)), ([], 2))
+        encrypted = save(33)
+        (snapshot,) = claim_snapshots(base, 1, None, alive.__contains__)
+        self.ae(snapshot.path, plain + '.claimed-by-1')
+        finish_restore(snapshot.path)
+        self.ae(set(os.listdir(base)), {os.path.basename(plain), os.path.basename(encrypted)})
+        self.ae(len(errors), 2)
         remove_orphaned_keys(base, ks)
-        self.ae(ks.keys, {})
+        self.ae(set(ks.keys), {read_key_id(encrypted)})
         shutil.rmtree(base)
         ks.keys.clear()
 

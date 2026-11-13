@@ -7,10 +7,8 @@
 # snapshots are retained. Startup claims only the newest available snapshot, and releases the claim after restoring its windows
 # so the backup remains available for a later startup.
 #
-# On macOS, snapshots are encrypted with a random key per snapshot, stored in the macOS Keychain. The Keychain is never allowed to
-# show any UI, if it needs user interaction, saving or restoring fails instead. The key is deleted before the snapshot is, so that
-# any copies of the snapshot left on disk or in backups cannot be read. On Linux, there is no way to store the key securely without
-# user interaction, so snapshots are not encrypted and are protected only by their file permissions.
+# On macOS, each snapshot key is wrapped by a persistent local master key; old Keychain keys are migrated only after a snapshot
+# has been fully validated. On Linux, snapshots are not encrypted and are protected only by their file permissions.
 #
 # On macOS, the OS asks kitty to quit when the user logs out and the snapshot is saved when the quit is confirmed. On Linux, the
 # desktop portal tells kitty that the session is about to end and kitty is then killed, so the snapshot is saved immediately and is
@@ -26,6 +24,7 @@ import json
 import os
 import re
 import secrets
+import shlex
 import shutil
 import tempfile
 import time
@@ -47,14 +46,17 @@ SESSION_FILE = 'session.kitty-session'
 PROCESS_FILE = 'process.json'
 SCROLLBACK_DIR = 'scrollback'
 ATTEMPTS_FILE = 'attempts'
+RESTORE_FAILED_FILE = 'restore-failed'
+RETRY_REQUESTED_FILE = 'retry-requested'
 KEY_ID_FILE = 'key-id'
+KEY_BACKEND_FILE = 'key-backend'
 SAVER_LOCK_FILE = 'saver.lock'
 KEY_ID_BYTES = 16
 KEYCHAIN_SERVICE = 'net.kovidgoyal.kitty.session-saved-at-logout'
 ENCRYPTED_FILE_MAGIC = b'kitty-snapshot-1'
 IV_SIZE, TAG_SIZE = 12, 16
 CLAIMED_MARKER = '.claimed-by-'
-# A snapshot that has failed to be restored this many times, for example because kitty crashed, is deleted
+# Stop automatic restore attempts after repeated failures, keeping the snapshot and its key for explicit recovery.
 MAX_RESTORE_ATTEMPTS = 2
 MAX_SNAPSHOTS = 3
 # A quit confirmed by the user later than this many seconds after the OS asked kitty to quit for a logout is treated as an
@@ -111,9 +113,11 @@ class MacOSKeychain:
 
 
 def get_key_store(base: str | None = None) -> KeyStore | None:
-    # Old snapshots were encrypted using the shared, unscoped keychain service.
-    legacy = base is not None and os.path.realpath(base) == os.path.realpath(legacy_snapshots_dir())
-    return MacOSKeychain(KEYCHAIN_SERVICE if legacy else None) if is_macos else None
+    if is_macos:
+        from .session_keys import LocalKeyStore
+
+        return LocalKeyStore(base)
+    return None
 
 
 def encrypt(key: Secret, name: str, data: bytes) -> bytes:
@@ -162,9 +166,23 @@ def snapshot_key(snapshot_dir: str, key_store: KeyStore | None) -> Secret | None
         return None
     if not key_id:
         raise ValueError('The snapshot has no encryption key id')
+    backend_path = os.path.join(snapshot_dir, KEY_BACKEND_FILE)
+    try:
+        with open(backend_path, 'rb') as f:
+            backend = f.read()
+    except FileNotFoundError:
+        backend = b''
+    if backend:
+        from .session_keys import LocalKeyStore
+
+        if backend != b'local-v1' or not isinstance(key_store, LocalKeyStore):
+            raise ValueError('Invalid snapshot encryption key backend')
+        return key_store.read_local(key_id)
+    if os.path.lexists(backend_path):
+        raise ValueError('Invalid snapshot encryption key backend')
     key = key_store.read(key_id)
     if key is None:
-        raise ValueError('The encryption key for the snapshot is not in the keychain')
+        raise ValueError('The encryption key for the snapshot is unavailable')
     return key
 
 
@@ -172,7 +190,7 @@ def delete_key(key_store: KeyStore, key_id: str, path: str) -> None:
     try:
         key_store.delete(key_id)
     except OSError as e:
-        log_error(f'Failed to delete the encryption key for the session saved at logout in {path} from the keychain. Error: {e}')
+        log_error(f'Failed to delete the encryption key for the session saved at logout in {path}. Error: {e}')
 
 
 def new_key_id() -> str:
@@ -185,23 +203,32 @@ def key_id_pat() -> 're.Pattern[str]':
 
 
 def remove_orphaned_keys(base: str, key_store: KeyStore | None) -> None:
-    # Must be called with the lock held. Deletes the keys of snapshots that no longer exist, for example because they were deleted
-    # by something other than kitty. Snapshots being saved or restored hold the lock, so their keys are never orphans here.
+    # Must be called with the lock held. An unreadable key id makes orphan detection unsafe: keep all keys in that case.
     if key_store is None:
-        return
-    try:
-        key_ids = key_store.list_ids()
-    except OSError as e:
-        log_error(f'Failed to list the encryption keys for sessions saved at logout in the keychain. Error: {e}')
         return
     used = set()
     with suppress(FileNotFoundError), os.scandir(base) as entries:
         for entry in entries:
-            if key_id := read_key_id(entry.path):
-                used.add(key_id)
+            try:
+                key_id = read_key_id(entry.path)
+                name, _ = parse_claimed_name(entry.name)
+                if name and key_id_pat().fullmatch(key_id) is None:
+                    mark_restore_failed(entry.path)
+                    return
+                if key_id:
+                    used.add(key_id)
+            except Exception as e:
+                mark_restore_failed(entry.path)
+                log_error(f'Failed to read the encryption key id in {entry.path}, keeping all snapshot keys. Error: {e}')
+                return
+    try:
+        key_ids = key_store.list_ids()
+    except OSError as e:
+        log_error(f'Failed to list the encryption keys for sessions saved at logout. Error: {e}')
+        return
     pat = key_id_pat()
     for key_id in key_ids:
-        # Only keys created by kitty, so items added by anything else with the same service are not touched
+        # Only keys created by kitty, so items added by anything else with the same service are not touched.
         if key_id not in used and pat.fullmatch(key_id) is not None:
             delete_key(key_store, key_id, base)
 
@@ -211,6 +238,31 @@ def remove_snapshot(path: str, key_store: KeyStore | None) -> None:
     if (key_id := read_key_id(path)) and key_store is not None:
         delete_key(key_store, key_id, path)
     remove_path(path)
+
+
+def mark_restore_failed(path: str) -> None:
+    # Persist protection independently of whether a later attempt can read the snapshot.
+    try:
+        fd = os.open(os.path.join(path, RESTORE_FAILED_FILE), os.O_WRONLY | os.O_CREAT | os.O_CLOEXEC, 0o600)
+        with open(fd, 'wb') as f:
+            f.flush()
+            os.fsync(f.fileno())
+        fd = os.open(path, os.O_RDONLY | os.O_CLOEXEC)
+        try:
+            os.fsync(fd)
+        finally:
+            os.close(fd)
+    except OSError as e:
+        log_error(f'Failed to protect the session backup in {path}. Error: {e}')
+
+
+def release_claim(path: str) -> str:
+    name, claimer = parse_claimed_name(os.path.basename(path))
+    if name and claimer:
+        dest = os.path.join(os.path.dirname(path), name)
+        os.rename(path, dest)
+        return dest
+    return path
 
 
 process_state = ProcessState((), '', {}, time.time())
@@ -354,6 +406,10 @@ def save_snapshot(base: str, pid: int, session: str, scrollback: Mapping[int, by
         tdir = tempfile.mkdtemp(dir=base, prefix=f'{pid}.', suffix='.tmp')
         if key_id:
             write_private_file(os.path.join(tdir, KEY_ID_FILE), key_id.encode())
+            from .session_keys import LocalKeyStore
+
+            if isinstance(key_store, LocalKeyStore):
+                write_key_backend(tdir)
         os.mkdir(os.path.join(tdir, SCROLLBACK_DIR), 0o700)
         for window_id, data in scrollback.items():
             write_snapshot_file(tdir, key, f'{SCROLLBACK_DIR}/{window_id}', data)
@@ -372,21 +428,47 @@ def save_snapshot(base: str, pid: int, session: str, scrollback: Mapping[int, by
     return path
 
 
+def write_key_backend(path: str) -> None:
+    write_private_file(os.path.join(path, KEY_BACKEND_FILE), b'local-v1')
+    fd = os.open(os.path.join(path, KEY_BACKEND_FILE), os.O_RDONLY | os.O_CLOEXEC)
+    try:
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+    fd = os.open(path, os.O_RDONLY | os.O_CLOEXEC)
+    try:
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+
+
 def prune_snapshots(base: str, key_store: KeyStore | None) -> None:
-    # Must be called with the lock held. Retention follows saved_at, not directory modification times or process lifetimes.
+    # Must be called with the lock held. Failed and live snapshots do not count against ordinary backup retention.
     snapshots = []
     with os.scandir(base) as entries:
         for entry in entries:
             name, claimer = parse_claimed_name(entry.name)
-            if not name or (claimer and is_pid_alive(claimer)):
+            if not name or (claimer and is_pid_alive(claimer)) or os.path.lexists(os.path.join(entry.path, RESTORE_FAILED_FILE)):
                 continue
             try:
-                snapshots.append(read_snapshot(entry.path, snapshot_key(entry.path, key_store)))
+                if is_saver_running(entry.path):
+                    continue
+                if claimer:
+                    mark_restore_failed(entry.path)
+                    continue
+                snapshot = read_snapshot(entry.path, snapshot_key(entry.path, key_store))
+                snapshots.append(snapshot)
             except Exception as e:
-                log_error(f'Failed to read the session saved at logout in {entry.path}, deleting it. Error: {e}')
-                remove_snapshot(entry.path, key_store)
+                mark_restore_failed(entry.path)
+                log_error(f'Failed to read the session saved at logout in {entry.path}, keeping it for recovery. Error: {e}')
     snapshots.sort(key=lambda s: (s.saved_at, s.path), reverse=True)
     for snapshot in snapshots[MAX_SNAPSHOTS:]:
+        try:
+            load_snapshot(snapshot.path, get_options(), key_store, migrate_key=False)
+        except Exception as e:
+            mark_restore_failed(snapshot.path)
+            log_error(f'Failed to read the session saved at logout in {snapshot.path}, keeping it for recovery. Error: {e}')
+            continue
         remove_snapshot(snapshot.path, key_store)
     remove_orphaned_keys(base, key_store)
 
@@ -471,54 +553,79 @@ def claim_snapshots(base: str, pid: int, key_store: KeyStore | None, is_alive: C
             if not snapshot_name or (claimer and is_alive(claimer)):
                 continue
             path = os.path.join(base, name)
-            if not claimer and is_saver_running(path):
-                continue
             try:
+                if is_saver_running(path):
+                    continue
+                if claimer:
+                    mark_restore_failed(path)
+                    path = release_claim(path)
                 candidates.append(read_snapshot(path, snapshot_key(path, key_store)))
             except Exception as e:
-                log_error(f'Failed to read the session saved at logout in {path}, deleting it. Error: {e}')
-                remove_snapshot(path, key_store)
-        candidates.sort(key=lambda s: (s.saved_at, s.path), reverse=True)
+                mark_restore_failed(path)
+                log_error(f'Failed to read the session saved at logout in {path}, keeping it for recovery. Error: {e}')
+        candidates.sort(key=lambda s: (os.path.lexists(os.path.join(s.path, RETRY_REQUESTED_FILE)), s.saved_at, s.path), reverse=True)
         for snapshot in candidates:
-            name = os.path.basename(snapshot.path)
-            snapshot_name, claimer = parse_claimed_name(name)
-            path = os.path.join(base, f'{snapshot_name}{CLAIMED_MARKER}{pid}')
+            path = snapshot.path
             try:
-                os.rename(os.path.join(base, name), path)
                 attempts_path = os.path.join(path, ATTEMPTS_FILE)
                 attempts = 0
                 with suppress(FileNotFoundError), open(attempts_path) as f:
                     attempts = int(f.read())
+                if attempts < 0:
+                    raise ValueError('Invalid restore attempt count')
                 if attempts >= MAX_RESTORE_ATTEMPTS:
-                    log_error(f'Restoring the session saved at logout in {path} failed {attempts} times, deleting it')
-                    remove_snapshot(path, key_store)
+                    mark_restore_failed(path)
+                    retry = shlex.quote(f'from kitty.logout_session import retry_snapshot; retry_snapshot({path!r})')
+                    log_error(
+                        f'Restoring the session saved at logout in {path} failed {attempts} times; keeping it for recovery. To retry, run: kitty +runpy {retry}'
+                    )
                     continue
-                with open(attempts_path, 'w') as f:
+                name, _ = parse_claimed_name(os.path.basename(path))
+                claimed_path = os.path.join(base, f'{name}{CLAIMED_MARKER}{pid}')
+                os.rename(path, claimed_path)
+                path = claimed_path
+                with open(os.path.join(path, ATTEMPTS_FILE), 'w') as f:
                     f.write(str(attempts + 1))
-                ans.append(read_snapshot(path, snapshot_key(path, key_store)))
+                    f.flush()
+                    os.fsync(f.fileno())
+                ans.append(snapshot._replace(path=path))
                 break
             except Exception as e:
-                log_error(f'Failed to read the session saved at logout in {path}, deleting it. Error: {e}')
-                remove_snapshot(path, key_store)
+                mark_restore_failed(path)
+                with suppress(OSError):
+                    release_claim(path)
+                log_error(f'Failed to claim the session saved at logout in {path}, keeping it for recovery. Error: {e}')
         remove_orphaned_keys(base, key_store)
     return ans
 
 
-def load_snapshot(path: str, opts: Options, key_store: KeyStore | None) -> tuple['Session', ...]:
+def load_snapshot(path: str, opts: Options, key_store: KeyStore | None, *, migrate_key: bool = True) -> tuple['Session', ...]:
     from .session import parse_session
 
-    key = snapshot_key(path, key_store)
-    raw = read_snapshot_file(path, key, SESSION_FILE).decode()
-    saved_at = read_snapshot(path, key).saved_at
-    sessions = tuple(parse_session(raw, opts))
-    marker = '\r\n\r\n\r\n\x1b[m' + '-' * 60 + '\r\n\x1b[7m ' + _('Restored from {}').format(time.strftime('%c', time.localtime(saved_at))) + ' \x1b[m\r\n'
-    for session in sessions:
-        for tab in session.tabs:
-            for window in tab.windows:
-                with suppress(FileNotFoundError):
-                    data = read_snapshot_file(path, key, f'{SCROLLBACK_DIR}/{window.serialized_id}')
+    try:
+        key = snapshot_key(path, key_store)
+        raw = read_snapshot_file(path, key, SESSION_FILE).decode()
+        saved_at = read_snapshot(path, key).saved_at
+        sessions = tuple(parse_session(raw, opts))
+        marker = '\r\n\r\n\r\n\x1b[m' + '-' * 60 + '\r\n\x1b[7m ' + _('Restored from {}').format(time.strftime('%c', time.localtime(saved_at))) + ' \x1b[m\r\n'
+        windows = {str(window.serialized_id): window for session in sessions for tab in session.tabs for window in tab.windows}
+        with os.scandir(os.path.join(path, SCROLLBACK_DIR)) as entries:
+            for entry in entries:
+                data = read_snapshot_file(path, key, f'{SCROLLBACK_DIR}/{entry.name}')
+                if window := windows.get(entry.name):
                     window.restored_scrollback = (sanitize_restored_output(data.decode('utf-8', 'replace')) + marker).encode()
-    return sessions
+        if key_store is not None and migrate_key:
+            from .session_keys import LocalKeyStore
+
+            if isinstance(key_store, LocalKeyStore):
+                key_store.migrate(read_key_id(path))
+                backend_path = os.path.join(path, KEY_BACKEND_FILE)
+                if not os.path.exists(backend_path):
+                    write_key_backend(path)
+        return sessions
+    except Exception:
+        mark_restore_failed(path)
+        raise
 
 
 class RestoredSnapshot(NamedTuple):
@@ -526,13 +633,16 @@ class RestoredSnapshot(NamedTuple):
     sessions: tuple['Session', ...]
 
 
-def load_or_discard_snapshot(path: str, opts: Options) -> RestoredSnapshot | None:
-    key_store = get_key_store(os.path.dirname(path))
+def load_snapshot_for_restore(path: str, opts: Options) -> RestoredSnapshot | None:
     try:
+        key_store = get_key_store(os.path.dirname(path))
         return RestoredSnapshot(path, load_snapshot(path, opts, key_store))
     except Exception as e:
-        log_error(f'Failed to restore the session saved at logout in {path}, deleting it. Error: {e}')
-        remove_snapshot(path, key_store)
+        with lock_with_file(lock_path(os.path.dirname(path))):
+            mark_restore_failed(path)
+            with suppress(OSError):
+                release_claim(path)
+        log_error(f'Failed to restore the session saved at logout in {path}, keeping it for recovery. Error: {e}')
     return None
 
 
@@ -544,7 +654,7 @@ def restore_snapshots(opts: Options) -> RestoredSnapshot | None:
     except Exception as e:
         log_error(f'Failed to restore the saved sessions, ignoring. Error: {e}')
         return None
-    return None if not snapshots else load_or_discard_snapshot(snapshots[0].path, opts)
+    return None if not snapshots else load_snapshot_for_restore(snapshots[0].path, opts)
 
 
 def delete_snapshot(path: str) -> None:
@@ -555,21 +665,58 @@ def delete_snapshot(path: str) -> None:
 
 def finish_restore(path: str) -> None:
     # Keep the backup and its key, but release the claim and reset failure accounting after a successful restore.
-    base = os.path.dirname(path)
-    with lock_with_file(lock_path(base)):
-        name, _ = parse_claimed_name(os.path.basename(path))
+    with lock_with_file(lock_path(os.path.dirname(path))):
+        for name in (ATTEMPTS_FILE, RESTORE_FAILED_FILE, RETRY_REQUESTED_FILE):
+            with suppress(FileNotFoundError):
+                os.remove(os.path.join(path, name))
+        release_claim(path)
+
+
+def retry_snapshot(path: str) -> None:
+    # Explicit retries take precedence over newer backups, retaining protection until successful restoration.
+    with lock_with_file(lock_path(os.path.dirname(path))):
+        _, claimer = parse_claimed_name(os.path.basename(path))
+        if (claimer and is_pid_alive(claimer)) or is_saver_running(path):
+            raise ValueError('The session backup is in use')
+        mark_restore_failed(path)
         with suppress(FileNotFoundError):
             os.remove(os.path.join(path, ATTEMPTS_FILE))
-        os.rename(path, os.path.join(base, name))
+        fd = os.open(os.path.join(path, RETRY_REQUESTED_FILE), os.O_WRONLY | os.O_CREAT | os.O_CLOEXEC, 0o600)
+        try:
+            os.fsync(fd)
+        finally:
+            os.close(fd)
+        fd = os.open(path, os.O_RDONLY | os.O_CLOEXEC)
+        try:
+            os.fsync(fd)
+        finally:
+            os.close(fd)
+        release_claim(path)
 
 
 def remove_all_snapshots() -> None:
+    # Automatic persistence disablement must not destroy backups retained for recovery.
     base = snapshots_dir()
     if os.path.exists(base):
-        key_store = get_key_store()
+        key_store = get_key_store(base)
         with lock_with_file(lock_path(base)):
             with os.scandir(base) as entries:
                 for entry in entries:
+                    name, claimer = parse_claimed_name(entry.name)
+                    if not name or (claimer and is_pid_alive(claimer)) or os.path.lexists(os.path.join(entry.path, RESTORE_FAILED_FILE)):
+                        continue
+                    try:
+                        if is_saver_running(entry.path):
+                            continue
+                        if claimer:
+                            mark_restore_failed(entry.path)
+                            continue
+                        load_snapshot(entry.path, get_options(), key_store, migrate_key=False)
+                    except Exception as e:
+                        mark_restore_failed(entry.path)
+                        log_error(f'Failed to read the session saved at logout in {entry.path}, keeping it for recovery. Error: {e}')
+                        continue
                     remove_snapshot(entry.path, key_store)
-            remove_path(base)
             remove_orphaned_keys(base, key_store)
+            with suppress(OSError):
+                os.rmdir(base)
