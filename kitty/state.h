@@ -457,12 +457,27 @@ typedef struct BorderRect {
     unsigned radius, thickness;
 } BorderRect;
 
+typedef struct PaneShadowFrame {
+    unsigned left, top, right, bottom, radius, spread;
+} PaneShadowFrame;
+
+typedef struct PaneShadowPatch {
+    unsigned frame, left, top, right, bottom;
+    float spread;
+} PaneShadowPatch;
+
 typedef struct BorderRects {
     BorderRect *rect_buf;
     unsigned int num_border_rects, capacity;
     unsigned int num_rounded_rects;
     bool is_dirty;
     ssize_t vao_idx;
+    PaneShadowFrame *frames;
+    unsigned num_frames, frames_capacity;
+    PaneShadowPatch *patches;
+    unsigned num_patches, patches_capacity;
+    unsigned shadow_texture, shadow_framebuffer, shadow_width, shadow_height;
+    bool shadow_dirty;
 } BorderRects;
 
 #define CURSOR_TRAIL_HISTORY_SIZE 8

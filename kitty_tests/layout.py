@@ -4,14 +4,14 @@
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from kitty.borders import Border, BorderColor, Borders, add_borders
+from kitty.borders import Border, BorderColor, Borders, PaneFrame, add_borders, pane_frame, shadow_patches
 from kitty.config import defaults
 from kitty.fast_data_types import BOTTOM_EDGE, LEFT_EDGE, RIGHT_EDGE, TOP_EDGE, Region
 from kitty.layout.base import blank_rects_for_window, layout_dimension, lgd
 from kitty.layout.interface import Fat, Grid, Horizontal, Splits, Stack, Tall, Vertical
 from kitty.layout.splits import Pair, SplitsLayoutOpts
 from kitty.rc.set_spacing import parse_spacing_settings
-from kitty.types import WindowGeometry
+from kitty.types import Edges, WindowGeometry
 from kitty.window import EdgeWidths, GlobalWatchers, Watchers
 from kitty.window_list import WindowList, reset_group_id_counter
 
@@ -138,6 +138,41 @@ class TestLayout(BaseTest):
                                 BorderColor.active if g is windows.active_group else BorderColor.inactive
                                 for g in windows.iter_visible_groups()
                             ])
+
+    def test_pane_shadow_footprint(self):
+        layout = create_layout(Splits)
+        windows = create_windows(layout, 1)
+        group = windows.active_group
+        # Padding and cell compensation belong to the protected foreground;
+        # only the remaining margin supplies shadow space.
+        windows.active_window.set_geometry(WindowGeometry(20, 30, 120, 130, 0, 0, Edges(10, 12, 14, 16), Edges(2, 3, 4, 5)))
+        frame = pane_frame(group, 80, True)
+        self.ae(frame[:4], (16, 25, 126, 137))
+        self.ae(frame.radius, 55)
+        self.ae(frame.spread, 18)
+        frame = pane_frame(group, 0, False)
+        self.ae(frame[:4], (17, 26, 125, 136))
+        self.ae(frame.spread, 20)
+        windows.active_window.set_geometry(WindowGeometry(10, 10, 110, 110, 0, 0, Edges(2, 2, 2, 2)))
+        self.ae(pane_frame(group, 8, True).spread, 0)
+        windows.active_window.set_geometry(WindowGeometry(0, 0, 0, 0, 0, 0))
+        self.assertIsNone(pane_frame(group, 8, False))
+
+    def test_shadow_spread_tracks_local_gap(self):
+        frames = [PaneFrame(0, 0, 100, 200, 0, 0), PaneFrame(110, 0, 210, 80, 0, 0), PaneFrame(130, 100, 210, 200, 0, 0)]
+        patches = shadow_patches(frames, (0, 0, 210, 200), 0.5)
+        right = [p for p in patches if p.frame == 0 and p.left == 100]
+        self.ae([(p.top, p.bottom, p.spread) for p in right], [(0, 80, 5.0), (80, 100, 5.0), (100, 200, 15.0)])
+        quarter = shadow_patches(frames, (0, 0, 210, 200), 0.25)
+        self.ae([p.spread for p in quarter if p.frame == 0 and p.left == 100], [2.5, 2.5, 7.5])
+        self.ae(shadow_patches(frames, (0, 0, 210, 200), 0), [])
+        touching = [frames[0], PaneFrame(100, 0, 200, 200, 0, 0)]
+        self.ae(shadow_patches(touching, (0, 0, 200, 200), 0.5), [])
+        # Oversized percentages are bounded; changing orientation swaps axes.
+        self.ae(shadow_patches(frames, (0, 0, 210, 200), 3), shadow_patches(frames, (0, 0, 210, 200), 1))
+        rotated = [PaneFrame(f.top, f.left, f.bottom, f.right, 0, 0) for f in frames]
+        bottom = [p for p in shadow_patches(rotated, (0, 0, 200, 210), 0.5) if p.frame == 0 and p.top == 100]
+        self.ae([(p.left, p.right, p.spread) for p in bottom], [(0, 80, 5.0), (80, 100, 5.0), (100, 200, 15.0)])
 
     def test_window_border_radius_geometry(self):
         q = create_layout(Splits)

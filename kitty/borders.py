@@ -4,9 +4,10 @@
 from collections.abc import Iterable
 from enum import IntFlag
 from functools import partial
+from math import ceil, floor
 from typing import NamedTuple
 
-from .fast_data_types import current_focused_os_window_id, get_options, pt_to_px, set_borders_rects
+from .fast_data_types import current_focused_os_window_id, get_options, pt_to_px, set_borders_rects, viewport_for_window
 from .typing_compat import LayoutType
 from .utils import color_as_int
 from .window_list import WindowGroup, WindowList
@@ -28,6 +29,81 @@ class Border(NamedTuple):
     render: bool = True
     radius: int = 0
     thickness: int = 0
+
+
+class PaneFrame(NamedTuple):
+    left: int
+    top: int
+    right: int
+    bottom: int
+    radius: int
+    spread: int
+
+
+def pane_frame(wg: WindowGroup, radius: int, full_border: bool) -> PaneFrame | None:
+    geometry = wg.geometry
+    if geometry is None or geometry.right <= geometry.left or geometry.bottom <= geometry.top:
+        return None
+    c = geometry.compensatory
+    padding = tuple(wg.effective_padding(edge) + getattr(c, edge) for edge in ('left', 'top', 'right', 'bottom'))
+    border = wg.effective_border() if full_border else 0
+    left = max(0, geometry.left - padding[0] - border)
+    top = max(0, geometry.top - padding[1] - border)
+    right = geometry.right + padding[2] + border
+    bottom = geometry.bottom + padding[3] + border
+    if right <= left or bottom <= top:
+        return None
+    margin = max(max(0, space - pad - border) for space, pad in zip(geometry.spaces, padding))
+    return PaneFrame(left, top, right, bottom, min(radius, (right - left) // 2, (bottom - top) // 2), margin * 2)
+
+
+class ShadowPatch(NamedTuple):
+    frame: int
+    left: int
+    top: int
+    right: int
+    bottom: int
+    spread: float
+
+
+def shadow_patches(frames: list[PaneFrame], bounds: tuple[int, int, int, int], fraction: float) -> list[ShadowPatch]:
+    """Split edges at neighbor boundaries, so each T-junction uses its local gap."""
+    fraction = max(0.0, min(1.0, fraction))
+    patches: list[ShadowPatch] = []
+    if not fraction:
+        return patches
+    left, top, right, bottom = bounds
+    for index, frame in enumerate(frames):
+        for horizontal, before in ((False, True), (False, False), (True, True), (True, False)):
+            near, far = (frame.left, frame.right) if horizontal else (frame.top, frame.bottom)
+            edge = (frame.top if before else frame.bottom) if horizontal else (frame.left if before else frame.right)
+            outer = (top if before else bottom) if horizontal else (left if before else right)
+            candidates: list[tuple[int, int, int]] = []
+            cuts = {near, far}
+            for other_index, other in enumerate(frames):
+                if other_index == index:
+                    continue
+                start, end = (other.left, other.right) if horizontal else (other.top, other.bottom)
+                boundary = (other.bottom if before else other.top) if horizontal else (other.right if before else other.left)
+                gap = edge - boundary if before else boundary - edge
+                if gap >= 0 and start < far and end > near:
+                    candidates.append((max(near, start), min(far, end), gap))
+                    cuts.update((max(near, start), min(far, end)))
+            ordered = sorted(cuts)
+            for start, end in zip(ordered, ordered[1:]):
+                fallback = min((distance for _, _, distance in candidates), default=abs(edge - outer))
+                gap = min((distance for a, b, distance in candidates if a < end and b > start), default=fallback)
+                spread = gap * fraction
+                if spread <= 0:
+                    continue
+                # Extend endpoint strips around rounded corners. Adjacent strips
+                # combine with MAX and every pane footprint is erased afterward.
+                a = start - spread if start == near else start
+                b = end + spread if end == far else end
+                low, high = (edge - spread, edge) if before else (edge, edge + spread)
+                x1, y1, x2, y2 = (a, low, b, high) if horizontal else (low, a, high, b)
+                patches.append(ShadowPatch(index, max(left, floor(x1)), max(top, floor(y1)), min(right, ceil(x2)), min(bottom, ceil(y2)), spread))
+    return [p for p in patches if p.right > p.left and p.bottom > p.top]
 
 
 def vertical_edge(rects: list[Border], color: BorderColor, width: int, top: int, bottom: int, left: int, border_type: int, render: bool = True) -> None:
@@ -140,4 +216,10 @@ class Borders:
         if draw_minimal_borders:
             for border_line in current_layout.get_minimal_borders(all_windows):
                 rects.append(Border(*border_line.edges, border_line.color, border_line.window_id, border_line.horizontal))
-        set_borders_rects(self.os_window_id, self.tab_id, rects)
+        frames = [frame for wg in groups if (frame := pane_frame(wg, radius if not draw_minimal_borders else 0, draw_borders and not draw_minimal_borders)) is not None]
+        central = viewport_for_window(self.os_window_id)[0]
+        bounds = (central.left, central.top, central.left + central.width, central.top + central.height)
+        patches = shadow_patches(frames, bounds, opts.pane_shadow_spread) if current_layout.name != 'stack' else [
+            ShadowPatch(i, *bounds, 40.0) for i, frame in enumerate(frames) if frame.spread
+        ]
+        set_borders_rects(self.os_window_id, self.tab_id, rects, frames, patches)

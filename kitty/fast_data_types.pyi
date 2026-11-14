@@ -1,7 +1,7 @@
 import termios
 from typing import Any, Callable, Dict, Iterator, List, Literal, Mapping, NewType, Optional, Sequence, Tuple, TypedDict, Union, overload
 
-from kitty.borders import Border
+from kitty.borders import Border, PaneFrame, ShadowPatch
 from kitty.boss import Boss
 from kitty.fonts import VariableData
 from kitty.fonts.render import FontObject
@@ -578,7 +578,7 @@ def simulate_custom_shader_animation(
 def set_os_window_chrome(os_window_id: int) -> bool:
     pass
 
-def set_borders_rects(os_window_id: int, tab_id: int, rects: list[Border]) -> None: ...
+def set_borders_rects(os_window_id: int, tab_id: int, rects: list[Border], frames: list[PaneFrame], patches: list[ShadowPatch]) -> None: ...
 def set_tab_layout_name(os_window_id: int, tab_id: int, name: str) -> None: ...
 def os_window_has_background_image(os_window_id: int) -> bool:
     pass

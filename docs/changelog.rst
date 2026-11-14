@@ -9,6 +9,12 @@ To update |kitty|, :doc:`follow the instructions <binary>`.
 Recent major new features
 ---------------------------
 
+- Add gap-only pane shadows with :opt:`pane_shadow_spread` (default ``50%``),
+  dynamically measured per neighboring edge segment across layouts. Preserve
+  pane colors and geometry and avoid compounded darkness at T-junctions.
+- Keep pane gap shadows visible in narrow gutters and dark themes: preserve
+  shadow strength independently of diffusion distance, render up to the pane
+  edge, and keep fractional shadow radii aligned with the pane contour.
 - Fix startup crashing during pane creation because the border visibility state
   was not initialized; preserve tab bar background rectangles during refresh.
 - Limit macOS Python test workers to two to avoid subprocess startup timeouts

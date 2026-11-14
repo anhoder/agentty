@@ -4,8 +4,8 @@
 import typing
 import collections.abc  # noqa: F401, RUF100
 from kitty.conf.utils import (
-    merge_dicts, positive_float, positive_int, python_string, signed_unit_float, to_bool, to_cmdline,
-    to_color, to_color_or_none, unit_float
+    merge_dicts, percent, positive_float, positive_int, python_string, signed_unit_float, to_bool,
+    to_cmdline, to_color, to_color_or_none, unit_float
 )
 from kitty.options.utils import (
     action_alias, active_tab_title_template, allow_hyperlinks, background_images, bell_on_tab,
@@ -1226,6 +1226,9 @@ class Parser:
         ans["palette_generate"] = val
 
     choices_for_palette_generate = frozenset(('fixed', 'semantic', 'legacy'))
+
+    def pane_shadow_spread(self, val: str, ans: dict[str, typing.Any]) -> None:
+        ans['pane_shadow_spread'] = percent(val)
 
     def paste_actions(self, val: str, ans: dict[str, typing.Any]) -> None:
         ans['paste_actions'] = paste_actions(val)

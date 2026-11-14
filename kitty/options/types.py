@@ -427,6 +427,7 @@ option_names = (
     'open_url_with',
     'padding_fill_strategy',
     'palette_generate',
+    'pane_shadow_spread',
     'paste_actions',
     'persist_session',
     'persist_session_interval',
@@ -662,6 +663,7 @@ class Options:
     open_url_with: list[str] = ['default']
     padding_fill_strategy: choices_for_padding_fill_strategy = 'background'
     palette_generate: choices_for_palette_generate = 'fixed'
+    pane_shadow_spread: float = 0.5
     paste_actions: frozenset[str] = frozenset({'confirm', 'quote-urls-at-prompt'})
     persist_session: choices_for_persist_session = 'no'
     persist_session_interval: int = 60

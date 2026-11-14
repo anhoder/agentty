@@ -57,7 +57,7 @@ fragment_main(
     if (shadow_radius > 0.0) {
         // The centered shadow shares the pane contour. Preserve all pixels
         // inside it and diffuse only into the surrounding background.
-        if (dist <= 1.0) return float4(0.0);
+        if (dist <= 0.0) return float4(0.0);
         float fade = 1.0 - smoothstep(0.0, shadow_radius, max(0.0, dist));
         float4 ans = color;
         ans.a *= fade;

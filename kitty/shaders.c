@@ -468,11 +468,14 @@ draw_rounded_rect(
     color_vec4(program_uniform_location(ROUNDED_RECT_PROGRAM, "outer_color"), srgb_outer, outer_alpha);
     // Shadow viewports may extend past the framebuffer edge. Keep the origin
     // signed so wider shadows cannot wrap unsigned pane coordinates.
-    const GLint spread = (GLint)shadow_radius;
+    const GLint spread = (GLint)ceilf(MAX(0.f, shadow_radius));
     const GLint left = (GLint)rect.left - spread, top = (GLint)rect.top - spread;
     const GLsizei width = (GLsizei)rect.width + 2 * spread, height = (GLsizei)rect.height + 2 * spread;
-    float y = (float)framebuffer_height - (float)(top + height);
-    glUniform4f(program_uniform_location(ROUNDED_RECT_PROGRAM, "rect"), left, y, width, height);
+    // Keep the SDF contour on the pane even for fractional diffusion radii;
+    // only the raster viewport needs integer expansion.
+    float y = (float)framebuffer_height - (float)(rect.top + rect.height) - shadow_radius;
+    glUniform4f(program_uniform_location(ROUNDED_RECT_PROGRAM, "rect"),
+        (float)rect.left - shadow_radius, y, (float)rect.width + 2.f * shadow_radius, (float)rect.height + 2.f * shadow_radius);
     glUniform4f(program_uniform_location(ROUNDED_RECT_PROGRAM, "params"), thickness, corner_radius_px, shadow_radius, 0.f);
     save_viewport_using_top_left_origin(left, top, width, height, framebuffer_height);
     draw_quad(true, 0);
@@ -2886,13 +2889,80 @@ draw_borders(
     unbind_vertex_array();
 }
 
+static void
+draw_pane_gap_shadows(BorderRects *br, OSWindow *w) {
+    if (!br->num_patches || !w->viewport_width || !w->viewport_height) return;
+    GLint output;
+    glGetIntegerv(GL_FRAMEBUFFER_BINDING, &output);
+    const unsigned width = w->viewport_width, height = w->viewport_height;
+    if (br->shadow_width != width || br->shadow_height != height) {
+        if (br->shadow_texture) free_texture(&br->shadow_texture);
+        if (br->shadow_framebuffer) free_framebuffer(&br->shadow_framebuffer);
+        setup_texture_as_render_target(width, height, &br->shadow_texture, &br->shadow_framebuffer);
+        br->shadow_width = width;
+        br->shadow_height = height;
+        br->shadow_dirty = true;
+    }
+    if (br->shadow_dirty) {
+        glBindFramebuffer(GL_FRAMEBUFFER, br->shadow_framebuffer);
+        save_viewport_using_bottom_left_origin(0, 0, width, height);
+        glDisable(GL_FRAMEBUFFER_SRGB);
+        blank_canvas(0.f, 0, false);
+        for (unsigned i = 0; i < br->num_patches; i++) {
+            const PaneShadowPatch *patch = br->patches + i;
+            const PaneShadowFrame *f = br->frames + patch->frame;
+            float spread = patch->spread;
+            // Gap width controls diffusion distance, not shadow strength.
+            const float opacity = 0.58f;
+            Viewport clip = {patch->left, patch->top, patch->right - patch->left, patch->bottom - patch->top};
+            enable_scissor_using_top_left_origin(clip, height);
+            Viewport rect = {f->left, f->top, f->right - f->left, f->bottom - f->top};
+            glBlendEquation(GL_MAX);
+            draw_rounded_rect(rect, height, 0.f, f->radius, spread, 0, 0, opacity, 0, 0.f);
+        }
+        glBlendEquation(GL_FUNC_ADD);
+        disable_scissor();
+        // Erase every pane footprint, including panes that cast no shadow.
+        // Overlays and docks are already represented by visible WindowGroups.
+        for (unsigned i = 0; i < br->num_frames; i++) {
+            const PaneShadowFrame *f = br->frames + i;
+            Viewport rect = {f->left, f->top, f->right - f->left, f->bottom - f->top};
+            enable_scissor_using_top_left_origin(rect, height);
+            glClearColor(0, 0, 0, 0);
+            glClear(GL_COLOR_BUFFER_BIT);
+        }
+        // Protect minimal divider hitboxes and tab bar backgrounds as well.
+        for (unsigned i = 0; i < br->num_border_rects; i++) {
+            const BorderRect *r = br->rect_buf + i;
+            unsigned color = r->color & 0xff;
+            if (!r->border_type && color < 5) continue;
+            Viewport rect = {r->px.left, r->px.top, r->px.right - r->px.left, r->px.bottom - r->px.top};
+            enable_scissor_using_top_left_origin(rect, height);
+            glClearColor(0, 0, 0, 0);
+            glClear(GL_COLOR_BUFFER_BIT);
+        }
+        disable_scissor();
+        restore_viewport();
+        br->shadow_dirty = false;
+    }
+    glBindFramebuffer(GL_FRAMEBUFFER, (GLuint)output);
+    if (!w->needs_layers) glEnable(GL_FRAMEBUFFER_SRGB);
+    ImageRenderData image = {.texture_id = br->shadow_texture, .group_count = 1};
+    gpu_data_for_image(&image, -1, 1, 1, -1);
+    // Render target textures have their origin at the bottom-left.
+    image.src_rect.top = 1.f;
+    image.src_rect.bottom = 0.f;
+    draw_graphics(GRAPHICS_PREMULT_PROGRAM, &image, 0, 1, 1.f);
+}
+
 void
 draw_rounded_borders(BorderRects *br, color_type active_window_bg, unsigned int num_visible_windows, bool all_windows_have_same_bg, OSWindow *w) {
-    if (!br->num_rounded_rects) return;
+    if (!br->num_frames && !br->num_rounded_rects) return;
     GLuint colors[9];
     populate_border_colors(colors, active_window_bg, num_visible_windows, all_windows_have_same_bg, w);
     float corner_bg_alpha = has_bgimage(w) ? OPT(background_tint) * OPT(background_tint_gaps) : effective_os_window_alpha(w);
     bind_vertex_array(br->vao_idx);
+    draw_pane_gap_shadows(br, w);
     if (!w->needs_layers) glEnable(GL_FRAMEBUFFER_SRGB);
     for (unsigned i = 0; i < br->num_border_rects; i++) {
         const BorderRect *r = br->rect_buf + i;
@@ -2901,11 +2971,6 @@ draw_rounded_borders(BorderRects *br, color_type active_window_bg, unsigned int 
         unsigned radius = MIN(r->radius, MIN(rect.width, rect.height) / 2);
         unsigned color_index = r->color & 0xff;
         color_type color = color_index == 3 ? r->color >> 8 : colors[MIN(color_index, 8u)];
-        bool is_stack = w->num_tabs && w->active_tab < w->num_tabs && strcmp(w->tabs[w->active_tab].layout_name, "stack") == 0;
-        if (is_stack) {
-            const unsigned shadow_radius = 40;
-            draw_rounded_rect(rect, w->viewport_height, 0.f, radius, (float)shadow_radius, 0, 0, 0.58f, 0, 0.f);
-        }
         draw_rounded_rect(rect, w->viewport_height, (float)r->thickness, radius, 0.f, color, 0, 0.f, colors[0], corner_bg_alpha);
     }
     if (!w->needs_layers) glDisable(GL_FRAMEBUFFER_SRGB);

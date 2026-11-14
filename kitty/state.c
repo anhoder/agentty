@@ -584,6 +584,10 @@ destroy_tab(Tab *tab) {
     free_vao(tab->border_rects.vao_idx);
     free(tab->border_rects.rect_buf);
     tab->border_rects.rect_buf = NULL;
+    free(tab->border_rects.frames);
+    free(tab->border_rects.patches);
+    if (tab->border_rects.shadow_texture) free_texture(&tab->border_rects.shadow_texture);
+    if (tab->border_rects.shadow_framebuffer) free_framebuffer(&tab->border_rects.shadow_framebuffer);
     free(tab->windows);
     tab->windows = NULL;
 }
@@ -766,11 +770,25 @@ pyreorder_tabs(PyObject *self UNUSED, PyObject *args) {
 static PyObject *
 pyset_borders_rects(PyObject *self UNUSED, PyObject *args) {
     id_type os_window_id, tab_id;
-    PyObject *rects;
-    if (!PyArg_ParseTuple(args, "KKO!", &os_window_id, &tab_id, &PyList_Type, &rects)) return NULL;
+    PyObject *rects, *frames, *patches;
+    if (!PyArg_ParseTuple(args, "KKO!O!O!", &os_window_id, &tab_id, &PyList_Type, &rects, &PyList_Type, &frames, &PyList_Type, &patches)) return NULL;
     WITH_TAB(os_window_id, tab_id)
     BorderRects *br = &tab->border_rects;
     br->is_dirty = true;
+    br->shadow_dirty = true;
+    br->num_frames = PyList_GET_SIZE(frames);
+    ensure_space_for(br, frames, PaneShadowFrame, br->num_frames, frames_capacity, 8, false);
+    for (unsigned i = 0; i < br->num_frames; i++) {
+        PaneShadowFrame *f = br->frames + i;
+        if (!PyArg_ParseTuple(PyList_GET_ITEM(frames, i), "IIIIII", &f->left, &f->top, &f->right, &f->bottom, &f->radius, &f->spread)) return NULL;
+    }
+    br->num_patches = PyList_GET_SIZE(patches);
+    ensure_space_for(br, patches, PaneShadowPatch, br->num_patches, patches_capacity, 16, false);
+    for (unsigned i = 0; i < br->num_patches; i++) {
+        PaneShadowPatch *p = br->patches + i;
+        if (!PyArg_ParseTuple(PyList_GET_ITEM(patches, i), "IIIIIf", &p->frame, &p->left, &p->top, &p->right, &p->bottom, &p->spread)) return NULL;
+        if (p->frame >= br->num_frames) { PyErr_SetString(PyExc_ValueError, "Invalid shadow frame index"); return NULL; }
+    }
     br->num_border_rects = PyList_GET_SIZE(rects);
     br->num_rounded_rects = 0;
     ensure_space_for(br, rect_buf, BorderRect, br->num_border_rects + 1, capacity, 32, false);

@@ -29,6 +29,18 @@ control which layouts are available use :opt:`enabled_layouts`, the first listed
 layout becomes the default. Individual layouts and how to use them are described
 below.
 
+Pane gaps have soft shadows whose extent follows the actual distance between
+neighboring borders. :opt:`pane_shadow_spread` sets the fraction of each gap
+covered by each pane's shadow (default ``50%``). For example, a 12-pixel gap
+gives each side a 6-pixel diffusion radius. Unequal gaps and T-junctions are
+measured per edge segment; zero-width gaps need no extra space. Set this option
+to ``0%`` to disable tiled shadows. The stack floating shadow is unchanged.
+Shadows never cover pane contents, padding, title bars or borders; intersecting
+shadows use the strongest coverage rather than accumulating darkness.
+Gap width controls diffusion distance, not shadow strength, so narrow gutters
+retain a visible shadow without increasing margins or changing pane contents.
+
+
 
 The Stack Layout
 ------------------

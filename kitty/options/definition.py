@@ -1782,6 +1782,19 @@ corner cells, so use :opt:`window_padding_width` to keep text clear of them.
 )
 
 opt(
+    'pane_shadow_spread',
+    '50%',
+    option_type='percent',
+    long_text="""
+Shadow diffusion distance as a percentage of the actual gap between pane
+borders. Each edge is measured independently, including unequal margins and
+T-shaped splits. At 50%, each pane's shadow extends halfway across the gap.
+Values are clamped to 0–100%; zero disables tiled pane shadows. Pane geometry,
+padding, terminal colors and the stack layout's floating shadow are unchanged.
+""",
+)
+
+opt(
     'draw_window_borders_for_single_window',
     'no',
     option_type='to_bool',
