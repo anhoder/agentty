@@ -15,6 +15,11 @@ Recent major new features
 - Keep pane gap shadows visible in narrow gutters and dark themes: preserve
   shadow strength independently of diffusion distance, render up to the pane
   edge, and keep fractional shadow radii aligned with the pane contour.
+- Round pane gap shadows around the pane corners using
+  :opt:`window_border_radius` instead of clipping them to the rectangular pane
+  footprint, including the stack layout's floating shadow. Do not clear the
+  shadow over the unrendered straight edges of rounded borders, which left a
+  square notch in the shadow at each corner.
 - Fix startup crashing during pane creation because the border visibility state
   was not initialized; preserve tab bar background rectangles during refresh.
 - Limit macOS Python test workers to two to avoid subprocess startup timeouts

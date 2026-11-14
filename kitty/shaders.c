@@ -460,7 +460,8 @@ draw_rounded_rect(
     color_type srgb_background,
     float bg_alpha,
     color_type srgb_outer,
-    float outer_alpha) {
+    float outer_alpha,
+    float mode) {
     bind_program(ROUNDED_RECT_PROGRAM);
     // Shadow opacity belongs to the shadow itself, never to its underlay.
     color_vec4(program_uniform_location(ROUNDED_RECT_PROGRAM, "color"), srgb_color, shadow_radius > 0.f ? bg_alpha : 1.f);
@@ -476,10 +477,20 @@ draw_rounded_rect(
     float y = (float)framebuffer_height - (float)(rect.top + rect.height) - shadow_radius;
     glUniform4f(program_uniform_location(ROUNDED_RECT_PROGRAM, "rect"),
         (float)rect.left - shadow_radius, y, (float)rect.width + 2.f * shadow_radius, (float)rect.height + 2.f * shadow_radius);
-    glUniform4f(program_uniform_location(ROUNDED_RECT_PROGRAM, "params"), thickness, corner_radius_px, shadow_radius, 0.f);
+    glUniform4f(program_uniform_location(ROUNDED_RECT_PROGRAM, "params"), thickness, corner_radius_px, shadow_radius, mode);
     save_viewport_using_top_left_origin(left, top, width, height, framebuffer_height);
     draw_quad(true, 0);
     restore_viewport();
+}
+
+static void
+erase_rounded_pane(Viewport rect, unsigned framebuffer_height, unsigned corner_radius_px) {
+    // Clear the pane with a rounded mask instead of its bounding box, so the
+    // gap shadow that reaches inside the box corners stays visible around the
+    // rounded pane outline. MIN blending keeps the mask outside the contour.
+    glBlendEquation(GL_MIN);
+    draw_rounded_rect(rect, framebuffer_height, 0.f, corner_radius_px, 0.f, 0, 0, 0.f, 0, 0.f, 2.f);
+    glBlendEquation(GL_FUNC_ADD);
 }
 // }}}
 
@@ -1783,7 +1794,7 @@ render_a_bar(const UIRenderData *ui, WindowBarData *bar, PyObject *title, bool a
     restore_viewport();
     free_texture(&data.texture_id);
     // finally draw border with transparent bg
-    draw_rounded_rect(border_rect, sh, (float)thickness_as_float(ui->os_window, 1), ui->cell_width, 0.f, fg, bg, 0.f, 0, 0.f);
+    draw_rounded_rect(border_rect, sh, (float)thickness_as_float(ui->os_window, 1), ui->cell_width, 0.f, fg, bg, 0.f, 0, 0.f, 0.f);
     return border_rect.height;
 }
 
@@ -2918,22 +2929,27 @@ draw_pane_gap_shadows(BorderRects *br, OSWindow *w) {
             enable_scissor_using_top_left_origin(clip, height);
             Viewport rect = {f->left, f->top, f->right - f->left, f->bottom - f->top};
             glBlendEquation(GL_MAX);
-            draw_rounded_rect(rect, height, 0.f, f->radius, spread, 0, 0, opacity, 0, 0.f);
+            draw_rounded_rect(rect, height, 0.f, f->radius, spread, 0, 0, opacity, 0, 0.f, 0.f);
         }
         glBlendEquation(GL_FUNC_ADD);
         disable_scissor();
         // Erase every pane footprint, including panes that cast no shadow.
         // Overlays and docks are already represented by visible WindowGroups.
+        // The mask follows the rounded outline so the gap shadow keeps its
+        // rounded corners inside the footprint's bounding box.
         for (unsigned i = 0; i < br->num_frames; i++) {
             const PaneShadowFrame *f = br->frames + i;
             Viewport rect = {f->left, f->top, f->right - f->left, f->bottom - f->top};
             enable_scissor_using_top_left_origin(rect, height);
-            glClearColor(0, 0, 0, 0);
-            glClear(GL_COLOR_BUFFER_BIT);
+            erase_rounded_pane(rect, height, f->radius);
         }
         // Protect minimal divider hitboxes and tab bar backgrounds as well.
         for (unsigned i = 0; i < br->num_border_rects; i++) {
             const BorderRect *r = br->rect_buf + i;
+            // Unrendered straight edges of rounded borders only exist to describe
+            // the border. Clearing their bounding strips would cut a square notch
+            // into the rounded gap shadow at every pane corner.
+            if (!r->render) continue;
             unsigned color = r->color & 0xff;
             if (!r->border_type && color < 5) continue;
             Viewport rect = {r->px.left, r->px.top, r->px.right - r->px.left, r->px.bottom - r->px.top};
@@ -2962,7 +2978,6 @@ draw_rounded_borders(BorderRects *br, color_type active_window_bg, unsigned int 
     populate_border_colors(colors, active_window_bg, num_visible_windows, all_windows_have_same_bg, w);
     float corner_bg_alpha = has_bgimage(w) ? OPT(background_tint) * OPT(background_tint_gaps) : effective_os_window_alpha(w);
     bind_vertex_array(br->vao_idx);
-    draw_pane_gap_shadows(br, w);
     if (!w->needs_layers) glEnable(GL_FRAMEBUFFER_SRGB);
     for (unsigned i = 0; i < br->num_border_rects; i++) {
         const BorderRect *r = br->rect_buf + i;
@@ -2971,8 +2986,13 @@ draw_rounded_borders(BorderRects *br, color_type active_window_bg, unsigned int 
         unsigned radius = MIN(r->radius, MIN(rect.width, rect.height) / 2);
         unsigned color_index = r->color & 0xff;
         color_type color = color_index == 3 ? r->color >> 8 : colors[MIN(color_index, 8u)];
-        draw_rounded_rect(rect, w->viewport_height, (float)r->thickness, radius, 0.f, color, 0, 0.f, colors[0], corner_bg_alpha);
+        draw_rounded_rect(rect, w->viewport_height, (float)r->thickness, radius, 0.f, color, 0, 0.f, colors[0], corner_bg_alpha, 0.f);
     }
+    if (!w->needs_layers) glDisable(GL_FRAMEBUFFER_SRGB);
+    // Composite the shadows after the corners of the rounded borders are
+    // filled, so they remain visible around the rounded outline instead of
+    // being clipped to the rectangular footprint.
+    draw_pane_gap_shadows(br, w);
     if (!w->needs_layers) glDisable(GL_FRAMEBUFFER_SRGB);
     unbind_program();
 }

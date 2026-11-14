@@ -39,6 +39,9 @@ Shadows never cover pane contents, padding, title bars or borders; intersecting
 shadows use the strongest coverage rather than accumulating darkness.
 Gap width controls diffusion distance, not shadow strength, so narrow gutters
 retain a visible shadow without increasing margins or changing pane contents.
+Shadows follow the rounded pane outline, so setting :opt:`window_border_radius`
+also rounds the corners of the shadow instead of clipping them to the
+rectangular pane footprint.
 
 
 

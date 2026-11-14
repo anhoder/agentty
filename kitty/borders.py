@@ -101,6 +101,12 @@ def shadow_patches(frames: list[PaneFrame], bounds: tuple[int, int, int, int], f
                 a = start - spread if start == near else start
                 b = end + spread if end == far else end
                 low, high = (edge - spread, edge) if before else (edge, edge + spread)
+                # Reach into the bounding box at the corners: the rounded
+                # contour, not the straight edge, must bound the shadow there.
+                if before:
+                    high += frame.radius
+                else:
+                    low -= frame.radius
                 x1, y1, x2, y2 = (a, low, b, high) if horizontal else (low, a, high, b)
                 patches.append(ShadowPatch(index, max(left, floor(x1)), max(top, floor(y1)), min(right, ceil(x2)), min(bottom, ceil(y2)), spread))
     return [p for p in patches if p.right > p.left and p.bottom > p.top]

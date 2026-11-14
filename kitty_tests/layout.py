@@ -174,6 +174,25 @@ class TestLayout(BaseTest):
         bottom = [p for p in shadow_patches(rotated, (0, 0, 200, 210), 0.5) if p.frame == 0 and p.top == 100]
         self.ae([(p.left, p.right, p.spread) for p in bottom], [(0, 80, 5.0), (80, 100, 5.0), (100, 200, 15.0)])
 
+    def test_shadow_patches_reach_into_rounded_corners(self):
+        frames = [PaneFrame(0, 0, 100, 100, 12, 0), PaneFrame(120, 0, 220, 100, 12, 0)]
+        patches = shadow_patches(frames, (0, 0, 220, 100), 0.5)
+        # The rounded contour, not the straight bounding box, bounds the shadow
+        # at the corners, so the strips extend into the footprint by the radius.
+        self.ae(
+            [(p.left, p.top, p.right, p.bottom, p.spread) for p in patches if p.frame == 0 and p.right == 110],
+            [(88, 0, 110, 100, 10.0)],
+        )
+        self.ae(
+            [(p.left, p.top, p.right, p.bottom, p.spread) for p in patches if p.frame == 1 and p.left == 110],
+            [(110, 0, 132, 100, 10.0)],
+        )
+        square = [PaneFrame(*f[:4], 0, f.spread) for f in frames]
+        self.ae(
+            [(p.left, p.right, p.spread) for p in shadow_patches(square, (0, 0, 220, 100), 0.5) if p.frame == 0 and p.right == 110],
+            [(100, 110, 10.0)],
+        )
+
     def test_window_border_radius_geometry(self):
         q = create_layout(Splits)
         windows = create_windows(q, 1)

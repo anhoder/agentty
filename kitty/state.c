@@ -808,6 +808,7 @@ pyset_borders_rects(PyObject *self UNUSED, PyObject *args) {
         r->color = color;
         r->border_type = border_type;
         r->horizontal = horizontal;
+        r->render = render;
         if (r->radius && r->thickness) br->num_rounded_rects++;
         if (!render) r->left = r->top = r->right = r->bottom = -2.f;
     }

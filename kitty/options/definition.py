@@ -1790,7 +1790,9 @@ Shadow diffusion distance as a percentage of the actual gap between pane
 borders. Each edge is measured independently, including unequal margins and
 T-shaped splits. At 50%, each pane's shadow extends halfway across the gap.
 Values are clamped to 0–100%; zero disables tiled pane shadows. Pane geometry,
-padding, terminal colors and the stack layout's floating shadow are unchanged.
+padding and terminal colors are unchanged. Shadows follow the rounded pane
+outline set by :opt:`window_border_radius`, including the stack layout's
+floating shadow.
 """,
 )
 

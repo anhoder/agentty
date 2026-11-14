@@ -453,7 +453,7 @@ typedef struct BorderRect {
     } px;
     uint32_t color;
     long long border_type;
-    bool horizontal;
+    bool horizontal, render;
     unsigned radius, thickness;
 } BorderRect;
 

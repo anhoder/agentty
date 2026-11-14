@@ -48,11 +48,20 @@ fragment_main(
     float thickness = params[0];
     float corner_radius = params[1];
     float shadow_radius = params[2];
+    float mode = params[3];
 
     float2 position = frag_coord.xy - size / 2.0 - origin;
     float2 sdf_size = size;
     if (shadow_radius > 0.0) sdf_size -= 2.0 * shadow_radius;
     float dist = rounded_rectangle_sdf(position, sdf_size * 0.5 - corner_radius, corner_radius);
+
+    if (mode > 1.5) {
+        // Erase mask for pane footprints: zero inside the rounded outline and
+        // one outside, with a one pixel antialiased edge. Composited with MIN
+        // blending so gap shadows keep their rounded corners.
+        float mask = smoothstep(-1.0, 1.0, dist);
+        return float4(mask, mask, mask, mask);
+    }
 
     if (shadow_radius > 0.0) {
         // The centered shadow shares the pane contour. Preserve all pixels
