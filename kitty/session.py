@@ -159,7 +159,9 @@ class Session:
             needs_expandvars = True
             cmd = list(shlex_split(cmd)) if cmd else []
         serialize_data: dict[str, Any] = {'id': 0, 'cmd_at_shell_startup': ()}
+        is_serialized = False
         if cmd and cmd[0].startswith(unserialize_launch_flag):
+            is_serialized = True
             serialize_data = json.loads(cmd[0][len(unserialize_launch_flag) :])
             del cmd[0]
         override = serialize_data.get('font_size_override')
@@ -173,6 +175,13 @@ class Session:
             limit = len(cmd) - len(spec.args)
             cmd = [(expand(x) if i < limit else x) for i, x in enumerate(cmd)]
             spec = parse_launch_args(cmd)
+        if is_serialized:
+            from .agents import AGENT_ID_VAR, AGENT_SESSION_PATH_VAR, AGENT_SESSION_VAR, AGENT_SOURCE_VAR
+
+            # Runtime OSC variables describe the old program, not the newly started shell.
+            # Older snapshots have no launch-variable provenance; retain only agent resume metadata.
+            persistent_vars = {*serialize_data.get('launch_vars', ()), AGENT_ID_VAR, AGENT_SOURCE_VAR, AGENT_SESSION_VAR, AGENT_SESSION_PATH_VAR}
+            spec.opts.var = [v for v in spec.opts.var if v.partition('=')[0] in persistent_vars]
 
         t = self.tabs[-1]
         if t.next_title and not spec.opts.window_title:

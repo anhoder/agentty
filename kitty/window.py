@@ -2585,7 +2585,11 @@ class Window:
                 ans.append('--hold')
             if self.creation_spec.hold_after_ssh:
                 ans.append('--hold-after-ssh')
-        ans.extend(f'--var={k}={v}' for k, v in self.user_vars.items())
+        from .agents import AGENT_ID_VAR, AGENT_SESSION_PATH_VAR, AGENT_SESSION_VAR, AGENT_SOURCE_VAR
+
+        launch_vars = [k for k, _ in self.creation_spec.user_vars] if self.creation_spec else []
+        persistent_vars = {*launch_vars, AGENT_ID_VAR, AGENT_SOURCE_VAR, AGENT_SESSION_VAR, AGENT_SESSION_PATH_VAR}
+        ans.extend(f'--var={k}={v}' for k, v in self.user_vars.items() if k in persistent_vars)
         ans.extend(self.padding.as_launch_args())
         ans.extend(self.margin.as_launch_args('margin'))
         if self.override_title:
@@ -2620,7 +2624,7 @@ class Window:
                     if self.at_prompt:
                         if self.screen.last_reported_cwd:
                             set_cwd_in_cmdline(path_from_osc7_url(self.screen.last_reported_cwd), cmd)
-        unserialize_data: dict[str, int | float | list[str] | str] = {'id': self.id}
+        unserialize_data: dict[str, int | float | list[str] | str] = {'id': self.id, 'launch_vars': launch_vars}
         if not cmd and ser_opts.use_foreground_process:
 
             def make_exe_absolute(cmd: list[str], pid: int) -> None:

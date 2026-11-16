@@ -29,6 +29,24 @@ class TestSessions(BaseTest):
         (session,) = parse_session(f'launch {shlex.join((old_encoded,))}', opts)
         self.ae(session.tabs[0].windows[0].font_size_override, None)
 
+    def test_restored_window_user_vars(self) -> None:
+        opts = self.set_options()
+
+        def variables(metadata: dict[str, object] | None) -> list[str]:
+            args = ['launch']
+            if metadata is not None:
+                args.append(unserialize_launch_flag + json.dumps(metadata))
+            args.extend(('--var=in_editor=1', '--var=project=terminal', '--var=KITTY_AGENT_SESSION=abc-123'))
+            (session,) = parse_session(shlex.join(args), opts)
+            return session.tabs[0].windows[0].launch_spec.opts.var
+
+        # Old snapshots cannot distinguish program state from explicit launch labels.
+        self.ae(variables({'id': 7}), ['KITTY_AGENT_SESSION=abc-123'])
+        # New snapshots retain explicit labels, not runtime editor state.
+        self.ae(variables({'id': 7, 'launch_vars': ['project']}), ['project=terminal', 'KITTY_AGENT_SESSION=abc-123'])
+        # A hand-authored session can still explicitly enter an application-specific mode.
+        self.ae(variables(None), ['in_editor=1', 'project=terminal', 'KITTY_AGENT_SESSION=abc-123'])
+
     def test_default_session_window_metadata(self) -> None:
         from kitty.session import create_sessions
 

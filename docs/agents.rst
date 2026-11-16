@@ -54,6 +54,10 @@ The sidebar's visibility, width and collapsed group identities are restored with
 that session. Agent activity states, hover state and animation progress are
 recomputed or reset when kitty starts.
 
+Visible sidebars refresh agent state every second, including after session
+restoration and for unfocused panes. Lifecycle reports and other agent events
+can trigger an earlier update; switching focus is not required.
+
 The sidebar is opened and closed manually with the persistent floating
 sidebar button at the upper-left of the window or the
 :code:`toggle_agents_sidebar` action; it is not opened automatically when an

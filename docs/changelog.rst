@@ -20,6 +20,14 @@ Recent major new features
   footprint, including the stack layout's floating shadow. Do not clear the
   shadow over the unrendered straight edges of rounded borders, which left a
   square notch in the shadow at each corner.
+- Fix agent status remaining ``working`` in a restored sidebar until its pane
+  is focused. Restored sidebars now start the same periodic status refresh as
+  manually opened sidebars, including for unfocused panes.
+- Fix restored panes inheriting runtime user variables such as ``in_editor``,
+  which could leave editor-specific shortcut overrides active in a new shell.
+  Preserve explicit launch labels and agent resume metadata in new saved
+  sessions; older snapshots retain only agent metadata because they do not
+  distinguish launch labels from runtime state.
 - Fix startup crashing during pane creation because the border visibility state
   was not initialized; preserve tab bar background rectangles during refresh.
 - Limit macOS Python test workers to two to avoid subprocess startup timeouts

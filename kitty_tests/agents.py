@@ -451,6 +451,59 @@ class TestAgents(BaseTest):
 
 
 class TestAgentTimerLifecycle(BaseTest):
+    def test_restored_sidebar_updates_unfocused_agent(self):
+        from types import MethodType, SimpleNamespace
+        from unittest.mock import patch
+
+        from kitty.boss import Boss
+
+        class Tab(list):
+            sidebar_id = 'tab-1'
+            effective_title = 'Agents'
+
+        class Manager(list):
+            os_window_id = 1
+            agent_sidebar_enabled = False
+            agent_sidebar_rows = ()
+
+            def set_agent_sidebar_rows(self, rows):
+                self.agent_sidebar_rows = tuple(rows)
+
+        window = FakeWindow('\u2733 Thinking\u2026 (3s \u00b7 esc to interrupt)')
+        tab = Tab([window])
+        manager = Manager([tab])
+        window.tabref = lambda: tab
+        tab.tab_manager_ref = lambda: manager
+        boss = SimpleNamespace(
+            agent_sidebar_enabled=False, agent_sidebar_timer=0, agent_sidebar_flush_timer=0, _agent_debounce_timer=0,
+            agent_tracker=AgentTracker(), window_id_map={window.id: window}, all_windows=(window,),
+            all_tab_managers=(manager,), active_window=None, notify_agent_done=lambda snapshot: None,
+            agent_sidebar_scope=lambda tm: (tm,),
+        )
+        for name in ('restore_agent_sidebar_state', 'refresh_agent_sidebars', 'flush_agent_sidebar_updates', '_refresh_agent_sidebar_scope'):
+            setattr(boss, name, MethodType(getattr(Boss, name), boss))
+        timers = []
+
+        def add_timer(callback, delay, repeat=True):
+            timers.append((callback, repeat))
+            return len(timers)
+
+        with (
+            patch('kitty.boss.add_timer', side_effect=add_timer),
+            patch('kitty.boss.get_options', return_value=SimpleNamespace(agents_sidebar_grouping='tab')),
+            patch('kitty.rc.agent_wait.wake_waiters'),
+        ):
+            boss.restore_agent_sidebar_state(SimpleNamespace(agent_sidebar_enabled=True, agent_sidebar_cols=30, agent_sidebar_collapsed_groups=()))
+            boss.refresh_agent_sidebars()  # Initial population while the restored OS window is created.
+            self.ae(manager.agent_sidebar_rows[0].state, AgentState.working)
+            window.lines = ('\u256d\u2500\u2500\u256e', '\u2502 \u276f ', '\u2570\u2500\u2500\u256f')
+            for timer_id, (callback, repeat) in enumerate(tuple(timers), 1):
+                if repeat:
+                    callback(timer_id)
+            self.assertFalse(window.is_focused)
+            self.ae(boss.agent_tracker.snapshot_for(window.id).state, AgentState.done)
+            self.ae(manager.agent_sidebar_rows[0].state, AgentState.done)
+
     def test_agent_timers_are_released_on_shutdown(self):
         from contextlib import ExitStack
         from unittest.mock import patch

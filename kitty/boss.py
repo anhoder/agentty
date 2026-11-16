@@ -2089,6 +2089,8 @@ class Boss:
         del timer_id
         if not self.agent_sidebar_enabled:
             return
+        if not self.agent_sidebar_timer:
+            self.agent_sidebar_timer = add_timer(self.refresh_agent_sidebars, 1.0)
         for tab_manager in self.all_tab_managers:
             tab_manager.agent_sidebar_enabled = True
         self.agent_tracker.mark_all_dirty(tuple(window.id for window in self.all_windows))
@@ -2103,8 +2105,6 @@ class Boss:
         for tm in managers:
             tm.agent_sidebar_enabled = self.agent_sidebar_enabled
         if self.agent_sidebar_enabled:
-            if not self.agent_sidebar_timer:
-                self.agent_sidebar_timer = add_timer(self.refresh_agent_sidebars, 1.0)
             self.refresh_agent_sidebars()
         else:
             if self.agent_sidebar_timer:

@@ -341,6 +341,16 @@ encryption keys; on Linux it is protected only by its file permissions.
 Treat it like your shell history: it contains the scrollback and the
 environment variables of every window.
 
+Saved sessions preserve user variables explicitly assigned with :option:`launch
+--var` and agent conversation metadata needed for resuming agents. Variables
+reported by running programs, such as ``in_editor``, are not restored: they
+describe the old program rather than the newly started shell, and can otherwise
+leave application-specific keyboard mappings active. Restarted programs can
+report their state again. Older saved sessions do not record which variables
+were assigned at launch, so only their agent metadata is retained when loading
+them. Explicit ``launch --var`` entries in hand-written session files are
+unchanged.
+
 .. _restore_after_logout:
 
 Restoring kitty after logging out
