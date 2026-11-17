@@ -2220,7 +2220,7 @@ draw_progress_handle(
         glUniform4f(program_uniform_location(ROUNDED_RECT_PROGRAM, "rect"), (float)handle_left, y, (float)handle_w, (float)handle_h);
 
         float thickness = (float)(is_horizontal ? handle_h : handle_w);
-        glUniform2f(program_uniform_location(ROUNDED_RECT_PROGRAM, "params"), thickness, (float)bar_radius);
+        glUniform4f(program_uniform_location(ROUNDED_RECT_PROGRAM, "params"), thickness, (float)bar_radius, 0.f, 0.f);
 
         save_viewport_using_top_left_origin(handle_left, handle_top, handle_w, handle_h, ui->full_framebuffer_height);
         draw_quad(true, 0);

@@ -9,6 +9,8 @@ To update |kitty|, :doc:`follow the instructions <binary>`.
 Recent major new features
 ---------------------------
 
+- Fix rounded progress handles rendering as outlines or inheriting pane shadow
+  parameters instead of displaying a filled loading or progress indicator.
 - Add gap-only pane shadows with :opt:`pane_shadow_spread` (default ``50%``),
   dynamically measured per neighboring edge segment across layouts. Preserve
   pane colors and geometry and avoid compounded darkness at T-junctions.
