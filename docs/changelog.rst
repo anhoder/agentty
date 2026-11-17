@@ -22,6 +22,9 @@ Recent major new features
   footprint, including the stack layout's floating shadow. Do not clear the
   shadow over the unrendered straight edges of rounded borders, which left a
   square notch in the shadow at each corner.
+- Bound the rounded-corner extension of pane gap shadows by the perpendicular
+  gap, so a wide divider shadow no longer bleeds over a narrow top margin as a
+  T-shaped ghost above the horizontal border.
 - Fix agent status remaining ``working`` in a restored sidebar until its pane
   is focused. Restored sidebars now start the same periodic status refresh as
   manually opened sidebars, including for unfocused panes.

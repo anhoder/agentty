@@ -187,10 +187,20 @@ class TestLayout(BaseTest):
             [(p.left, p.top, p.right, p.bottom, p.spread) for p in patches if p.frame == 1 and p.left == 110],
             [(110, 0, 132, 100, 10.0)],
         )
-        square = [PaneFrame(*f[:4], 0, f.spread) for f in frames]
+
+    def test_shadow_strips_use_perpendicular_gap_at_t_junctions(self):
+        # A wide vertical gap meeting a narrow top gap: the vertical strips may
+        # only reach as far into the top gap as the top edge's own shadow.
+        frames = [PaneFrame(0, 4, 100, 200, 12, 0), PaneFrame(120, 4, 220, 200, 12, 0)]
+        patches = shadow_patches(frames, (0, 0, 220, 240), 0.5)
         self.ae(
-            [(p.left, p.right, p.spread) for p in shadow_patches(square, (0, 0, 220, 100), 0.5) if p.frame == 0 and p.right == 110],
-            [(100, 110, 10.0)],
+            [(p.left, p.top, p.right, p.bottom, p.spread) for p in patches if p.frame == 0 and p.left == 88],
+            [(88, 2, 110, 220, 10.0)],
+        )
+        # The top strip may reach across the vertical gap by that gap's extent.
+        self.ae(
+            [(p.left, p.top, p.right, p.bottom, p.spread) for p in patches if p.frame == 0 and p.bottom == 16],
+            [(0, 2, 110, 16, 2.0)],
         )
 
     def test_window_border_radius_geometry(self):

@@ -66,6 +66,37 @@ class ShadowPatch(NamedTuple):
     spread: float
 
 
+def _perpendicular_gap(
+    frame: PaneFrame,
+    frames: list[PaneFrame],
+    bounds: tuple[int, int, int, int],
+    horizontal: bool,
+    before: bool,
+    corner: int,
+) -> int:
+    """Gap at a corner in the direction perpendicular to the edge being split."""
+    left, top, right, bottom = bounds
+    if horizontal:
+        edge = frame.top if before else frame.bottom
+        limit = top if before else bottom
+        probe = frame.left + 1 if corner == frame.left else frame.right - 1
+        gaps = (
+            (edge - other.bottom if before else other.top - edge)
+            for other in frames
+            if other is not frame and other.left < probe < other.right
+        )
+    else:
+        edge = frame.left if before else frame.right
+        limit = left if before else right
+        probe = frame.top + 1 if corner == frame.top else frame.bottom - 1
+        gaps = (
+            (edge - other.right if before else other.left - edge)
+            for other in frames
+            if other is not frame and other.top < probe < other.bottom
+        )
+    return max(0, min((gap for gap in gaps if gap >= 0), default=edge - limit if before else limit - edge))
+
+
 def shadow_patches(frames: list[PaneFrame], bounds: tuple[int, int, int, int], fraction: float) -> list[ShadowPatch]:
     """Split edges at neighbor boundaries, so each T-junction uses its local gap."""
     fraction = max(0.0, min(1.0, fraction))
@@ -96,10 +127,20 @@ def shadow_patches(frames: list[PaneFrame], bounds: tuple[int, int, int, int], f
                 spread = gap * fraction
                 if spread <= 0:
                     continue
-                # Extend endpoint strips around rounded corners. Adjacent strips
-                # combine with MAX and every pane footprint is erased afterward.
-                a = start - spread if start == near else start
-                b = end + spread if end == far else end
+                # Extend endpoint strips around rounded corners, but only by
+                # the perpendicular edge's shadow extent. Using this edge's
+                # spread leaked a wide vertical gap shadow into a narrow
+                # horizontal gap, painting a T-shaped ghost over the border.
+                # Adjacent strips combine with MAX and every pane footprint is
+                # erased afterward.
+                if start == near:
+                    a = start - _perpendicular_gap(frame, frames, bounds, not horizontal, True, edge) * fraction
+                else:
+                    a = start
+                if end == far:
+                    b = end + _perpendicular_gap(frame, frames, bounds, not horizontal, False, edge) * fraction
+                else:
+                    b = end
                 low, high = (edge - spread, edge) if before else (edge, edge + spread)
                 # Reach into the bounding box at the corners: the rounded
                 # contour, not the straight edge, must bound the shadow there.
