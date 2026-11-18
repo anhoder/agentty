@@ -123,6 +123,7 @@ from .fast_data_types import (
     run_with_activation_token,
     safe_pipe,
     send_data_to_peer,
+    set_agents_sidebar_focus,
     set_application_quit_request,
     set_background_image,
     set_boss,
@@ -2096,6 +2097,14 @@ class Boss:
         self.agent_tracker.mark_all_dirty(tuple(window.id for window in self.all_windows))
         self.flush_agent_sidebar_updates()
 
+    @ac('tab', 'Focus the native AI agents sidebar or return to the terminal')
+    def focus_agents_sidebar(self) -> None:
+        if not is_macos or (tm := self.active_tab_manager) is None:
+            return
+        if not self.agent_sidebar_enabled:
+            self.toggle_agents_sidebar()
+        set_agents_sidebar_focus(tm.os_window_id, True, True)
+
     @ac('tab', 'Toggle the native AI agents sidebar')
     def toggle_agents_sidebar(self) -> None:
         if self.active_tab_manager is None:
@@ -2128,9 +2137,7 @@ class Boss:
             return
         window_id = tab_manager.agent_sidebar_rows[row].window_id
         if window_id:
-            window = self.window_id_map.get(window_id)
-            if window is not None:
-                self.set_active_window(window, switch_os_window_if_needed=True)
+            self.agents_sidebar_menu(f'{tab_manager.os_window_id}:{window_id}:focus')
 
     def agents_sidebar_menu(self, data: str) -> None:
         """Callback from the native Agents sidebar context menu.
@@ -2147,15 +2154,38 @@ class Boss:
             window_id = int(window_id_s)
         except ValueError:
             return
+        source = self.os_window_map.get(os_window_id)
+        if source is None or not source.agent_sidebar_enabled:
+            return
+        scope = self.agent_sidebar_scope(source)
+        if window_id == 0:
+            if command in ('width_increase', 'width_decrease'):
+                delta = 2 if command == 'width_increase' else -2
+                self.agents_sidebar_resize(f'{os_window_id}:{source.agent_sidebar_cols + delta}')
+            elif command in ('expand_all', 'collapse_all'):
+                keys = {row.group_key for tm in scope for row in tm.agent_sidebar_rows if row.group_key}
+                if command == 'collapse_all':
+                    self.agent_sidebar_collapsed_groups.update(keys)
+                else:
+                    self.agent_sidebar_collapsed_groups.difference_update(keys)
+                for tm in scope:
+                    tm.update_native_agents_sidebar()
+            elif command == 'hide' and self.agent_sidebar_enabled:
+                self.toggle_agents_sidebar()
+            return
         window = self.window_id_map.get(window_id)
-        if window is None or self.os_window_map.get(os_window_id) is None:
+        if window is None or not any(w is window for tm in scope for tab in tm for w in tab):
             return
         if command == 'focus':
-            self.set_active_window(window, switch_os_window_if_needed=True)
+            set_agents_sidebar_focus(os_window_id, False)
+            if (target_os_window_id := self.set_active_window(window, switch_os_window_if_needed=True)) is not None:
+                set_agents_sidebar_focus(target_os_window_id, False)
         elif command == 'new_window':
-            tab = window.tabref()
-            if tab is not None:
-                tab.new_window(cwd_from=CwdRequest(window))
+            if (tab := window.tabref()) is not None:
+                set_agents_sidebar_focus(os_window_id, False)
+                new_window = tab.new_window(cwd_from=CwdRequest(window))
+                if (target_os_window_id := self.set_active_window(new_window, switch_os_window_if_needed=True)) is not None:
+                    set_agents_sidebar_focus(target_os_window_id, False)
         elif command == 'copy_cwd':
             cwd = CwdRequest(window).cwd_of_child or window.cwd_of_child
             if cwd:
@@ -2163,11 +2193,42 @@ class Boss:
                 self.handle_clipboard_loss('clipboard')
         elif command == 'close':
             msg = self.close_windows_with_confirmation_msg((window,), window)[0]
-            if msg:
-                msg = _('Are you sure you want to close this window?') + ' ' + msg
-                self.confirm(msg, self.handle_close_window_confirmation, window.id, window=window, title=_('Close window?'))
-            else:
+            if not msg:
                 self.mark_window_for_close(window)
+                return
+            sidebar_was_focused = set_agents_sidebar_focus(os_window_id, False)
+            target_os_window_id = self.set_active_window(window, switch_os_window_if_needed=True)
+            if target_os_window_id is None:
+                return
+            set_agents_sidebar_focus(target_os_window_id, False)
+            switched_focus = False
+            focus_counters: dict[int, int] = {}
+
+            def on_overlay_focus_change(overlay: Window, focused: bool) -> None:
+                nonlocal switched_focus
+                if not focused:
+                    switched_focus = True
+
+            def on_confirmation(allowed: bool) -> None:
+                if allowed:
+                    if self.os_window_map.get(os_window_id) is source and self.window_id_map.get(window_id) is window and any(
+                        w is window for tm in self.agent_sidebar_scope(source) for tab in tm for w in tab
+                    ):
+                        self.mark_window_for_close(window)
+                    return
+                if (
+                    sidebar_was_focused and not switched_focus and self.agent_sidebar_enabled
+                    and self.os_window_map.get(os_window_id) is source and source.agent_sidebar_enabled
+                    and self.window_id_map.get(window_id) is window and self.active_window is window
+                    and os_window_focus_counters() == focus_counters
+                    and any(w is window for tm in self.agent_sidebar_scope(source) for tab in tm for w in tab)
+                ):
+                    set_agents_sidebar_focus(target_os_window_id, True)
+
+            msg = _('Are you sure you want to close this window?') + ' ' + msg
+            overlay = self.confirm(msg, on_confirmation, window=window, title=_('Close window?'))
+            overlay.actions_on_focus_change.append(on_overlay_focus_change)
+            focus_counters = os_window_focus_counters()
 
     @ac('misc', 'Update the native AI agents sidebar group collapse state')
     def agents_sidebar_group_toggle(self, data: str) -> None:
@@ -2198,6 +2259,9 @@ class Boss:
         tab_manager = self.os_window_map.get(os_window_id)
         if tab_manager is None or not self.agent_sidebar_enabled:
             return
+        _, _, width, _, cell_width, _ = viewport_for_window(os_window_id)
+        if cell_width:
+            cols = min(cols, max(16, int(width * 0.75 / cell_width + 0.5)))
         self.agent_sidebar_cols = cols
         scope = self.agent_sidebar_scope(tab_manager)
         for tm in scope:
@@ -2222,7 +2286,27 @@ class Boss:
     def push_keyboard_mode(self, new_mode: str) -> None:
         self.mappings.push_keyboard_mode(new_mode)
 
+    def dispatch_agents_sidebar_shortcut(self, ev: KeyEvent) -> bool:
+        """Dispatch only configured sidebar focus/visibility actions, never terminal input."""
+        from .keys import get_shortcut
+
+        mappings = self.mappings
+        mode = mappings.keyboard_mode_stack[-1] if mappings.keyboard_mode_stack else mappings.keyboard_modes['']
+        candidates = get_shortcut(mode.keymap, ev)
+        if candidates is None:
+            candidates = get_shortcut(mappings.global_shortcuts_map, ev)
+        matches = mappings.matching_key_actions(candidates or ())
+        if not matches or matches[0].is_sequence:
+            return False
+        actions = get_options().alias_map.resolve_aliases(matches[0].definition, MapType.MAP)
+        if len(actions) != 1 or actions[0].args or actions[0].func not in ('focus_agents_sidebar', 'toggle_agents_sidebar'):
+            return False
+        getattr(self, actions[0].func)()
+        return True
+
     def dispatch_possible_special_key(self, ev: KeyEvent) -> bool:
+        if is_macos and self.dispatch_agents_sidebar_shortcut(ev):
+            return True
         if (w := self.active_window) is not None and w.program_status and not is_modifier_key(ev.key):
             # the user pressing a key in the window means they have seen its finished or failed programs
             w.program_status_seen_by_user()

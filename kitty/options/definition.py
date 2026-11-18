@@ -4901,6 +4901,17 @@ map(
 )
 
 map(
+    'Focus the Agents sidebar or return to the terminal',
+    'focus_agents_sidebar cmd+b focus_agents_sidebar',
+    only='macos',
+)
+map(
+    'Show or hide the Agents sidebar',
+    'toggle_agents_sidebar cmd+shift+b toggle_agents_sidebar',
+    only='macos',
+)
+
+map(
     'Unicode input',
     'input_unicode_character --allow-fallback=shifted,ascii kitty_mod+u kitten unicode_input',
 )

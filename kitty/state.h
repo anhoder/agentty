@@ -656,6 +656,8 @@ typedef struct OSWindow {
     // visibility depends on how many windows are on screen.
     unsigned int num_visible_windows_in_active_tab;
     bool focused_at_last_render, needs_render, needs_layers, input_held;
+    // Consumed by the next pane animation update, including a final render after mouse-up.
+    bool suppress_pane_animation;
     unsigned keep_rendering_till_swap;
     WindowRenderData tab_bar_render_data;
     struct {

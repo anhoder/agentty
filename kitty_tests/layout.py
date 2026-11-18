@@ -899,10 +899,9 @@ class TestLayout(BaseTest):
         self.ae(d.horizontal_id, root_id)
         self.ae(d.width_increases_rightwards, True)
 
-        # Right edge of B (outer border): direction reversed
+        # The right edge is the layout's outer wall and is not draggable.
         d = drtw(q, all_windows, wB, RIGHT_EDGE)
-        self.ae(d.horizontal_id, root_id)
-        self.ae(d.width_increases_rightwards, False)
+        self.assertIsNone(d.horizontal_id)
 
         # --- 2-window vertical split: A / B ---
         q = create_layout(Splits)
@@ -926,10 +925,9 @@ class TestLayout(BaseTest):
         self.ae(d.vertical_id, root_id)
         self.ae(d.height_increases_downwards, True)
 
-        # Bottom edge of B (outer border): direction reversed
+        # Bottom edge is the layout's outer wall and is not draggable.
         d = drtw(q, all_windows, wB, BOTTOM_EDGE)
-        self.ae(d.vertical_id, root_id)
-        self.ae(d.height_increases_downwards, False)
+        self.assertIsNone(d.vertical_id)
 
         # --- 3-window layout: top_pair(A | B) / C ---
         # root(vertical) -> one: top_pair(horizontal, one=A, two=B), two: C

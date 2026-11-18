@@ -1161,19 +1161,14 @@ class Splits(Layout):
             return ans
 
         def target(horizontal: bool, trailing: bool) -> tuple[int | None, bool]:
-            fallback = None
             for pair, in_one in reversed(path):
                 if pair.is_redundant or pair.horizontal != horizontal:
                     continue
-                if fallback is None:
-                    fallback = id(pair)
-                # The right/bottom edge of the first child, or left/top edge
-                # of the second child, belongs to this divider. Otherwise keep
-                # climbing, even across ancestors with the same split axis.
+                # Only an edge that faces the sibling pane is draggable. The
+                # layout outer wall has no divider and must remain fixed.
                 if in_one == trailing:
                     return id(pair), True
-            # Preserve native resizing from the outside edge of a layout.
-            return fallback, False
+            return None, trailing
 
         if edges & (LEFT_EDGE | RIGHT_EDGE):
             horizontal_id, forwards = target(True, right)

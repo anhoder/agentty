@@ -35,6 +35,37 @@
 // Needed for _NSGetProgname
 #include <crt_externs.h>
 
+@interface NSView (GLFWSidebarKeyboardRouting)
+- (BOOL)kittySidebarHandleKeyEvent:(NSEvent *)event;
+@end
+
+static NSView *
+agents_sidebar_for_responder(NSResponder *responder) {
+    if (![responder isKindOfClass:[NSView class]]) return nil;
+    for (NSView *view = (NSView *)responder; view; view = view.superview) {
+        if ([view.identifier isEqualToString:@"kitty-agents-sidebar"]) return view;
+    }
+    return nil;
+}
+
+static _GLFWwindow *
+glfw_window_for_cocoa_window(NSWindow *window) {
+    for (_GLFWwindow *w = _glfw.windowListHead; w; w = w->next) {
+        if (w->ns.object == window) return w;
+    }
+    return NULL;
+}
+
+static _GLFWwindow *
+glfw_window_for_keyboard_owner(GLFWid owner) {
+    if (owner) {
+        for (_GLFWwindow *w = _glfw.windowListHead; w; w = w->next) {
+            if (w->id == owner) return w;
+        }
+    }
+    return NULL;
+}
+
 // Change to our application bundle's resources directory, if present
 //
 static void
@@ -841,10 +872,36 @@ _glfwPlatformInit(bool *supports_window_occlusion) {
         } last_keydown_shortcut_event;
         last_keydown_shortcut_event.virtual_key_code = 0xffff;
         last_keydown_shortcut_event.input_source_switch_modifiers = 0;
+        // Keep ownership across responder changes: a release for a key pressed
+        // in the terminal still belongs there, but a native navigation release
+        // must not reach the terminal after Enter/Escape changes focus.
+        static struct {
+            GLFWid terminal;
+            bool native;
+        } key_owners[256];
 
         NSEvent * (^keydown_block)(NSEvent *) = ^NSEvent *(NSEvent *event) {
           debug_input("---------------- key down -------------------\n");
           debug_input("%s\n", [[event description] UTF8String]);
+          NSWindow *kw = event.window ? event.window : [NSApp keyWindow];
+          NSView *sidebar = agents_sidebar_for_responder(kw.firstResponder);
+          unsigned keycode = event.keyCode;
+          if (sidebar) {
+              last_keydown_shortcut_event.virtual_key_code = 0xffff;
+              if (keycode < arraysz(key_owners)) key_owners[keycode].native = true;
+              // System input-source and accessibility shortcuts must reach
+              // AppKit before the sidebar considers configurable bindings.
+              NSEventModifierFlags mods = event.modifierFlags;
+              bool voiceover = (mods & (NSEventModifierFlagControl | NSEventModifierFlagOption)) ==
+                  (NSEventModifierFlagControl | NSEventModifierFlagOption);
+              if (voiceover || is_useful_apple_global_shortcut(is_active_apple_global_shortcut(event)) || is_apple_jis_layout_function_key(event)) return event;
+              if ([sidebar respondsToSelector:@selector(kittySidebarHandleKeyEvent:)] && [sidebar kittySidebarHandleKeyEvent:event]) return nil;
+              return event;
+          }
+          if (kw.firstResponder != kw.contentView) {
+              if (keycode < arraysz(key_owners)) key_owners[keycode].native = true;
+              return event;
+          }
           if (!_glfw.ignoreOSKeyboardProcessing && !_glfw.keyboard_grabbed) {
               // first check if there is a global menu bar shortcut
               if ([[NSApp mainMenu] performKeyEquivalent:event]) {
@@ -875,22 +932,56 @@ _glfwPlatformInit(bool *supports_window_occlusion) {
               }
           }
           last_keydown_shortcut_event.virtual_key_code = 0xffff;
-          NSWindow *kw = [NSApp keyWindow];
+          _GLFWwindow *owner = glfw_window_for_cocoa_window(kw);
+          GLFWid owner_id = owner ? owner->id : 0;
+          if (keycode < arraysz(key_owners)) {
+              key_owners[keycode].terminal = owner_id;
+              key_owners[keycode].native = false;
+          }
           if (kw && kw.contentView) [kw.contentView keyDown:event];
           else debug_input("keyDown ignored as no keyWindow present\n");
+          owner = glfw_window_for_keyboard_owner(owner_id);
+          if (owner && agents_sidebar_for_responder([owner->ns.object firstResponder])) {
+              // The entry shortcut was handled by kitty, not the terminal.
+              // Clear its pressed state without dispatching a PTY release.
+              for (unsigned i = 0; i < arraysz(owner->activated_keys); i++) {
+                  if (owner->activated_keys[i].native_key_id == keycode) memset(owner->activated_keys + i, 0, sizeof(owner->activated_keys[i]));
+              }
+              if (keycode < arraysz(key_owners)) {
+                  key_owners[keycode].terminal = 0;
+                  key_owners[keycode].native = true;
+              }
+          }
           return nil;
         };
 
         NSEvent * (^keyup_block)(NSEvent *) = ^NSEvent *(NSEvent *event) {
           debug_input("----------------- key up --------------------\n");
           debug_input("%s\n", [[event description] UTF8String]);
+          unsigned keycode = event.keyCode;
+          if (keycode < arraysz(key_owners) && (key_owners[keycode].terminal || key_owners[keycode].native)) {
+              _GLFWwindow *owner = glfw_window_for_keyboard_owner(key_owners[keycode].terminal);
+              bool native = key_owners[keycode].native;
+              key_owners[keycode].terminal = 0;
+              key_owners[keycode].native = false;
+              if (owner) {
+                  [owner->ns.view keyUp:event];
+                  return nil;
+              }
+              if (native) {
+                  NSWindow *kw = event.window ? event.window : [NSApp keyWindow];
+                  return agents_sidebar_for_responder(kw.firstResponder) || kw.firstResponder != kw.contentView ? event : nil;
+              }
+              return nil;
+          }
           if (last_keydown_shortcut_event.virtual_key_code != 0xffff && last_keydown_shortcut_event.virtual_key_code == [event keyCode]) {
               // ignore as the corresponding key down event triggered a menu bar or macOS shortcut
               last_keydown_shortcut_event.virtual_key_code = 0xffff;
               debug_input("keyUp ignored as corresponds to previous keyDown that triggered a shortcut\n");
               return nil;
           }
-          NSWindow *kw = [NSApp keyWindow];
+          NSWindow *kw = event.window ? event.window : [NSApp keyWindow];
+          if (kw.firstResponder != kw.contentView) return event;
           if (kw && kw.contentView) [kw.contentView keyUp:event];
           else debug_input("keyUp ignored as no keyWindow present\n");
           return nil;
@@ -910,7 +1001,14 @@ _glfwPlatformInit(bool *supports_window_occlusion) {
                   last_keydown_shortcut_event.input_source_switch_modifiers = 0;
               return event;
           }
-          NSWindow *kw = [NSApp keyWindow];
+          NSWindow *kw = event.window ? event.window : [NSApp keyWindow];
+          if (kw.firstResponder != kw.contentView) {
+              // Balance modifier presses already delivered before entering a
+              // native control; the content view rejects any new native press.
+              _GLFWwindow *owner = glfw_window_for_cocoa_window(kw);
+              if (owner) [owner->ns.view flagsChanged:event];
+              return event;
+          }
           if (kw && kw.contentView) [kw.contentView flagsChanged:event];
           else debug_input("flagsChanged ignored as no keyWindow present\n");
           return nil;

@@ -1475,6 +1475,7 @@ mouse_event(const int button, int modifiers, int action) {
     }
     if (global_state.active_drag_resize) {
         if (button < 0) {
+            osw->suppress_pane_animation = true;
             call_boss(drag_resize_update, "dd", osw->mouse_x, osw->mouse_y);
             mouse_cursor_shape = mouse_cursor_shape_for_border(global_state.active_drag_resize_edges);
             set_mouse_cursor(mouse_cursor_shape);
@@ -1526,6 +1527,7 @@ mouse_event(const int button, int modifiers, int action) {
             if (PyObject_IsTrue(retval)) {
                 global_state.active_drag_resize = w->id;
                 global_state.active_drag_resize_edges = r.window_border;
+                osw->suppress_pane_animation = true;
             }
         }
     } else if (w) {

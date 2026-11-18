@@ -450,6 +450,202 @@ class TestAgents(BaseTest):
         self.ae((rows[0].group, rows[0].group_key, rows[0].agent, rows[0].title), ('', '', '', 'No AI agents'))
 
 
+class TestAgentSidebarActions(BaseTest):
+    def sidebar(self):
+        from types import MethodType, SimpleNamespace
+
+        from kitty.boss import Boss
+
+        class Manager(list):
+            agent_sidebar_enabled = True
+            agent_sidebar_cols = 30
+            agent_sidebar_rows = ()
+            native_refreshes = 0
+
+            def resize(self):
+                pass
+
+            def update_native_agents_sidebar(self):
+                self.native_refreshes += 1
+
+        class Tab(list):
+            pass
+
+        source, sibling, outside = (Manager() for _ in range(3))
+        windows = []
+        for os_window_id, manager in enumerate((source, sibling, outside), 1):
+            manager.os_window_id = os_window_id
+            tab = Tab()
+            tab.tab_manager_ref = lambda manager=manager: manager
+            window = SimpleNamespace(id=os_window_id * 10, tabref=lambda tab=tab: tab)
+            tab.append(window)
+            manager.append(tab)
+            manager.agent_sidebar_rows = (AgentSidebarRow(window.id, 'Title', f'tab:{os_window_id}', 'omp', 'omp', '', AgentState.idle, False),)
+            windows.append(window)
+        boss = SimpleNamespace(
+            os_window_map={tm.os_window_id: tm for tm in (source, sibling, outside)},
+            window_id_map={w.id: w for w in windows}, active_window=windows[0], active_tab_manager=source,
+            agent_sidebar_enabled=True, agent_sidebar_collapsed_groups=set(), agent_sidebar_cols=30,
+            agent_sidebar_scope=lambda tm: (source, sibling) if tm is source or tm is sibling else (outside,),
+            closed=[], confirmations=[],
+        )
+
+        def activate(window, switch_os_window_if_needed=False):
+            boss.active_window = window
+            return window.tabref().tab_manager_ref().os_window_id
+
+        def confirm(msg, callback, **kwargs):
+            overlay = SimpleNamespace(actions_on_focus_change=[])
+            boss.confirmations.append((callback, overlay))
+            boss.active_window = overlay
+            return overlay
+
+        boss.set_active_window = activate
+        boss.mark_window_for_close = boss.closed.append
+        boss.close_windows_with_confirmation_msg = lambda *args: ('Running an agent.', 1)
+        boss.confirm = confirm
+        for name in ('agents_sidebar_menu', 'agents_sidebar_click', 'agents_sidebar_resize', 'focus_agents_sidebar'):
+            setattr(boss, name, MethodType(getattr(Boss, name), boss))
+        return boss, source, sibling, outside, windows
+
+    def test_sidebar_shortcuts_respect_rebinding_without_dispatching_terminal_actions(self):
+        from types import SimpleNamespace
+        from unittest.mock import patch
+
+        from kitty.boss import Boss
+        from kitty.fast_data_types import GLFW_MOD_SUPER, KeyEvent, SingleKey
+        from kitty.keys import Mappings
+        from kitty.options.utils import KeyDefinition
+
+        self.set_options()
+        mappings = Mappings(global_shortcuts={})
+        mappings.keyboard_modes[''].keymap = {
+            SingleKey(GLFW_MOD_SUPER, False, ord('k')): [KeyDefinition(definition='focus_agents_sidebar')],
+            SingleKey(GLFW_MOD_SUPER, False, ord('b')): [KeyDefinition(definition='new_window')],
+        }
+        actions = []
+        boss = SimpleNamespace(
+            mappings=mappings, active_window=None,
+            focus_agents_sidebar=lambda: actions.append('focus'),
+            toggle_agents_sidebar=lambda: actions.append('toggle'),
+        )
+        with patch('kitty.keys.get_boss', return_value=boss):
+            self.assertFalse(Boss.dispatch_agents_sidebar_shortcut(boss, KeyEvent(ord('b'), mods=GLFW_MOD_SUPER)))
+            self.assertTrue(Boss.dispatch_agents_sidebar_shortcut(boss, KeyEvent(ord('k'), mods=GLFW_MOD_SUPER)))
+            self.ae(actions, ['focus'])
+            mappings.keyboard_modes[''].keymap[SingleKey(GLFW_MOD_SUPER, False, ord('k'))] = [KeyDefinition(definition='toggle_agents_sidebar')]
+            self.assertTrue(Boss.dispatch_agents_sidebar_shortcut(boss, KeyEvent(ord('k'), mods=GLFW_MOD_SUPER)))
+            self.ae(actions, ['focus', 'toggle'])
+            boss.dispatch_agents_sidebar_shortcut = lambda ev: Boss.dispatch_agents_sidebar_shortcut(boss, ev)
+            seen = []
+            boss.active_window = SimpleNamespace(program_status=True, program_status_seen_by_user=lambda: seen.append(True))
+            with patch('kitty.boss.is_macos', True):
+                self.assertTrue(Boss.dispatch_possible_special_key(boss, KeyEvent(ord('k'), mods=GLFW_MOD_SUPER)))
+            self.ae(seen, [])
+
+    def test_sidebar_menu_rejects_targets_outside_native_tab_scope(self):
+        from unittest.mock import patch
+
+        boss, source, sibling, outside, windows = self.sidebar()
+        with patch('kitty.boss.set_agents_sidebar_focus'):
+            for command in ('focus', 'new_window', 'copy_cwd', 'close'):
+                boss.agents_sidebar_menu(f'1:30:{command}')
+            self.assertIs(boss.active_window, windows[0])
+            self.ae(boss.confirmations, [])
+            boss.agents_sidebar_menu('1:20:focus')
+            self.assertIs(boss.active_window, windows[1])
+
+    def test_sidebar_stale_row_cannot_activate_moved_or_closed_window(self):
+        from unittest.mock import patch
+
+        boss, source, sibling, outside, windows = self.sidebar()
+        source[0].remove(windows[0])
+        outside[0].append(windows[0])
+        boss.active_window = windows[1]
+        with patch('kitty.boss.set_agents_sidebar_focus'):
+            boss.agents_sidebar_click('1:0')
+            self.assertIs(boss.active_window, windows[1])
+            del boss.window_id_map[windows[0].id]
+            boss.agents_sidebar_menu('1:10:close')
+            self.ae(boss.confirmations, [])
+
+    def test_sidebar_view_commands_preserve_other_scope_groups(self):
+        boss, source, sibling, outside, windows = self.sidebar()
+        boss.agent_sidebar_collapsed_groups = {'tab:3'}
+        boss.agents_sidebar_menu('1:0:collapse_all')
+        self.ae(boss.agent_sidebar_collapsed_groups, {'tab:1', 'tab:2', 'tab:3'})
+        boss.agents_sidebar_menu('1:0:expand_all')
+        self.ae(boss.agent_sidebar_collapsed_groups, {'tab:3'})
+        self.ae((source.native_refreshes, sibling.native_refreshes, outside.native_refreshes), (2, 2, 0))
+
+    def test_sidebar_width_commands_share_mouse_resize_limits(self):
+        from unittest.mock import patch
+
+        boss, source, sibling, outside, windows = self.sidebar()
+        with patch('kitty.boss.viewport_for_window', return_value=(None, None, 400, 300, 10, 20)):
+            boss.agents_sidebar_menu('1:0:width_increase')
+            self.ae((source.agent_sidebar_cols, sibling.agent_sidebar_cols, outside.agent_sidebar_cols), (30, 30, 30))
+            boss.agents_sidebar_menu('1:0:width_decrease')
+            self.ae((source.agent_sidebar_cols, sibling.agent_sidebar_cols), (28, 28))
+            boss.agents_sidebar_resize('1:999')
+            self.ae(source.agent_sidebar_cols, 30)
+            boss.agents_sidebar_resize('1:0')
+            boss.agents_sidebar_menu('1:0:width_decrease')
+            self.ae((source.agent_sidebar_cols, boss.agent_sidebar_cols), (16, 16))
+
+    def test_sidebar_close_cancel_restores_focus_without_overriding_user_switch(self):
+        from unittest.mock import patch
+
+        for switched in ('none', 'window', 'os_window', 'closed', 'hidden'):
+            with self.subTest(switched=switched):
+                boss, source, sibling, outside, windows = self.sidebar()
+                native_focus = [True]
+                counters = {1: 1, 2: 2, 3: 3}
+
+                def focus(os_window_id, focused, toggle=False):
+                    before, native_focus[0] = native_focus[0], focused
+                    return before
+
+                with (
+                    patch('kitty.boss.set_agents_sidebar_focus', side_effect=focus),
+                    patch('kitty.boss.os_window_focus_counters', side_effect=lambda: dict(counters)),
+                ):
+                    boss.agents_sidebar_menu('1:10:close')
+                    callback, overlay = boss.confirmations[0]
+                    self.assertFalse(native_focus[0])
+                    if switched == 'window':
+                        for hook in overlay.actions_on_focus_change:
+                            hook(overlay, False)
+                    elif switched == 'os_window':
+                        counters[1] += 1
+                    elif switched == 'closed':
+                        del boss.window_id_map[10]
+                    elif switched == 'hidden':
+                        boss.agent_sidebar_enabled = False
+                    boss.active_window = windows[0]
+                    callback(False)
+                    self.ae(native_focus[0], switched == 'none')
+                    self.ae(boss.closed, [])
+
+    def test_sidebar_close_confirmation_revalidates_target_scope(self):
+        from unittest.mock import patch
+
+        for moved in (False, True):
+            with self.subTest(moved=moved):
+                boss, source, sibling, outside, windows = self.sidebar()
+                with (
+                    patch('kitty.boss.set_agents_sidebar_focus', return_value=True),
+                    patch('kitty.boss.os_window_focus_counters', return_value={1: 1}),
+                ):
+                    boss.agents_sidebar_menu('1:10:close')
+                    callback, overlay = boss.confirmations[0]
+                    if moved:
+                        source[0].remove(windows[0])
+                        outside[0].append(windows[0])
+                    callback(True)
+                    self.ae(boss.closed, [] if moved else [windows[0]])
+
+
 class TestAgentTimerLifecycle(BaseTest):
     def test_restored_sidebar_updates_unfocused_agent(self):
         from types import MethodType, SimpleNamespace

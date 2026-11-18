@@ -33,6 +33,7 @@
 #include <Availability.h>
 #import <CoreServices/CoreServices.h>
 #import <UniformTypeIdentifiers/UniformTypeIdentifiers.h>
+#import <objc/runtime.h>
 #include <errno.h>
 #include <float.h>
 #include <string.h>
@@ -41,6 +42,27 @@
 #define debug debug_rendering
 
 #define UTI_ROUNDTRIP_PREFIX @"uti-is-typical-apple-nih."
+
+
+@interface NSView (GLFWSidebarTextInput)
+- (void)kittySuspendTextInput;
+@end
+
+static NSView *
+agents_sidebar_for_responder(NSResponder *responder) {
+    if (![responder isKindOfClass:[NSView class]]) return nil;
+    for (NSView *view = (NSView *)responder; view; view = view.superview) {
+        if ([view.identifier isEqualToString:@"kitty-agents-sidebar"]) return view;
+    }
+    return nil;
+}
+
+static void
+restore_terminal_first_responder(_GLFWwindow *window) {
+    NSWindow *nswindow = window->ns.object;
+    NSView *sidebar = agents_sidebar_for_responder(nswindow.firstResponder);
+    if (!sidebar || sidebar.window != nswindow) [nswindow makeFirstResponder:window->ns.view];
+}
 
 static NSString *
 mime_to_uti(const char *mime) {
@@ -772,14 +794,9 @@ static void _glfwUpdateNotchCover(_GLFWwindow *);
     showCursor(window);
 
     _glfwInputWindowFocus(window, false);
-    // IME is cancelled when losing the focus
-    if ([window->ns.view hasMarkedText]) {
-        [[window->ns.view inputContext] discardMarkedText];
-        [window->ns.view unmarkText];
-        GLFWkeyevent dummy = {.action = GLFW_RELEASE, .ime_state = GLFW_IME_PREEDIT_CHANGED};
-        _glfwInputKeyboard(window, &dummy);
-        _glfw.ns.text[0] = 0;
-    }
+    // Cancel without allowing synchronous or delayed IME commits to the old
+    // terminal, even though it remains this window's first responder.
+    [window->ns.view kittySuspendTextInput];
 }
 
 - (void)windowDidChangeScreen:(NSNotification *)notification {
@@ -843,7 +860,7 @@ static void _glfwUpdateNotchCover(_GLFWwindow *);
                   [nswindow setStyleMask:savedMask];
                   [nswindow setFrame:savedFrame display:YES];
                   update_titlebar_button_visibility_after_fullscreen_transition(w, true, false);
-                  [nswindow makeFirstResponder:w->ns.view];
+                  restore_terminal_first_responder(w);
                   NSNotification *resize = [NSNotification notificationWithName:NSWindowDidResizeNotification object:nswindow];
                   [w->ns.delegate performSelector:@selector(windowDidResize:) withObject:resize afterDelay:0];
               }
@@ -922,6 +939,7 @@ static void _glfwUpdateNotchCover(_GLFWwindow *);
     NSRect markedRect;
     bool marked_text_cleared_by_insert;
     int in_key_handler;
+    bool input_suspended;
     NSString *input_source_at_last_key_event;
     GLFWDraggingSource *dragging_source;
 }
@@ -1007,6 +1025,34 @@ static void _glfwUpdateNotchCover(_GLFWwindow *);
 
 - (BOOL)acceptsFirstResponder {
     return YES;
+}
+
+- (BOOL)resignFirstResponder {
+    bool was_suspended = input_suspended;
+    input_suspended = true;
+    if (![super resignFirstResponder]) {
+        input_suspended = was_suspended;
+        return NO;
+    }
+    [self kittySuspendTextInput];
+    return YES;
+}
+
+- (void)kittySuspendTextInput {
+    // Keep the guard set while discarding: an input method may synchronously
+    // try to commit when its client loses focus.
+    input_suspended = true;
+    bool had_marked_text = [self hasMarkedText];
+    [input_context discardMarkedText];
+    [self unmarkText];
+    if (window) {
+        window->ns.deadKeyState = 0;
+        if (had_marked_text) {
+            GLFWkeyevent event = {.ime_state = GLFW_IME_PREEDIT_CHANGED};
+            _glfwInputKeyboard(window, &event);
+        }
+    }
+    _glfw.ns.text[0] = 0;
 }
 
 - (void)viewWillStartLiveResize {
@@ -1225,7 +1271,26 @@ is_ascii_control_char(char x) {
     return x == 0 || (1 <= x && x <= 31) || x == 127;
 }
 
+- (BOOL)kittySidebarHandleConfiguredKeyEvent:(NSEvent *)event {
+    if (!window) return NO;
+    const NSUInteger flags = remap_cocoa_flags(event.modifierFlags);
+    event = event_with_remapped_flags(event, flags);
+    GLFWkeyevent key_event = {
+        .key = translateKey(event.keyCode, true), .native_key = event.keyCode, .native_key_id = event.keyCode,
+        .action = event.ARepeat ? GLFW_REPEAT : GLFW_PRESS, .mods = translateFlags(flags)
+    };
+    add_alternate_keys(&key_event, event);
+    NSValue *callback = objc_getAssociatedObject(self.window, @selector(kittySidebarHandleConfiguredKeyEvent:));
+    bool (*dispatch)(void *, const GLFWkeyevent *) = NULL;
+    if (callback) [callback getValue:&dispatch size:sizeof(dispatch)];
+    return dispatch ? dispatch(window, &key_event) : NO;
+}
+
 - (void)keyDown:(NSEvent *)event {
+    if (!window || self.window.firstResponder != self) return;
+    // Only a new terminal key event re-enables input after focus loss. Late
+    // callbacks from the discarded input context must not commit on return.
+    input_suspended = false;
 #define CLEAR_PRE_EDIT_TEXT                             \
     glfw_keyevent.text = NULL;                          \
     glfw_keyevent.ime_state = GLFW_IME_PREEDIT_CHANGED; \
@@ -1356,6 +1421,8 @@ is_modifier_pressed(NSUInteger flags, NSUInteger target_mask, NSUInteger other_m
 }
 
 - (void)flagsChanged:(NSEvent *)event {
+    if (!window) return;
+    bool terminal_focused = self.window.firstResponder == self;
     int action = GLFW_RELEASE;
     const char old_first_char = _glfw.ns.text[0];
     _glfw.ns.text[0] = 0;
@@ -1363,7 +1430,7 @@ is_modifier_pressed(NSUInteger flags, NSUInteger target_mask, NSUInteger other_m
     const uint32_t key = vk_code_to_functional_key_code([event keyCode]);
     const unsigned int keycode = [event keyCode];
     const int mods = translateFlags(modifierFlags);
-    const bool process_text = !_glfw.ignoreOSKeyboardProcessing &&
+    const bool process_text = terminal_focused && !input_suspended && !_glfw.ignoreOSKeyboardProcessing &&
                               (!window->ns.textInputFilterCallback || window->ns.textInputFilterCallback(key, mods, keycode, modifierFlags) != 1);
     const char *mod_name = "unknown";
 
@@ -1388,6 +1455,14 @@ is_modifier_pressed(NSUInteger flags, NSUInteger target_mask, NSUInteger other_m
         default: return;
     }
 #undef action_for
+    if (!terminal_focused) {
+        if (action != GLFW_RELEASE) return;
+        bool was_pressed = false;
+        for (unsigned i = 0; i < arraysz(window->activated_keys); i++) {
+            if (window->activated_keys[i].native_key_id == keycode) { was_pressed = true; break; }
+        }
+        if (!was_pressed) return;
+    }
     GLFWkeyevent glfw_keyevent = {.key = key, .native_key = keycode, .native_key_id = keycode, .action = action, .mods = mods};
     debug_input(
         "\x1b[33mflagsChanged:\x1b[m modifier: %s native_key: 0x%x (%s) glfw_key: 0x%x %s\n",
@@ -1414,6 +1489,7 @@ is_modifier_pressed(NSUInteger flags, NSUInteger target_mask, NSUInteger other_m
 }
 
 - (void)keyUp:(NSEvent *)event {
+    if (!window) return;
     const uint32_t keycode = [event keyCode];
     const uint32_t key = translateKey(keycode, true);
     const int mods = translateFlags(remap_cocoa_flags([event modifierFlags]));
@@ -1889,7 +1965,7 @@ build_uri_list(_GLFWDropData *d) {
     // Restore first-responder status after native DnD; the drag operation can
     // displace the content view from first responder, silently breaking keyboard
     // input even though osw->is_focused remains true.
-    [window->ns.object makeFirstResponder:window->ns.view];
+    restore_terminal_first_responder(window);
     return YES;
 }
 
@@ -2065,6 +2141,7 @@ glfwCocoaPreserveDroppedFilePromises(GLFWwindow *w) {
 }
 
 - (void)setMarkedText:(id)string selectedRange:(NSRange)selectedRange replacementRange:(NSRange)replacementRange {
+    if (!window || input_suspended || self.window.firstResponder != self) return;
     const char *s = polymorphic_string_as_utf8(string);
     debug_input(
         "\n\tsetMarkedText: %s selectedRange: (%lu, %lu) replacementRange: (%lu, %lu)\n",
@@ -2186,6 +2263,7 @@ _glfwPlatformUpdateIMEState(_GLFWwindow *w, const GLFWIMEUpdateEvent *ev) {
 }
 
 - (void)insertText:(id)string replacementRange:(NSRange)replacementRange {
+    if (!window || input_suspended || self.window.firstResponder != self) return;
     if (!string) {
         debug_input("\n\tinsertText: nil replacementRange: (%lu, %lu)\n", replacementRange.location, replacementRange.length);
         return;
@@ -2364,6 +2442,7 @@ _glfwPlatformUpdateIMEState(_GLFWwindow *w, const GLFWIMEUpdateEvent *ev) {
 // For example, open System Settings->Keyboard->Keyboard Shortcuts->Services->Text, enable `Convert Text to Full Width`, select some text and execute the
 // service.
 - (BOOL)readSelectionFromPasteboard:(NSPasteboard *)pboard {
+    if (input_suspended || self.window.firstResponder != self) return NO;
     NSString *text = nil;
     NSArray *types = [pboard types];
     if ([types containsObject:NSPasteboardTypeString] == YES) {
@@ -2408,6 +2487,18 @@ _glfwPlatformUpdateIMEState(_GLFWwindow *w, const GLFWIMEUpdateEvent *ev) {
 @end
 
 @implementation GLFWWindow
+
+- (void)setStyleMask:(NSWindowStyleMask)styleMask {
+    // AppKit can clear firstResponder while rebuilding a borderless/fullscreen
+    // window. Preserve only an attached sidebar responder, never stale focus
+    // from a removed view or another window.
+    NSView *responder = agents_sidebar_for_responder(self.firstResponder) ? [(NSView *)self.firstResponder retain] : nil;
+    [super setStyleMask:styleMask];
+    if (responder.window == self && (self.firstResponder == nil || (glfw_window && self.firstResponder == glfw_window->ns.view))) {
+        [self makeFirstResponder:responder];
+    }
+    [responder release];
+}
 
 - (instancetype)initWithGlfwWindow:(NSRect)contentRect
                          styleMask:(NSWindowStyleMask)style
@@ -2524,7 +2615,7 @@ update_titlebar_button_visibility_after_fullscreen_transition(_GLFWwindow *w, bo
     [self setResizeIncrements:original];
     // When the window decoration is hidden, toggling fullscreen causes the style mask to be changed,
     // and causes the first responder to be cleared.
-    if (glfw_window && !glfw_window->decorated && glfw_window->ns.view) [self makeFirstResponder:glfw_window->ns.view];
+    if (glfw_window && !glfw_window->decorated && glfw_window->ns.view) restore_terminal_first_responder(glfw_window);
     if (glfw_window) update_titlebar_button_visibility_after_fullscreen_transition(glfw_window, false, !is_fullscreen_already);
 }
 
@@ -2899,7 +2990,7 @@ _glfwPlatformSetLayerShellConfig(_GLFWwindow *window, const GLFWLayerShellConfig
     [[nswindow standardWindowButton:NSWindowZoomButton] setHidden:true];
     [nswindow setStyleMask:NSWindowStyleMaskBorderless];
     // HACK: Changing the style mask can cause the first responder to be cleared
-    [nswindow makeFirstResponder:window->ns.view];
+    restore_terminal_first_responder(window);
     NSScreen *screen = screen_for_window_center(window);
     if (config.output_name[0]) {
         NSScreen *q = screen_for_name(config.output_name);
@@ -3250,7 +3341,7 @@ _glfwPlatformSetWindowMonitor(_GLFWwindow *window, _GLFWmonitor *monitor, int xp
     const NSUInteger styleMask = getStyleMask(window);
     [window->ns.object setStyleMask:styleMask];
     // HACK: Changing the style mask can cause the first responder to be cleared
-    [window->ns.object makeFirstResponder:window->ns.view];
+    restore_terminal_first_responder(window);
 
     if (window->monitor) {
         [window->ns.object setLevel:NSMainMenuWindowLevel + 1];
@@ -3326,13 +3417,13 @@ _glfwPlatformFramebufferTransparent(_GLFWwindow *window) {
 void
 _glfwPlatformSetWindowResizable(_GLFWwindow *window, bool enabled UNUSED) {
     [window->ns.object setStyleMask:getStyleMask(window)];
-    [window->ns.object makeFirstResponder:window->ns.view];
+    restore_terminal_first_responder(window);
 }
 
 void
 _glfwPlatformSetWindowDecorated(_GLFWwindow *window, bool enabled UNUSED) {
     [window->ns.object setStyleMask:getStyleMask(window)];
-    [window->ns.object makeFirstResponder:window->ns.view];
+    restore_terminal_first_responder(window);
 }
 
 void
@@ -3756,7 +3847,7 @@ _glfwPlatformToggleFullscreen(_GLFWwindow *w, unsigned int flags) {
             [window setStyleMask:sm];
         }
         // Changing the style mask causes the first responder to be cleared
-        [window makeFirstResponder:w->ns.view];
+        restore_terminal_first_responder(w);
         // If the dock and menubar are hidden going from maximized to fullscreen doesn't change the window size
         // and macOS forgets to trigger windowDidResize, so call it ourselves
         NSNotification *notification = [NSNotification notificationWithName:NSWindowDidResizeNotification object:window];
@@ -4409,7 +4500,7 @@ glfwCocoaSetWindowChrome(
         apply_titlebar_color_settings(window);
 
         // HACK: Changing the style mask can cause the first responder to be cleared
-        [nsw makeFirstResponder:window->ns.view];
+        restore_terminal_first_responder(window);
         window->ns.notch_cover_color = color;
         window->ns.notch_cover_opacity = background_opacity;
         if (window->ns.notch_cover_window) _glfwUpdateNotchCover(window);

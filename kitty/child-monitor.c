@@ -1527,6 +1527,10 @@ typedef struct cocoa_list {
 typedef struct {
     char *wd;
     cocoa_list open_urls, untracked_notifications;
+    struct {
+        struct { CocoaPendingAction action; char *data; } *items;
+        size_t count, capacity;
+    } sidebar_actions;
 } CocoaPendingActionsData;
 static CocoaPendingActionsData cocoa_pending_actions_data = {0};
 
@@ -1551,6 +1555,9 @@ cocoa_free_actions_data(void) {
     }
     cocoa_free_pending_list(&cocoa_pending_actions_data.open_urls);
     cocoa_free_pending_list(&cocoa_pending_actions_data.untracked_notifications);
+    for (size_t i = 0; i < cocoa_pending_actions_data.sidebar_actions.count; i++) free(cocoa_pending_actions_data.sidebar_actions.items[i].data);
+    free(cocoa_pending_actions_data.sidebar_actions.items);
+    zero_at_ptr(&cocoa_pending_actions_data.sidebar_actions);
 }
 
 void
@@ -1559,6 +1566,17 @@ set_cocoa_pending_action(CocoaPendingAction action, const char *data) {
         switch (action) {
             case LAUNCH_URLS: cocoa_append_to_pending_list(&cocoa_pending_actions_data.open_urls, data); break;
             case COCOA_NOTIFICATION_UNTRACKED: cocoa_append_to_pending_list(&cocoa_pending_actions_data.untracked_notifications, data); break;
+            case AGENTS_SIDEBAR_CLICK:
+            case AGENTS_SIDEBAR_MENU:
+            case AGENTS_SIDEBAR_RESIZE:
+            case AGENTS_SIDEBAR_GROUP_TOGGLE: {
+                size_t index = cocoa_pending_actions_data.sidebar_actions.count++;
+                ensure_space_for(&cocoa_pending_actions_data.sidebar_actions, items,
+                                 __typeof__(*cocoa_pending_actions_data.sidebar_actions.items), index + 1, capacity, 8, false);
+                cocoa_pending_actions_data.sidebar_actions.items[index].action = action;
+                cocoa_pending_actions_data.sidebar_actions.items[index].data = strdup(data);
+                break;
+            }
             default:
                 if (cocoa_pending_actions_data.wd) free(cocoa_pending_actions_data.wd);
                 cocoa_pending_actions_data.wd = strdup(data);
@@ -1607,13 +1625,21 @@ process_cocoa_pending_actions(void) {
     if (cocoa_pending_actions_data.wd) {
         if (cocoa_pending_actions[NEW_OS_WINDOW_WITH_WD]) { call_boss(new_os_window_with_wd, "sO", cocoa_pending_actions_data.wd, Py_True); }
         if (cocoa_pending_actions[NEW_TAB_WITH_WD]) { call_boss(new_tab_with_wd, "sO", cocoa_pending_actions_data.wd, Py_True); }
-        if (cocoa_pending_actions[AGENTS_SIDEBAR_CLICK]) { call_boss(agents_sidebar_click, "s", cocoa_pending_actions_data.wd); }
-        if (cocoa_pending_actions[AGENTS_SIDEBAR_MENU]) { call_boss(agents_sidebar_menu, "s", cocoa_pending_actions_data.wd); }
-        if (cocoa_pending_actions[AGENTS_SIDEBAR_RESIZE]) { call_boss(agents_sidebar_resize, "s", cocoa_pending_actions_data.wd); }
-        if (cocoa_pending_actions[AGENTS_SIDEBAR_GROUP_TOGGLE]) { call_boss(agents_sidebar_group_toggle, "s", cocoa_pending_actions_data.wd); }
         free(cocoa_pending_actions_data.wd);
         cocoa_pending_actions_data.wd = NULL;
     }
+    for (size_t i = 0; i < cocoa_pending_actions_data.sidebar_actions.count; i++) {
+        const char *payload = cocoa_pending_actions_data.sidebar_actions.items[i].data;
+        switch (cocoa_pending_actions_data.sidebar_actions.items[i].action) {
+            case AGENTS_SIDEBAR_CLICK: call_boss(agents_sidebar_click, "s", payload); break;
+            case AGENTS_SIDEBAR_MENU: call_boss(agents_sidebar_menu, "s", payload); break;
+            case AGENTS_SIDEBAR_RESIZE: call_boss(agents_sidebar_resize, "s", payload); break;
+            case AGENTS_SIDEBAR_GROUP_TOGGLE: call_boss(agents_sidebar_group_toggle, "s", payload); break;
+            default: break;
+        }
+        free(cocoa_pending_actions_data.sidebar_actions.items[i].data);
+    }
+    cocoa_pending_actions_data.sidebar_actions.count = 0;
     for (unsigned cpa = 0; cpa < cocoa_pending_actions_data.open_urls.count; cpa++) {
         if (cocoa_pending_actions_data.open_urls.items[cpa]) {
             call_boss(launch_urls, "s", cocoa_pending_actions_data.open_urls.items[cpa]);

@@ -45,6 +45,10 @@ rectangular pane footprint.
 
 
 
+In the Splits layout, pane borders between sibling panes can be dragged to
+resize them. The outer wall of the OS window is fixed and is not a resize
+handle; use the window's own native resize controls to change the overall
+terminal window size.
 The Stack Layout
 ------------------
 

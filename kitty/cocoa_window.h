@@ -77,6 +77,7 @@ extern uint8_t *render_single_ascii_char_as_mask(const char ch, size_t *result_w
 void get_cocoa_key_equivalent(uint32_t, int, char *key, size_t key_sz, int *);
 void set_cocoa_pending_action(CocoaPendingAction action, const char *);
 void cocoa_initialize_agents_sidebar_toggle(void *);
+bool cocoa_set_agents_sidebar_focus(void *nswindow, bool focused, bool toggle);
 void cocoa_set_agents_sidebar(
     void *,
     unsigned,

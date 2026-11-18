@@ -6,12 +6,54 @@ show them in a native macOS vertical surface on the left side of the kitty
 window. It is not a nested TUI and does not use kitty's existing tab-bar
 renderer.
 
-Enable the sidebar and map the toggle action in :file:`kitty.conf`::
+On macOS, press :kbd:`Cmd+B` to show the sidebar and focus its agent list.
+Press it again, or :kbd:`Esc`, to return to the terminal without hiding the
+sidebar. :kbd:`Cmd+Shift+B` shows or hides the sidebar. Both shortcuts can be
+rebound in :file:`kitty.conf`::
 
-    map kitty_mod+a toggle_agents_sidebar
+    map cmd+b focus_agents_sidebar
+    map cmd+shift+b toggle_agents_sidebar
 
-Click an agent row to focus its window. Press the mapped shortcut again to
-hide the sidebar and restore the terminal's full width.
+Keyboard navigation
+-------------------
+
+The sidebar has its own native keyboard focus. Up and Down move the selection
+through group headings and expanded agents without switching the active terminal
+or marking an agent's completion as read. Keyboard selection uses the same subtle
+filled highlight as mouse hover, without a border. The current terminal retains
+its distinct filled active highlight. Hovering an agent or group shows a pointing
+hand cursor; hovering the resize rail shows a horizontal resize cursor.
+Press Enter on an agent to activate its terminal and return keyboard input to it;
+Enter on a group expands or collapses it. Escape returns without activating the
+selection.
+
+Left collapses a group, or moves an agent selection to its parent group. Right
+expands a group, or enters its first agent. Home and End select the first and last
+items; Page Up and Page Down move by a viewport. The list scrolls immediately to
+keep the selection visible. On compact Mac keyboards, use the corresponding
+Fn-modified navigation keys.
+
+Press Shift+F10 in the list, or right-click, to open the actions menu. Tab,
+Shift+Tab and Escape return to the terminal; there is no footer button.
+Navigate the menu with arrow keys and Enter; Escape dismisses the menu first.
+The menu offers agent activation, a new terminal in the selected agent's working
+directory, copying that directory, and closing the agent's window using the
+existing close-confirmation rules. It also offers sidebar width adjustments in
+two-column steps, expanding or collapsing all groups, and hiding the sidebar.
+There is no Delete-to-close shortcut.
+
+Selection is retained by agent and group identity when titles or statuses change.
+If a selected agent disappears, its pending action is not redirected to another
+agent. Closing or hiding the sidebar returns focus before removing its controls.
+Switching away from its native window ends navigation without stealing focus
+back. A cancelled close confirmation restores sidebar focus only if the user has
+not moved elsewhere. An empty list still provides sidebar view actions.
+
+Click an agent row to activate its terminal, or click a group heading to expand
+or collapse it. Mouse operation remains available alongside keyboard navigation.
+
+Sidebar appearance and scope
+----------------------------
 
 The sidebar works with either value of :opt:`macos_native_tabs`. With
 :code:`macos_native_tabs no`, kitty's tab bar remains visible beside the
@@ -24,8 +66,8 @@ Right-click (or control-click) an agent row for a context menu acting on that
 row's agent window: focus it, open a new window in its working directory, copy
 that directory to the clipboard, or close the window. The menu is bound to the
 agent window, not the row position, so a sidebar refresh while the menu is open
-cannot redirect an action to a different agent. The ``No AI agents``
-placeholder has no menu.
+cannot redirect an action to a different agent. Empty lists and group headings
+offer only sidebar view actions, not agent actions.
 
 The macOS surface uses a translucent sidebar material, grouped sections,
 two-line agent rows, colored state indicators, and active-row highlighting.
@@ -36,7 +78,7 @@ height. The sidebar toggle is a native titlebar accessory after the traffic-ligh
 controls; AppKit reserves its width so the window title starts to its right.
 Its expanded and collapsed states use different background and chevron styles.
 
-The sidebar header displays the active grouping, agent count, and group count.
+The centered sidebar header displays the active grouping, agent count, and group count.
 For example, ``Grouping: tab · 3 agents · 2 groups`` means that three agent
 rows are arranged into two tab groups. The grouping strategy is configurable
 with :opt:`agents_sidebar_grouping`:
@@ -46,13 +88,19 @@ with :opt:`agents_sidebar_grouping`:
 * ``tab``: group rows by tab sequence number and kitty tab title;
 * ``path``: group rows by the full working directory.
 
-Click a group header to expand or collapse its agent rows. Group headers use a
-separate shaded band and a native disclosure chevron, with a short transition
-animation for both the icon and agent rows. Collapse state is retained while the
-group remains present in the sidebar and is saved with a persisted kitty session.
-The sidebar's visibility, width and collapsed group identities are restored with
-that session. Agent activity states, hover state and animation progress are
-recomputed or reset when kitty starts.
+Group headings use a full-width shaded band and a theme-aware disclosure chevron.
+Their entire clickable area uses the pointing-hand cursor, including the chevron.
+When the sidebar has keyboard focus, a full accent border surrounds the sidebar
+until focus returns to the terminal. The border is a focus indicator, separate
+from the active-agent highlight.
+Expanding or collapsing a group uses a short 180 ms native transition for its
+children and following groups. Mouse and keyboard operations share the same
+transition. macOS Reduce Motion disables it; status/title refreshes do not
+restart the animation.
+The scrollable native outline exposes group hierarchy, expansion, agent labels,
+status and the current-terminal marker to accessibility clients. Collapse state
+is saved with a persisted kitty session, together with sidebar visibility and
+width. Transient keyboard focus and selection are not restored at startup.
 
 Visible sidebars refresh agent state every second, including after session
 restoration and for unfocused panes. Lifecycle reports and other agent events

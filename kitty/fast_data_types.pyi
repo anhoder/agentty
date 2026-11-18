@@ -919,6 +919,7 @@ def set_agents_sidebar(
     rows: tuple[tuple[int, str, str, str, str, str, int, bool], ...],
     collapsed_groups: tuple[str, ...] = (),
 ) -> None: ...
+def set_agents_sidebar_focus(os_window_id: int, focused: bool, toggle: bool = False) -> bool: ...
 def toggle_macos_tab_overview(os_window_id: int) -> None:
     pass
 

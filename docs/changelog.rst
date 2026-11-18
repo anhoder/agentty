@@ -9,11 +9,37 @@ To update |kitty|, :doc:`follow the instructions <binary>`.
 Recent major new features
 ---------------------------
 
+- macOS: Add a full accent border around the Agents sidebar while it owns
+  keyboard focus, making Cmd+B focus state visible without changing agent rows.
+- macOS: Animate Agents group expansion and collapse with a short native
+  transition. Preserve in-flight motion during status/title refreshes, support
+  rapid reversal, and respect the system Reduce Motion preference.
 - macOS: Sign the app bundle before creating the DMG even when certificate
   signing is disabled, so TCC can match a code requirement instead of
   re-prompting for folder access on every launch. Set
   ``KITTY_CODESIGN_IDENTITY`` to a stable signing identity to keep grants
   across rebuilds.
+- macOS: Make Agents group headers span the sidebar, with theme-aware disclosure
+  chevrons and a pointing-hand cursor across the entire group heading.
+- macOS: Restore Agents sidebar mouse hover highlights and pointing-hand cursors.
+  Use the same filled hover treatment for keyboard selection instead of a border,
+  and restore resize-rail hover feedback.
+- macOS: Fix excessive Agents sidebar indentation and clipped row highlights.
+  Draw active backgrounds and interaction highlights across the whole row
+  instead of mixing native outline gutters with cell-local decoration.
+- macOS: Remove the Agents sidebar footer button and use the full remaining
+  height for its list. Keep actions available through Shift+F10 and right-click.
+- macOS: Center the Agents sidebar header horizontally and vertically, including
+  its empty-state label.
+- macOS: Add full keyboard navigation to the AI agents sidebar. Use Cmd+B to
+  enter or leave its native, scrollable outline and Cmd+Shift+B to toggle it.
+  Browse with arrow keys, activate with Enter, return with Escape, and access
+  agent and sidebar view actions through the keyboard-accessible context menu.
+  Keep selection stable during status updates and isolate sidebar input from
+  the terminal, including key releases and late input-method commits.
+- macOS: Make sidebar and pane-border resizing track the pointer directly instead
+  of repeatedly restarting pane spring animations and reading back GPU snapshots.
+  Preserve spring transitions for non-interactive layout changes.
 - Fix rounded progress handles rendering as outlines or inheriting pane shadow
   parameters instead of displaying a filled loading or progress indicator.
 - Add gap-only pane shadows with :opt:`pane_shadow_spread` (default ``50%``),

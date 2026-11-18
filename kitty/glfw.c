@@ -278,6 +278,36 @@ is_window_ready_for_callbacks(void) {
     return true;
 }
 
+#ifdef __APPLE__
+bool
+cocoa_dispatch_agents_sidebar_shortcut(void *glfw_window, const GLFWkeyevent *ev) {
+    if (ev->action != GLFW_PRESS || !global_state.boss) return false;
+    OSWindow *osw = os_window_for_glfw_window(glfw_window);
+    if (!osw) return false;
+    extern PyTypeObject PyKeyEvent_Type;
+    RAII_PyObject(key_event, PyObject_CallFunction(
+        (PyObject *)&PyKeyEvent_Type, "IIIiiiis", ev->key, ev->shifted_key, ev->alternate_key, ev->mods,
+        ev->action, ev->native_key, ev->ime_state, ""));
+    if (!key_event) {
+        PyErr_Print();
+        return false;
+    }
+    const id_type previous_osw_id = global_state.callback_os_window ? global_state.callback_os_window->id : 0;
+    global_state.callback_os_window = osw;
+    RAII_PyObject(result, PyObject_CallMethod(global_state.boss, "dispatch_agents_sidebar_shortcut", "O", key_event));
+    global_state.callback_os_window = previous_osw_id ? os_window_for_id(previous_osw_id) : NULL;
+    if (!result) {
+        PyErr_Print();
+        return false;
+    }
+    const int consumed = PyObject_IsTrue(result);
+    if (consumed < 0) PyErr_Print();
+    if (consumed > 0) request_tick_callback();
+    return consumed > 0;
+}
+#endif
+
+
 #define WINDOW_CALLBACK(name, fmt, ...) call_boss(name, "K" fmt, global_state.callback_os_window->id, __VA_ARGS__)
 
 static void
@@ -3179,6 +3209,25 @@ toggle_macos_tab_overview(PyObject *self UNUSED, PyObject *os_window_id) {
 #endif
     Py_RETURN_NONE;
 }
+
+static PyObject *
+set_agents_sidebar_focus(PyObject *self UNUSED, PyObject *args) {
+    id_type osw_id;
+    int focused, toggle = 0;
+    if (!PyArg_ParseTuple(args, "Kp|p", &osw_id, &focused, &toggle)) return NULL;
+#ifdef __APPLE__
+    OSWindow *osw = os_window_for_id(osw_id);
+    if (osw && osw->handle) {
+        return PyBool_FromLong(cocoa_set_agents_sidebar_focus(glfwGetCocoaWindow(osw->handle), focused != 0, toggle != 0));
+    }
+#else
+    (void)osw_id;
+    (void)focused;
+    (void)toggle;
+#endif
+    Py_RETURN_FALSE;
+}
+
 static PyObject *
 set_agents_sidebar(PyObject *self UNUSED, PyObject *args) {
     id_type osw_id;
@@ -3246,6 +3295,7 @@ set_agents_sidebar(PyObject *self UNUSED, PyObject *args) {
             goto cleanup;
         }
     }
+    if (enabled && osw->agents_sidebar_cols != cols) osw->suppress_pane_animation = true;
     osw->agents_sidebar_enabled = enabled != 0;
     osw->agents_sidebar_cols = enabled ? cols : 0;
     cell_width = osw->fonts_data ? osw->fonts_data->fcm.cell_width : 0;
@@ -4352,6 +4402,7 @@ static PyMethodDef module_methods[] = {
     METHODB(native_tab_group_order, METH_O),
     METHODB(toggle_macos_tab_overview, METH_O),
     METHODB(set_agents_sidebar, METH_VARARGS),
+    METHODB(set_agents_sidebar_focus, METH_VARARGS),
     METHODB(set_native_tab_title, METH_VARARGS),
     METHODB(get_content_scale_for_window, METH_NOARGS),
     METHODB(ring_bell, METH_VARARGS),
