@@ -9,6 +9,11 @@ To update |kitty|, :doc:`follow the instructions <binary>`.
 Recent major new features
 ---------------------------
 
+- macOS: Sign the app bundle before creating the DMG even when certificate
+  signing is disabled, so TCC can match a code requirement instead of
+  re-prompting for folder access on every launch. Set
+  ``KITTY_CODESIGN_IDENTITY`` to a stable signing identity to keep grants
+  across rebuilds.
 - Fix rounded progress handles rendering as outlines or inheriting pane shadow
   parameters instead of displaying a filled loading or progress indicator.
 - Add gap-only pane shadows with :opt:`pane_shadow_spread` (default ``50%``),

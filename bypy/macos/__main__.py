@@ -518,6 +518,18 @@ class Freeze(object):
             with timeit() as times:
                 sign_app(appdir, self.notarize)
             print('Signing completed in {} minutes {} seconds'.format(*times))
+        else:
+            # Sign even when no certificate is configured. macOS TCC stores a
+            # code requirement for permission grants; a completely unsigned
+            # bundle (and a universal binary whose slices are only partially
+            # linker-signed) can never match it, which makes every access to a
+            # protected folder prompt again. Ad-hoc grants are tied to the
+            # cdhash and need re-approval after a rebuild, so set
+            # KITTY_CODESIGN_IDENTITY to a stable certificate to keep them.
+            identity = os.environ.get('KITTY_CODESIGN_IDENTITY') or '-'
+            print('\nSigning app bundle with identity: {}'.format(identity))
+            subprocess.check_call(['codesign', '--force', '--deep', '--sign', identity, appdir])
+            subprocess.check_call(['codesign', '--verify', '--deep', '--strict', appdir])
         os.symlink('/Applications', join(tdir, 'Applications'))
         diskutil = '/usr/sbin/diskutil'
         if subprocess.run([diskutil, 'image', 'create', 'from', '--help'], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL).returncode == 0:
