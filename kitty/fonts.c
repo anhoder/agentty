@@ -620,6 +620,9 @@ free_font_groups(void) {
     // destroyed, then clear/rebind the pointers after the array is gone.
     save_window_font_groups();
     if (font_groups) {
+        // Clear dangling pointers into font_groups, otherwise the next call to
+        // save_window_font_groups() would read freed memory
+        for (size_t o = 0; o < global_state.num_os_windows; o++) global_state.os_windows[o].fonts_data = NULL;
         for (size_t i = 0; i < num_font_groups; i++) del_font_group(font_groups + i);
         free(font_groups);
         font_groups = NULL;
@@ -1253,6 +1256,8 @@ render_box_cell(FontGroup *fg, RunFont rf, CPUCell *cpu_cell, GPUCell *gpu_cell,
         return;
     }
     FontCellMetrics unscaled_metrics = fg->fcm;
+    // must be calculated before apply_scale_to_font_group() as it changes fg->font_sz_in_pts
+    const double line_scale = line_thickness_scale_for_font_size((FONTS_DATA_HANDLE)fg);
     float scale = apply_scale_to_font_group(fg, &rf);
     ensure_canvas_can_fit(fg, num_glyphs + 1, rf.scale);
     FontCellMetrics scaled_metrics = fg->fcm;
@@ -1271,7 +1276,7 @@ render_box_cell(FontGroup *fg, RunFont rf, CPUCell *cpu_cell, GPUCell *gpu_cell,
     for (unsigned i = 0, cnum = 0; i < num_glyphs; i++) {
         unsigned int ch = global_glyph_render_scratch.lc->chars[cnum++];
         while (!ch) ch = global_glyph_render_scratch.lc->chars[cnum++];
-        render_box_char(ch, fg->canvas.alpha_mask, src.right, src.bottom, fg->logical_dpi_x, fg->logical_dpi_y, scale);
+        render_box_char(ch, fg->canvas.alpha_mask, src.right, src.bottom, fg->logical_dpi_x, fg->logical_dpi_y, scale * line_scale);
         dest.left = i * scaled_metrics.cell_width + right_shift;
         dest.right = dest.left + scaled_metrics.cell_width;
         render_alpha_mask(fg->canvas.alpha_mask, fg->canvas.buf, &src, &dest, src.right, mask_stride, 0xffffff);
@@ -2477,9 +2482,10 @@ send_prerendered_sprites(FontGroup *fg) {
     // BEAM_IDX in shader.c and STRIKE_SPRITE_INDEX in
     // shaders.py and MISSING_GLYPH in font.c and dec_idx above
     do_one(add_missing_glyph(alpha_mask, fg->fcm));
-    do_one(add_beam_cursor(alpha_mask, fg->fcm, fg->logical_dpi_x));
-    do_one(add_underline_cursor(alpha_mask, fg->fcm, fg->logical_dpi_y));
-    do_one(add_hollow_cursor(alpha_mask, fg->fcm, fg->logical_dpi_x, fg->logical_dpi_y));
+    const double line_scale = line_thickness_scale_for_font_size((FONTS_DATA_HANDLE)fg);
+    do_one(add_beam_cursor(alpha_mask, fg->fcm, fg->logical_dpi_x, line_scale));
+    do_one(add_underline_cursor(alpha_mask, fg->fcm, fg->logical_dpi_y, line_scale));
+    do_one(add_hollow_cursor(alpha_mask, fg->fcm, fg->logical_dpi_x, fg->logical_dpi_y, line_scale));
     RunFont rf = {.scale = 1};
     Region rg = {.bottom = fg->fcm.cell_height, .right = fg->fcm.cell_width};
     sprite_index actual_dec_idx = index_for_decorations(fg, rf, rg, rg, fg->fcm).start_idx;
@@ -2665,21 +2671,6 @@ test_render_line(PyObject UNUSED *self, PyObject *args) {
     Py_RETURN_NONE;
 }
 
-static uint32_t
-alpha_blend(uint32_t fg, uint32_t bg) {
-    uint32_t r1 = (fg >> 16) & 0xFF, g1 = (fg >> 8) & 0xFF, b1 = fg & 0xFF, a = (fg >> 24) & 0xff;
-    uint32_t r2 = (bg >> 16) & 0xFF, g2 = (bg >> 8) & 0xFF, b2 = bg & 0xFF;
-    float alpha = a / 255.f;
-
-#define mix(x) uint32_t x = ((uint32_t)(alpha * x##1 + (1.0f - alpha) * x##2)) & 0xff;
-    mix(r);
-    mix(g);
-    mix(b);
-#undef mix
-    // Combine components into result color
-    return (0xff000000) | (r << 16) | (g << 8) | b;
-}
-
 static PyObject *
 render_decoration(PyObject *self UNUSED, PyObject *args) {
     const char *which;
@@ -2698,9 +2689,9 @@ render_decoration(PyObject *self UNUSED, PyObject *args) {
     u(straight);
     else if (strcmp(which, "strikethrough") == 0) add_strikethrough((uint8_t *)PyBytes_AS_STRING(ans), fcm);
     else if (strcmp(which, "missing") == 0) add_missing_glyph((uint8_t *)PyBytes_AS_STRING(ans), fcm);
-    else if (strcmp(which, "beam_cursor") == 0) add_beam_cursor((uint8_t *)PyBytes_AS_STRING(ans), fcm, dpi);
-    else if (strcmp(which, "underline_cursor") == 0) add_underline_cursor((uint8_t *)PyBytes_AS_STRING(ans), fcm, dpi);
-    else if (strcmp(which, "hollow_cursor") == 0) add_hollow_cursor((uint8_t *)PyBytes_AS_STRING(ans), fcm, dpi, dpi); else {
+    else if (strcmp(which, "beam_cursor") == 0) add_beam_cursor((uint8_t *)PyBytes_AS_STRING(ans), fcm, dpi, 1.0);
+    else if (strcmp(which, "underline_cursor") == 0) add_underline_cursor((uint8_t *)PyBytes_AS_STRING(ans), fcm, dpi, 1.0);
+    else if (strcmp(which, "hollow_cursor") == 0) add_hollow_cursor((uint8_t *)PyBytes_AS_STRING(ans), fcm, dpi, dpi, 1.0); else {
         Py_CLEAR(ans);
         PyErr_Format(PyExc_KeyError, "Unknown decoration type: %s", which);
     }
@@ -2719,18 +2710,45 @@ concat_cells(PyObject UNUSED *self, PyObject *args) {
     size_t num_cells = PyTuple_GET_SIZE(cells), r, c, i;
     PyObject *ans = PyBytes_FromStringAndSize(NULL, (size_t)4 * cell_width * cell_height * num_cells);
     if (ans == NULL) return PyErr_NoMemory();
+    if (!cell_width || !cell_height || !num_cells) return ans;
     pixel *dest = (pixel *)PyBytes_AS_STRING(ans);
+    const uint8_t bg_r = (bgcolor >> 16) & 0xff, bg_g = (bgcolor >> 8) & 0xff, bg_b = bgcolor & 0xff;
+    RAII_ALLOC(uint8_t, rgba, is_32_bit ? malloc((size_t)4 * cell_width) : NULL);
+    if (is_32_bit && !rgba) {
+        Py_DECREF(ans);
+        return PyErr_NoMemory();
+    }
     for (r = 0; r < cell_height; r++) {
         for (c = 0; c < num_cells; c++) {
             void *s = ((uint8_t *)PyBytes_AS_STRING(PyTuple_GET_ITEM(cells, c)));
             if (is_32_bit) {
+                // sprite pixels are 0xRRGGBBAA, convert them to RGBA bytes
                 pixel *src = (pixel *)s + cell_width * r;
-                for (i = 0; i < cell_width; i++) dest[i] = (pixel)bgcolor;
-                blend_over_opaque((uint8_t *)dest, 4, (const uint8_t *)src, cell_width);
+                uint8_t *d = (uint8_t *)dest;
+                for (i = 0; i < cell_width; i++) {
+                    rgba[4 * i] = (src[i] >> 24) & 0xff;
+                    rgba[4 * i + 1] = (src[i] >> 16) & 0xff;
+                    rgba[4 * i + 2] = (src[i] >> 8) & 0xff;
+                    rgba[4 * i + 3] = src[i] & 0xff;
+                    d[4 * i] = bg_r;
+                    d[4 * i + 1] = bg_g;
+                    d[4 * i + 2] = bg_b;
+                    d[4 * i + 3] = 0xff;
+                }
+                blend_over_opaque(d, 4, rgba, cell_width);
                 dest += cell_width;
             } else {
+                // white text with the sprite pixels as its alpha, blended onto bgcolor
                 uint8_t *src = (uint8_t *)s + cell_width * r;
-                for (i = 0; i < cell_width; i++, dest++) dest[0] = alpha_blend(0x00ffffff | ((src[i] & 0xff) << 24), bgcolor);
+                uint8_t *d = (uint8_t *)dest;
+                for (i = 0; i < cell_width; i++) {
+                    const uint32_t a = src[i];
+                    d[4 * i] = (uint8_t)((255 * a + bg_r * (255 - a)) / 255);
+                    d[4 * i + 1] = (uint8_t)((255 * a + bg_g * (255 - a)) / 255);
+                    d[4 * i + 2] = (uint8_t)((255 * a + bg_b * (255 - a)) / 255);
+                    d[4 * i + 3] = 0xff;
+                }
+                dest += cell_width;
             }
         }
     }

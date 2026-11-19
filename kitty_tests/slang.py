@@ -118,6 +118,14 @@ class TestSlang(BaseTest):
         g = pipeline('animation_start user:find-cursor|tab-change\nanimation_stop user:x.y_z')['groups'][0]
         self.ae(g['animation_start'], ('user:find-cursor', 'tab-change'))
         self.ae(g['animation_end_events'], ('user:x.y_z',))
+        g = pipeline('animation_start command-start|alternate-screen-exit\nanimation_stop command-finish|alternate-screen-enter')['groups'][0]
+        self.ae(g['animation_start'], ('command-start', 'alternate-screen-exit'))
+        self.ae(g['animation_end_events'], ('command-finish', 'alternate-screen-enter'))
+        # Trailing comments, including empty ones
+        for comment in ('# ', '#', '# some comment', '\t#x'):
+            g = pipeline(f'animation_toggle user:toggle-notch {comment}\nanimation_duration 600 {comment}')['groups'][0]
+            self.ae(g['animation_toggle'], ('user:toggle-notch',))
+            self.ae(g['animation_duration'], 600_000_000)
         for bad in ('user:', 'user:a/b', 'user:' + 'x' * 100, 'usr:a'):
             self.assertRaises(ValueError, pipeline, f'animation_start {bad}')
         # A toggled group stays on until toggled off unless told otherwise
@@ -127,6 +135,29 @@ class TestSlang(BaseTest):
         many = '|'.join(f'user:e{i}' for i in range(MAX_SHADER_ANIM_USER_EVENTS + 1))
         self.assertRaises(ValueError, pipeline, f'animation_start {many}')
         pipeline(f'animation_start {many.rpartition("|")[0]}')
+
+        # All sixteen builtin events stay distinct from each other and the
+        # first/last user bits in the shared 64-bit C event mask.
+        from kitty.shaders.slang import SHADER_ANIMATION_EVENTS
+
+        events = tuple(sorted(SHADER_ANIMATION_EVENTS))
+        self.ae(len(events), 16)
+        p = pipeline(*(f'animation_toggle {event}' for event in events))
+        ticks = [(event,) for event in events] + [(event,) for event in events]
+        expected = [tuple(g <= tick for g in range(len(events))) for tick in range(len(events))]
+        expected += [tuple(g > tick for g in range(len(events))) for tick in range(len(events))]
+        self.ae(simulate_custom_shader_animation(p, ticks), expected)
+        user_events = tuple(f'user:e{i}' for i in range(MAX_SHADER_ANIM_USER_EVENTS))
+        p = pipeline(
+            'animation_toggle layout-change',
+            f'animation_toggle {user_events[0]}\nanimation_stop {"|".join(user_events)}',
+            f'animation_toggle {user_events[-1]}',
+        )
+        ticks = [('layout-change',), (user_events[0],), (user_events[-1],), ('layout-change',), (user_events[0],), (user_events[-1],)]
+        self.ae(simulate_custom_shader_animation(p, ticks), [
+            (True, False, False), (True, True, False), (True, False, True),
+            (False, False, True), (False, True, True), (False, False, False),
+        ])
 
         # The action
         self.ae(parse_key_action('shader_event find-cursor'), KeyAction('shader_event', ('find-cursor', 'active')))
@@ -244,6 +275,38 @@ class TestSlang(BaseTest):
         self.assertFalse(states[62])
         self.assertTrue(frames[62])
         self.assertFalse(any(frames[63:]))
+
+    def test_custom_shader_focus_changes_between_frames(self):
+        # https://github.com/kovidgoyal/kitty/issues/10871 focus changes that
+        # happen before the OS window is next rendered, for instance, while it
+        # is hidden, must leave groups in the state for the final focus, rather
+        # than look like simultaneous focus-out and focus-in events
+        from kitty.fast_data_types import simulate_custom_shader_animation
+
+        lines = []
+        for spec in (
+            'animation_start os-window-focus-in\nanimation_stop os-window-focus-out',
+            'animation_start os-window-focus-out\nanimation_stop os-window-focus-in',
+            'animation_start window-focus-in|user-activity\nanimation_stop window-focus-out',
+        ):
+            lines.append('startgroup')
+            lines.extend(spec.splitlines())
+            lines.extend(('animation_step 0', 'shaders sample', 'endgroup'))
+        p = parse_pipeline_definition(lines, 'test')
+        focused, unfocused = (True, False, True), (False, True, False)
+        ticks: list[tuple[str, ...]] = [
+            ('focus:in',),
+            ('focus:out', 'focus:in'),  # hidden and shown again
+            ('focus:in', 'focus:out'),  # briefly focused while hidden
+            ('focus:in', 'focus:out', 'focus:in'),
+            ('focus:out', 'focus:in', 'focus:out'),
+            ('focus:in',),
+            # A start event in the same frame as focus out is a hard stop
+            ('focus:out', 'user-activity'),
+            ('user-activity',),
+        ]
+        expected = [focused, focused, unfocused, focused, unfocused, focused, unfocused, (False, True, True)]
+        self.ae(simulate_custom_shader_animation(p, ticks), expected)
 
     def test_custom_shader_animation_progress(self):
         from kitty.fast_data_types import simulate_custom_shader_animation

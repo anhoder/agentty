@@ -60,6 +60,51 @@ Navigation
 
 .. include:: generated/custom-shaders-navigation.rst
 
+Bell effects
+---------------
+
+These shaders run when a bell (the BEL character) is received in a window.
+The ``screen-shake`` shader shakes only the window in which the bell occurred,
+other windows in the tab are left alone. Use ``screen-shake-random`` for a
+jittery shake in random directions instead of side to side. The amount, speed
+and style of the shake can be changed, as explained at the top of the
+:repo_file:`shader file <kitty/shaders/custom/screen-shake.slang>`.
+
+To shake the window whenever a shell command fails, have your shell print a
+bell character when the last command exits with an error.
+
+.. highlight:: sh
+
+.. tab-set::
+
+   .. tab-item:: zsh
+
+        Add the following to :file:`~/.zshrc`::
+
+            autoload -Uz add-zsh-hook
+            bell_on_error() { local s=$?; (( s )) && printf '\a'; return $s }
+            add-zsh-hook precmd bell_on_error
+
+   .. tab-item:: bash
+
+        Add the following to :file:`~/.bashrc`::
+
+            bell_on_error() { local s=$?; (( s )) && printf '\a'; return $s; }
+            PROMPT_COMMAND="bell_on_error${PROMPT_COMMAND:+; $PROMPT_COMMAND}"
+
+   .. tab-item:: fish
+
+        Add the following to :file:`~/.config/fish/config.fish`::
+
+            function bell_on_error --on-event fish_postexec
+                test $status -ne 0; and printf '\a'
+            end
+
+
+.. highlight:: hlsl
+
+.. include:: generated/custom-shaders-bell.rst
+
 Retro Terminals
 -----------------
 
@@ -260,7 +305,8 @@ The pipeline part
 
 A pipeline file (:file:`.pipeline`) is a plain text file that controls how
 one or more shaders are assembled into a rendering pipeline. Lines starting
-with ``#`` are comments; blank lines are ignored.
+with ``#`` are comments, as is everything after a ``#`` that is preceded by
+whitespace; blank lines are ignored.
 
 **Top-level directives** (outside any group):
 
@@ -318,12 +364,12 @@ Directives inside a group:
 ``viewport_pos <x> <y>``
     The bottom-left corner of this group's rendering region, expressed as
     unit floats in UV coordinates (0,0 = bottom-left of the screen, 1,1 =
-    top-right). Defaults to ``0 0``. Ignored for the final group, which
-    always covers the full screen.
+    top-right). Defaults to ``0 0``. The final group must use this default,
+    since it always covers the full screen. Non-default values are rejected.
 
 ``viewport_size <w> <h>``
     The width and height of the rendering region as unit floats. Defaults to
-    ``1 1``. Ignored for the final group.
+    ``1 1``. The final group must use this default; non-default values are rejected.
 
 ``output_texture <name>``
     Where the group writes its output. The default (``default``) ping-pongs
@@ -335,8 +381,9 @@ Directives inside a group:
 
 ``animation_start <event>[|<event> …]``
     Events that trigger the start of this group's animation. Multiple events
-    are separated by ``|``. If neither this nor ``animation_toggle`` is
-    specified the group runs on every frame unconditionally. See *Animation events* below for the full list.
+    are separated by ``|``. A group with neither this nor ``animation_toggle``
+    nor ``attach`` runs on every frame unconditionally. See *Animation events*
+    below for the full list.
 
 ``animation_stop <token>[|<token> …]``
     When to stop the animation. Tokens are separated by ``|`` and may be:
@@ -440,10 +487,11 @@ Directives inside a group:
     directives. This is the primary way to build multi-pass effects where
     several groups must activate and deactivate together. The first group in
     a pipeline cannot use ``attach``. An attached group may also carry its
-    own ``animation_start`` — in that case it becomes active when *either*
-    condition is true (its own events or the preceding group being active).
-    If an attached group has no ``animation_start`` of its own, it mirrors
-    the preceding group exactly: it activates when that group activates and
+    own ``animation_start`` or ``animation_toggle`` — in that case it becomes
+    active when *either* condition is true (its own events or the preceding
+    group being active). If an attached group has neither ``animation_start``
+    nor ``animation_toggle`` of its own, it mirrors the preceding group
+    exactly: it activates when that group activates and
     deactivates when that group deactivates, and has the same
     ``animation_progress`` as that group, so both groups animate in perfect
     sync. Its own ``animation_curve``, ``animation_duration`` and
@@ -534,9 +582,9 @@ reads from ``t.backbuffer`` and writes somewhere:
 * ``output_texture a|b|persist``: the group writes into the named texture
   instead, leaving the backbuffer intact for the next group.
 
-Groups that have ``animation_start`` set are skipped entirely when their
-animation is not active, saving GPU work. Groups without any
-``animation_start`` run on every frame.
+Groups with ``animation_start``, ``animation_toggle`` or ``attach`` are skipped
+entirely when their animation is not active, saving GPU work. Groups without
+any of these directives run on every frame.
 
 **A minimal pipeline** — one shader, event-driven animation::
 
@@ -626,12 +674,17 @@ be combined with ``|`` — any one of them will trigger the action.
      - The active tab changes.
 
    * - ``bell-in-window``
-     - A bell (BEL character) is received in any kitty window.
+     - A bell (BEL character) is received in a visible kitty window. Bells
+       in windows in inactive tabs or hidden by overlays or the layout do not
+       trigger this event. This fires regardless of
+       :opt:`visual_bell_duration`, so a shader can be used as a replacement
+       for the builtin visual bell flash, by setting that option to zero.
        The geometry of the window in which the most recent bell occurred is
        available in ``d.bell_window_geometry`` (UV co-ordinates, origin
        bottom-left; ``.xy`` = lower-left corner, ``.zw`` = width and height).
-       If that window is not currently visible in the active tab or layout,
-       ``d.bell_window_geometry`` equals ``d.central_area``.
+       If that window is no longer visible, for example because it was closed
+       or the active tab changed, ``d.bell_window_geometry`` equals
+       ``d.central_area``.
 
    * - ``user-activity``
      - Any keyboard or mouse input is received.
@@ -657,12 +710,52 @@ be combined with ``|`` — any one of them will trigger the action.
        that uses a different layout. Prefer the ``active_layout`` directive
        when all you need is to restrict a group to some layouts.
 
+   * - ``command-start``
+     - A command starts running in the active window. Requires
+       :ref:`shell integration <shell_integration>`. Whether a command is
+       running is available in ``d.active_window_command_running`` and the
+       time since it started in ``d.active_window_command_state_age``.
+
+   * - ``command-finish``
+     - A command finishes running in the active window. Requires
+       :ref:`shell integration <shell_integration>`.
+
+   * - ``alternate-screen-enter``
+     - The active window switches to the alternate screen, which is used by
+       full screen programs such as editors and pagers. Whether the
+       alternate screen is in use is available in
+       ``d.active_window_alternate_screen``.
+
+   * - ``alternate-screen-exit``
+     - The active window switches back to the main screen.
+
    * - ``user:<name>``
      - Sent by the :ac:`shader_event` action, typically from a mapping, see
        :ref:`custom_shader_mappings`. ``<name>`` can be any combination of
        letters, digits, underscores, hyphens and periods, up to 63 characters.
        A pipeline can use up to 48 different user events.
 
+The command and alternate screen events only fire for changes in the active
+window. Switching to another window fires ``window-focus-in`` instead, after
+which ``d.active_window_command_running`` and
+``d.active_window_alternate_screen`` describe the new window. For example, to
+fade in an effect while a command runs and fade it out when the command
+finishes::
+
+    startgroup
+        animation_start command-start
+        animation_stop command-finish
+        animation_duration 300
+        animation_reverse yes
+        shaders my-command-running-effect
+    endgroup
+
+The shader can multiply its effect by ``1 - d.active_window_alternate_screen``
+to hide it while a full screen program such as an editor or a pager, even one
+started by another program as with ``git log``, is running.
+
 Note that if both a start event and a focus-out event fire in the same frame
 (for example, a mouse click that simultaneously moves focus away), the
 focus-out takes priority and the animation is not (re-)started.
+When focus changes more than once before the OS window is next drawn, for
+example, while it is hidden, only the last change counts.

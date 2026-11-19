@@ -60,13 +60,7 @@ typedef struct UIRenderData {
 static inline float
 row_offset_for_screen(const Screen *screen) {
     if (!pixel_scroll_enabled(screen) || !screen->cell_size.height) return 0.f;
-    return -1.f + (float)(screen->pixel_scroll_offset_y / (double)screen->cell_size.height);
-}
-
-static inline float
-scroll_offset_lines_for_screen(const Screen *screen) {
-    if (!pixel_scroll_enabled(screen) || !screen->cell_size.height) return 0.f;
-    return (float)(screen->pixel_scroll_offset_y / (double)screen->cell_size.height);
+    return -1.f + (float)(rendered_pixel_scroll_offset_y(screen) / (double)screen->cell_size.height);
 }
 
 // Sprites {{{
@@ -445,7 +439,7 @@ thickness_as_float(const OSWindow *os_window, unsigned level) {
     level = MIN(level, arraysz(OPT(box_drawing_scale)));
     double pts = OPT(box_drawing_scale)[level];
     double dpi = (os_window->fonts_data->logical_dpi_x + os_window->fonts_data->logical_dpi_y) / 2.0;
-    return pts * dpi / 72.0;
+    return line_thickness_scale_for_font_size(os_window->fonts_data) * pts * dpi / 72.0;
 }
 
 
@@ -865,7 +859,7 @@ init_custom_programs(void) {
         // animations triggered by os-window-focus-in start on the first render
         // after shader compilation (the focus-in event fired before shaders were
         // compiled and was consumed without being processed).
-        if (osw->is_focused) { osw->shader_anim_event_registry |= (1u << SHADER_ANIM_EVENT_OS_WINDOW_FOCUS_IN) | (1u << SHADER_ANIM_EVENT_WINDOW_FOCUS_IN); }
+        if (osw->is_focused) record_os_window_focus_change_for_shaders(osw, true);
     }
     debug_rendering(
         "Custom shaders: %zu program(s), %zu group(s), textures_mask=0x%x, initially_active=%d\n",
@@ -933,6 +927,10 @@ shader_anim_event_mask_str(ShaderAnimEventMask mask) {
         {1u << SHADER_ANIM_EVENT_USER_IDLE, "user-idle"},
         {1u << SHADER_ANIM_EVENT_CURSOR_TRAIL_MOVE, "cursor-trail-move"},
         {1u << SHADER_ANIM_EVENT_CURSOR_TRAIL_STOP, "cursor-trail-stop"},
+        {1u << SHADER_ANIM_EVENT_COMMAND_START, "command-start"},
+        {1u << SHADER_ANIM_EVENT_COMMAND_FINISH, "command-finish"},
+        {1u << SHADER_ANIM_EVENT_ALTERNATE_SCREEN_ENTER, "alternate-screen-enter"},
+        {1u << SHADER_ANIM_EVENT_ALTERNATE_SCREEN_EXIT, "alternate-screen-exit"},
         {1u << SHADER_ANIM_EVENT_LAYOUT_CHANGE, "layout-change"},
     };
     bool first = true;
@@ -1324,7 +1322,7 @@ cell_update_uniform_block(
     }
     rd->use_cell_for_selection_bg = IS_SPECIAL_COLOR(highlight_bg) ? 1. : 0.;
     // Cursor position
-    Line *line_for_cursor = NULL;
+    Line *line_for_cursor = NULL, overlay_line_for_cursor;
     rd->cursor_opacity = MAX(0, MIN(cursor->cursor_opacity, 1));
     rd->blink_opacity = MAX(0, MIN(cursor->text_blink_opacity, 1));
     // The extra cursors inherit the colors of the main cursor and, optionally,
@@ -1349,6 +1347,15 @@ cell_update_uniform_block(
             } else {
                 linebuf_init_line(screen->linebuf, cursor->y);
                 line_for_cursor = screen->linebuf->line;
+                if (screen_is_overlay_active(screen) && cursor->y == screen->overlay_line.ynum) {
+                    // The linebuf holds the original line, the pre-edit text is
+                    // drawn over it only in the overlay cells, so use those to size
+                    // and color the cursor, for example when it is over a wide character.
+                    overlay_line_for_cursor = *line_for_cursor;
+                    overlay_line_for_cursor.cpu_cells = screen->overlay_line.cpu_cells;
+                    overlay_line_for_cursor.gpu_cells = screen->overlay_line.gpu_cells;
+                    line_for_cursor = &overlay_line_for_cursor;
+                }
             }
         }
         if (line_for_cursor) {
@@ -1480,31 +1487,17 @@ cell_prepare_to_render(ssize_t vao_idx, Screen *screen, FONTS_DATA_HANDLE fonts_
         changed = true;                                                                     \
     }
 
-#define update_graphics_data(grman)             \
-    grman_update_layers(                        \
-        grman,                                  \
-        screen->scrolled_by,                    \
-        scroll_offset_lines_for_screen(screen), \
-        -1.f,                                   \
-        1.f,                                    \
-        2.f / screen->columns,                  \
-        2.f / screen->lines,                    \
-        screen->columns,                        \
-        screen->lines,                          \
-        screen->cell_size)
-
     if (screen->paused_rendering.expires_at) {
         if (!screen->paused_rendering.cell_data_updated) {
             update_selection_data;
-            update_graphics_data(screen->paused_rendering.grman);
+            screen_update_graphics_layers(screen);
         }
         screen->paused_rendering.cell_data_updated = true;
-        screen->last_rendered.scrolled_by = screen->paused_rendering.scrolled_by;
     } else {
         if (screen->reload_all_gpu_data || screen_resized || screen_is_selection_dirty(screen)) update_selection_data;
-        if (update_graphics_data(screen->grman)) changed = true;
-        screen->last_rendered.scrolled_by = screen->scrolled_by;
+        if (screen_update_graphics_layers(screen)) changed = true;
     }
+    screen->last_rendered.scrolled_by = rendered_scrolled_by(screen);
 #undef update_selection_data
 #undef update_cell_data
     screen->last_rendered.columns = screen->columns;
@@ -1717,31 +1710,22 @@ draw_drag_preview_overlay(const UIRenderData *ui) {
 
 static bool
 has_scrollbar(Window *w, Screen *screen) {
-    if (screen->linebuf != screen->main_linebuf || !screen->historybuf->count) return false;
-    switch (OPT(scrollbar)) {
-        case SCROLLBAR_NEVER: return false;
-        case SCROLLBAR_ALWAYS: return true;
-        case SCROLLBAR_ON_SCROLLED: return screen->scrolled_by > 0;
-        case SCROLLBAR_ON_HOVERED: return w->scrollbar.is_hovering;
-        case SCROLLBAR_ON_SCROLL_AND_HOVER: return screen->scrolled_by > 0 && w->scrollbar.is_hovering;
-        case SCROLLBAR_ON_SCROLL_OR_HOVER: return screen->scrolled_by > 0 || w->scrollbar.is_hovering;
-    }
-    return false;
+    return screen_has_scrollbar(screen, w->scrollbar.is_hovering);
 }
 
 static unsigned
-render_a_bar(const UIRenderData *ui, WindowBarData *bar, PyObject *title, bool along_bottom) {
-    unsigned border_width = (unsigned)ceil(thickness_as_float(ui->os_window, 1));
-    unsigned bar_height = ui->cell_height + 2;
-    unsigned bar_width = ui->screen_width - 2 * border_width;
-    if (!bar->buf || bar->width != bar_width || bar->height != bar_height) {
-        free(bar->buf);
-        bar->buf = malloc((size_t)4 * bar_width * bar_height);
-        if (!bar->buf) return 0;
-        bar->height = bar_height;
-        bar->width = bar_width;
-        bar->needs_render = true;
-    }
+bar_border_width(const UIRenderData *ui) {
+    return MAX(1u, (unsigned)ceil(thickness_as_float(ui->os_window, 1)));
+}
+
+// The rect, including borders, of a full width bar along the top of the window
+static Viewport
+window_bar_rect(const UIRenderData *ui) {
+    return (Viewport){.left = ui->screen_left, .top = ui->screen_top, .width = ui->screen_width, .height = ui->cell_height + 2 + 2 * bar_border_width(ui)};
+}
+
+static void
+bar_colors(const UIRenderData *ui, color_type *fg, color_type *bg) {
 #define RGBCOL(which, fallback)                                       \
     (0xff000000 | colorprofile_to_color_with_fallback(                \
                       ui->screen->color_profile,                      \
@@ -1749,12 +1733,32 @@ render_a_bar(const UIRenderData *ui, WindowBarData *bar, PyObject *title, bool a
                       ui->screen->color_profile->configured.which,    \
                       ui->screen->color_profile->overridden.fallback, \
                       ui->screen->color_profile->configured.fallback))
-    color_type fg = RGBCOL(default_fg, default_fg), bg = RGBCOL(default_bg, default_bg);
+    *fg = RGBCOL(default_fg, default_fg);
+    *bg = RGBCOL(default_bg, default_bg);
 #undef RGBCOL
+}
+
+// Render title into bar->buf, if needed. The rendered text is max_width x
+// height pixels, unless fit_to_text is true, in which case its width is reduced
+// to the width of the text. The actual width is stored in bar->width.
+static bool
+render_bar_text(
+    const UIRenderData *ui, WindowBarData *bar, PyObject *title, unsigned max_width, unsigned height, bool fit_to_text, color_type fg, color_type bg) {
+    if (!title) return false;
+    if (!bar->buf || bar->requested_width != max_width || bar->height != height || bar->fit_to_text != fit_to_text) {
+        free(bar->buf);
+        bar->buf = malloc((size_t)4 * max_width * height);
+        if (!bar->buf) return false;
+        bar->requested_width = max_width;
+        bar->width = max_width;
+        bar->height = height;
+        bar->fit_to_text = fit_to_text;
+        bar->needs_render = true;
+    }
     if (bar->last_drawn_title_object_id != title || bar->needs_render) {
         static char titlebuf[2048] = {0};
-        if (!title) return 0;
-        snprintf(titlebuf, arraysz(titlebuf), " %s", PyUnicode_AsUTF8(title));
+        snprintf(titlebuf, arraysz(titlebuf), fit_to_text ? " %s " : " %s", PyUnicode_AsUTF8(title));
+        size_t actual_width = max_width;
         if (!draw_window_title(
                 ui->os_window->fonts_data->font_sz_in_pts,
                 ui->os_window->fonts_data->logical_dpi_y,
@@ -1763,13 +1767,28 @@ render_a_bar(const UIRenderData *ui, WindowBarData *bar, PyObject *title, bool a
                 fg,
                 bg,
                 bar->buf,
-                bar_width,
-                bar_height,
-                NULL))
-            return 0;
+                max_width,
+                height,
+                fit_to_text ? &actual_width : NULL))
+            return false;
+        bar->width = MAX(1u, (unsigned)actual_width);
         Py_CLEAR(bar->last_drawn_title_object_id);
         bar->last_drawn_title_object_id = Py_NewRef(title);
     }
+    return true;
+}
+
+// Draw the text previously rendered by render_bar_text() surrounded by a
+// border. border_rect must be the size of the rendered text plus the borders.
+static void
+draw_bar(const UIRenderData *ui, const WindowBarData *bar, Viewport border_rect, color_type fg, color_type bg) {
+    const double thickness = thickness_as_float(ui->os_window, 1);
+    const unsigned border_width = bar_border_width(ui);
+    // The rounded rect shader anti-aliases each edge over a band extending
+    // one pixel on either side of it, so keep the drawn line at least half a
+    // pixel inside the border_width pixels reserved for it, otherwise it would
+    // bleed onto the rendered title.
+    const float drawn_thickness = (float)MIN(thickness, border_width - 0.5);
     static ImageRenderData data = {.group_count = 1};
     gpu_data_for_image(&data, -1, 1, 1, -1);
     glGenTextures(1, &data.texture_id);
@@ -1779,22 +1798,30 @@ render_a_bar(const UIRenderData *ui, WindowBarData *bar, PyObject *title, bool a
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
-    glTexImage2D(GL_TEXTURE_2D, 0, GL_SRGB_ALPHA, bar_width, bar_height, 0, GL_RGBA, GL_UNSIGNED_BYTE, bar->buf);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_SRGB_ALPHA, bar->width, bar->height, 0, GL_RGBA, GL_UNSIGNED_BYTE, bar->buf);
     bind_program(GRAPHICS_PROGRAM);
-    Viewport border_rect = {.height = bar_height + 2 * border_width, .left = ui->screen_left, .width = ui->screen_width, .top = ui->screen_top};
-    if (along_bottom) border_rect.top += ui->screen_height - border_rect.height;
     const unsigned sh = ui->full_framebuffer_height;
     // first blank the area to be drawn to background
     enable_scissor_using_top_left_origin(border_rect, sh);
     blank_canvas(ui->bg_alpha, bg, false);
     disable_scissor();
     // then draw the rendered text
-    save_viewport_using_top_left_origin(border_rect.left + border_width, border_rect.top + border_width, bar_width, bar_height, sh);
+    save_viewport_using_top_left_origin(border_rect.left + border_width, border_rect.top + border_width, bar->width, bar->height, sh);
     draw_graphics(GRAPHICS_PROGRAM, &data, 0, 1, 1.f);
     restore_viewport();
     free_texture(&data.texture_id);
     // finally draw border with transparent bg
-    draw_rounded_rect(border_rect, sh, (float)thickness_as_float(ui->os_window, 1), ui->cell_width, 0.f, fg, bg, 0.f, 0, 0.f, 0.f);
+    draw_rounded_rect(border_rect, sh, drawn_thickness, ui->cell_width, 0.f, fg, bg, 0.f, 0, 0.f, 0.f);
+}
+
+static unsigned
+render_a_bar(const UIRenderData *ui, WindowBarData *bar, PyObject *title, Viewport border_rect) {
+    const unsigned border_width = bar_border_width(ui);
+    if (border_rect.width <= 2 * border_width || border_rect.height <= 2 * border_width) return 0;
+    color_type fg, bg;
+    bar_colors(ui, &fg, &bg);
+    if (!render_bar_text(ui, bar, title, border_rect.width - 2 * border_width, border_rect.height - 2 * border_width, false, fg, bg)) return 0;
+    draw_bar(ui, bar, border_rect, fg, bg);
     return border_rect.height;
 }
 
@@ -1816,12 +1843,47 @@ has_hyperlink_target(OSWindow *os_window, Window *w, Screen *screen) {
            !is_mouse_hidden(os_window) && global_state.mouse_hover_in_window == w->id;
 }
 
+// Return the offset from the top of the screen at which to draw a bar of the
+// specified height so that it does not obscure the hovered line
+static unsigned
+hyperlink_target_bar_top(const UIRenderData *ui, unsigned bar_height) {
+    const double max_top = ui->screen_height - bar_height;
+    const double row_top = (double)ui->screen->current_hyperlink_under_mouse.y * ui->cell_height + ui->screen->pixel_scroll_offset_y;
+    const double row_bottom = row_top + ui->cell_height;
+    double top = 0;
+    switch (OPT(hyperlink_target_position)) {
+        case HYPERLINK_TARGET_TOP: top = row_top < bar_height ? max_top : 0; break;
+        case HYPERLINK_TARGET_BOTTOM: top = row_bottom > max_top ? 0 : max_top; break;
+        case HYPERLINK_TARGET_BELOW:
+        case HYPERLINK_TARGET_TOOLTIP: top = row_bottom > max_top ? row_top - bar_height : row_bottom; break;
+    }
+    return (unsigned)MAX(0., MIN(top, max_top));
+}
+
+// Draw the URL in a box sized to fit it, starting at the hovered cell, moved
+// left as needed to fit in the window. rect is the full width bar it replaces.
+static void
+draw_hyperlink_target_tooltip(const UIRenderData *ui, Viewport rect, PyObject *url) {
+    const unsigned border_width = bar_border_width(ui);
+    if (rect.width <= 2 * border_width || rect.height <= 2 * border_width) return;
+    WindowBarData *bar = &ui->window->title_bar_data;
+    color_type fg, bg;
+    bar_colors(ui, &fg, &bg);
+    if (!render_bar_text(ui, bar, url, rect.width - 2 * border_width, rect.height - 2 * border_width, true, fg, bg)) return;
+    const unsigned width = bar->width + 2 * border_width;
+    const unsigned left = ui->screen->current_hyperlink_under_mouse.x * ui->cell_width;
+    rect.left += MIN(left, rect.width - width);
+    rect.width = width;
+    draw_bar(ui, bar, rect, fg, bg);
+}
+
 static void
 draw_hyperlink_target(const UIRenderData *ui) {
     if (!has_hyperlink_target(ui->os_window, ui->window, ui->screen)) return;
     Screen *screen = ui->screen;
     Window *window = ui->window;
-    const bool along_bottom = screen->current_hyperlink_under_mouse.y < 3;
+    Viewport rect = window_bar_rect(ui);
+    if (rect.height > ui->screen_height) return;
     WindowBarData *bd = &window->url_target_bar_data;
     hyperlink_id_type hid = screen->current_hyperlink_under_mouse.id;
     if (bd->hyperlink_id_for_title_object != hid) {
@@ -1837,8 +1899,10 @@ draw_hyperlink_target(const UIRenderData *ui) {
         bd->needs_render = true;
     }
     if (bd->last_drawn_title_object_id == NULL) return;
-    PyObject *ref = Py_NewRef(bd->last_drawn_title_object_id); // render_a_bar clears bd->last_drawn_title_object_id
-    render_a_bar(ui, &window->title_bar_data, bd->last_drawn_title_object_id, along_bottom);
+    PyObject *ref = Py_NewRef(bd->last_drawn_title_object_id); // render_bar_text() clears bd->last_drawn_title_object_id
+    rect.top += hyperlink_target_bar_top(ui, rect.height);
+    if (OPT(hyperlink_target_position) == HYPERLINK_TARGET_TOOLTIP) draw_hyperlink_target_tooltip(ui, rect, bd->last_drawn_title_object_id);
+    else render_a_bar(ui, &window->title_bar_data, bd->last_drawn_title_object_id, rect);
     Py_DECREF(ref);
 }
 
@@ -2020,7 +2084,7 @@ draw_window_number(const UIRenderData *ui) {
     if (!has_window_number(ui->window, ui->screen)) return;
     unsigned title_bar_height = 0, requested_height = ui->screen_height;
     if (ui->window->title && PyUnicode_Check(ui->window->title) && (requested_height > (ui->cell_height + 1) * 2)) {
-        title_bar_height = render_a_bar(ui, &ui->window->title_bar_data, ui->window->title, false);
+        title_bar_height = render_a_bar(ui, &ui->window->title_bar_data, ui->window->title, window_bar_rect(ui));
     }
     unsigned height_for_letter = ui->screen_height - title_bar_height - ui->cell_height;
     unsigned width_for_letter = ui->screen_width - ui->cell_width;
@@ -2085,9 +2149,8 @@ draw_scrollbar(const UIRenderData *ui) {
     if (!window || !screen || !has_scrollbar(window, screen)) return;
 
     color_type bar_color = scrollbar_color(screen, OPT(scrollbar_handle_color)), track_color = scrollbar_color(screen, OPT(scrollbar_track_color));
-    double cell_frac = (double)screen->pixel_scroll_offset_y / screen->cell_size.height;
-    if (!OPT(pixel_scroll)) cell_frac = 0;
-    float bar_frac = (float)(screen->scrolled_by + cell_frac) / MAX(1u, (float)screen->historybuf->count);
+    float bar_frac, visible_fraction;
+    screen_scrollbar_geometry(screen, &bar_frac, &visible_fraction);
     float opacity = OPT(scrollbar_handle_opacity);
     float track_opacity = window->scrollbar.is_hovering ? OPT(scrollbar_track_hover_opacity) : OPT(scrollbar_track_opacity);
     GLsizei scrollbar_width_px = (GLsizei)(OPT(scrollbar_width) * ui->cell_width);
@@ -2106,7 +2169,6 @@ draw_scrollbar(const UIRenderData *ui) {
     GLsizei scrollbar_height = window_height - 2 * scrollbar_gap_px;
 
     // Calculate thumb size and position
-    float visible_fraction = (float)screen->lines / (float)(screen->lines + screen->historybuf->count);
     float min_thumb_height_fraction = (OPT(scrollbar_min_handle_height) * ui->cell_height) / (float)window_height;
     float thumb_height_fraction = MAX(min_thumb_height_fraction, visible_fraction);
 
@@ -3381,6 +3443,10 @@ run_custom_end_shader(OSWindow *os_window, float sx, float sy, monotonic_t now) 
         float timestamp_fraction;
         float time_since_last_render;
         float cursor_trail_age;
+        float active_window_alternate_screen;
+        float active_window_command_running;
+        float active_window_alternate_screen_age;
+        float active_window_command_state_age;
     };
     // This struct is a hand written mirror of the std140 layout of
     // KittyCustomShaderData in types.slang, so check that they match once.
@@ -3415,6 +3481,8 @@ run_custom_end_shader(OSWindow *os_window, float sx, float sy, monotonic_t now) 
     color_type cursor_color = OPT(foreground);
     float cursor_opacity = 0.f;
     WindowGeometry active_win_geom = {0};
+    d->active_window_alternate_screen_age = -1.f;
+    d->active_window_command_state_age = -1.f;
     if (os_window->num_tabs > 0) {
         Tab *t = os_window->tabs + os_window->active_tab;
         if (t->num_windows) {
@@ -3445,6 +3513,12 @@ run_custom_end_shader(OSWindow *os_window, float sx, float sy, monotonic_t now) 
                 active_bg = colorprofile_to_color(s->color_profile, s->color_profile->overridden.default_bg, s->color_profile->configured.default_bg).rgb;
                 cursor_color = s->last_rendered.cursor_bg;
                 cursor_opacity = MAX(0.f, MIN(s->cursor_render_info.cursor_opacity, 1.f));
+                d->active_window_alternate_screen = s->linebuf == s->alt_linebuf ? 1.f : 0.f;
+                d->active_window_command_running = s->command_state.running ? 1.f : 0.f;
+                const monotonic_t alt_changed_at = MAX(s->alternate_screen.entered_at, s->alternate_screen.exited_at);
+                if (alt_changed_at) d->active_window_alternate_screen_age = (float)monotonic_t_to_s_double(now - alt_changed_at);
+                const monotonic_t cmd_changed_at = MAX(s->command_state.started_at, s->command_state.finished_at);
+                if (cmd_changed_at) d->active_window_command_state_age = (float)monotonic_t_to_s_double(now - cmd_changed_at);
             }
         }
     }
@@ -3883,6 +3957,10 @@ shader_anim_event_bit(const char *s, CustomShaderPipeline *p) {
     if (strcmp(s, "user-idle") == 0) return 1u << SHADER_ANIM_EVENT_USER_IDLE;
     if (strcmp(s, "cursor-trail-move") == 0) return 1u << SHADER_ANIM_EVENT_CURSOR_TRAIL_MOVE;
     if (strcmp(s, "cursor-trail-stop") == 0) return 1u << SHADER_ANIM_EVENT_CURSOR_TRAIL_STOP;
+    if (strcmp(s, "command-start") == 0) return 1u << SHADER_ANIM_EVENT_COMMAND_START;
+    if (strcmp(s, "command-finish") == 0) return 1u << SHADER_ANIM_EVENT_COMMAND_FINISH;
+    if (strcmp(s, "alternate-screen-enter") == 0) return 1u << SHADER_ANIM_EVENT_ALTERNATE_SCREEN_ENTER;
+    if (strcmp(s, "alternate-screen-exit") == 0) return 1u << SHADER_ANIM_EVENT_ALTERNATE_SCREEN_EXIT;
     if (strcmp(s, "layout-change") == 0) return 1u << SHADER_ANIM_EVENT_LAYOUT_CHANGE;
     static const char user_prefix[] = "user:";
     if (strncmp(s, user_prefix, sizeof(user_prefix) - 1) == 0) {
@@ -4283,10 +4361,30 @@ pysimulate_custom_shader_animation(PyObject *self UNUSED, PyObject *args, PyObje
                 Py_CLEAR(ans);
                 break;
             }
-            ShaderAnimEventMask events = parse_anim_event_sequence(names, &custom_shaders.end);
+            // focus:in and focus:out change OS window focus, as the GLFW focus
+            // callback does, before the tick's events are consumed, the way
+            // prepare_to_render_os_window() does
+            for (Py_ssize_t n = 0; n < PySequence_Fast_GET_SIZE(names); n++) {
+                PyObject *item = PySequence_Fast_GET_ITEM(names, n);
+                if (!PyUnicode_Check(item)) continue;
+                const char *name = PyUnicode_AsUTF8(item);
+                if (!name) {
+                    Py_CLEAR(ans);
+                    break;
+                }
+                const bool focus_in = strcmp(name, "focus:in") == 0;
+                if (focus_in || strcmp(name, "focus:out") == 0) {
+                    const bool focused = focus_in;
+                    if (osw->is_focused != focused) record_os_window_focus_change_for_shaders(osw, focused);
+                    osw->is_focused = focused;
+                }
+            }
+            if (!ans) break;
+            ShaderAnimEventMask events = parse_anim_event_sequence(names, &custom_shaders.end) | osw->shader_anim_event_registry;
             events |= update_shader_anim_layout_name(osw);
             const ShaderAnimState before = osw->shader_anim;
             update_custom_shader_animations(events, now, osw);
+            osw->shader_anim_event_registry = 0;
             if (needs_render) {
                 PyObject *v = custom_shader_needs_render(&before, &osw->shader_anim, events, now) ? Py_True : Py_False;
                 if (PyList_Append(ans, v) != 0) Py_CLEAR(ans);

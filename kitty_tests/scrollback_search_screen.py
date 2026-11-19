@@ -100,6 +100,25 @@ class TestScrollbackSearchScreen(BaseTest):
         s.set_search_matches(((-1, 1, 0, 2),), current=0)
         self.ae(s.current_selections(), bytes([0, 96, 96, 96, 96, 96, 0, 0, 0, 0, 0, 0]))
 
+    def test_search_reveal_unfreezes_unchanged_scroll_position(self):
+        for alternate in (False, True):
+            with self.subTest(alternate=alternate):
+                s = self.search_screen(cols=4, lines=2, scrollback=10)
+                if alternate:
+                    s.toggle_alt_screen()
+                s.draw('abcdefgh')
+                self.assertTrue(s.pause_rendering(True, 5000))
+                parse_bytes(s, b'\r\nlive')
+                s.set_search_matches(((0, 0, 0, 1),), current=0)
+                self.assertFalse(any(x & 96 for x in s.current_selections()))
+                # Search navigation explicitly reveals the live frame even
+                # when its target already equals the live scroll position.
+                s.scroll_to_absolute(s.scrolled_by)
+                s.set_search_matches(((0, 0, 0, 1),), current=0)
+                self.assertFalse(s.pause_rendering(False))
+                self.ae(s.rendered_scroll_state(), (s.scrolled_by, 0, s.historybuf.count))
+                self.ae(s.current_selections(), bytes([96] + [0] * 7))
+
     def test_search_generation_and_invalidation(self):
         s = self.search_screen()
         s.draw('abc')

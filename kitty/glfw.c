@@ -408,6 +408,9 @@ cocoa_out_of_sequence_render(OSWindow *window) {
             request_tick_callback();
             return;
         }
+        // Recreation creates a new context, which does not inherit per-context
+        // state such as uniform buffer binding points
+        bind_shader_globals_to_current_context();
     }
 
     bool rendered = false;
@@ -639,11 +642,15 @@ key_callback(GLFWwindow *w, GLFWkeyevent *ev) {
 #ifndef __APPLE__
     if (key_modifier != -1) update_modifier_state_on_modifier_key_event(ev, key_modifier, is_left);
 #endif
+    const int old_mods = global_state.mods_at_last_key_or_button_event;
     global_state.mods_at_last_key_or_button_event = ev->mods;
     global_state.callback_os_window->cursor_blink_zero_time = monotonic();
     global_state.callback_os_window->user_is_idle = false;
     global_state.callback_os_window->shader_anim_event_registry |= (1u << SHADER_ANIM_EVENT_USER_ACTIVITY);
-    if (is_window_ready_for_callbacks() && !ev->fake_event_on_focus_change) on_key_input(ev);
+    if (is_window_ready_for_callbacks()) {
+        update_link_hover_for_modifiers(old_mods, ev->mods);
+        if (!ev->fake_event_on_focus_change) on_key_input(ev);
+    }
     global_state.callback_os_window = NULL;
     request_tick_callback();
 }
@@ -1002,10 +1009,7 @@ window_focus_callback(GLFWwindow *w, int focused) {
     debug_input("\x1b[35mon_focus_change\x1b[m: window id: 0x%llu focused: %d\n", osw->id, focused);
     bool focus_changed = osw->is_focused != focused;
     osw->is_focused = focused ? true : false;
-    if (focus_changed) {
-        if (focused) osw->shader_anim_event_registry |= (1u << SHADER_ANIM_EVENT_OS_WINDOW_FOCUS_IN) | (1u << SHADER_ANIM_EVENT_WINDOW_FOCUS_IN);
-        else osw->shader_anim_event_registry |= (1u << SHADER_ANIM_EVENT_OS_WINDOW_FOCUS_OUT) | (1u << SHADER_ANIM_EVENT_WINDOW_FOCUS_OUT);
-    }
+    if (focus_changed) record_os_window_focus_change_for_shaders(osw, focused);
     monotonic_t now = monotonic();
     id_type wid = osw->id;
     if (focused) {
@@ -1017,12 +1021,22 @@ window_focus_callback(GLFWwindow *w, int focused) {
     osw->last_mouse_activity_at = now;
     osw->cursor_blink_zero_time = now;
     if (is_window_ready_for_callbacks()) {
-        WINDOW_CALLBACK(on_focus, "O", focused ? Py_True : Py_False);
-        if (!osw || osw->id != wid) osw = os_window_for_id(wid);
-        if (osw) {
-            GLFWIMEUpdateEvent ev = {.type = GLFW_IME_UPDATE_FOCUS, .focused = focused};
+        GLFWIMEUpdateEvent ev = {.type = GLFW_IME_UPDATE_FOCUS, .focused = focused};
+        // On focus loss update the IME before reporting the focus change, so
+        // that any pre-edit text the IME commits reaches the child before the
+        // focus out event. Updating the IME can dispatch key events which reset
+        // callback_os_window, so look it up again.
+        if (!focused) {
             glfwUpdateIMEState(osw->handle, &ev);
-            if (focused) {
+            osw = os_window_for_id(wid);
+        }
+        if (osw) {
+            WINDOW_CALLBACK(on_focus, "O", focused ? Py_True : Py_False);
+            if (!osw || osw->id != wid) osw = os_window_for_id(wid);
+        }
+        if (osw && focused) {
+            glfwUpdateIMEState(osw->handle, &ev);
+            if ((osw = os_window_for_id(wid))) {
                 Tab *tab = osw->tabs + osw->active_tab;
                 Window *window = tab->windows + tab->active_window;
                 if (window->render_data.screen) update_ime_position(window, window->render_data.screen);
@@ -1311,10 +1325,13 @@ application_close_requested_callback(int flags) {
     }
     if (flags & GLFW_APPLICATION_CLOSE_FATAL_ERROR) {
         global_state.quit_request = IMPERATIVE_CLOSE_REQUESTED;
+        global_state.quit_cause = QUIT_CAUSE_FATAL_ERROR;
         global_state.has_pending_closes = true;
         request_tick_callback();
     } else {
+        if (flags & GLFW_APPLICATION_CLOSE_LOGOUT) global_state.quit_cause = QUIT_CAUSE_LOGOUT;
         if (global_state.quit_request == NO_CLOSE_REQUESTED) {
+            if (!(flags & GLFW_APPLICATION_CLOSE_LOGOUT)) global_state.quit_cause = QUIT_CAUSE_OS_REQUEST;
             global_state.has_pending_closes = true;
             global_state.quit_request = CONFIRMABLE_CLOSE_REQUESTED;
             request_tick_callback();
@@ -1346,13 +1363,14 @@ drag_source_callback(GLFWwindow *window UNUSED, GLFWDragEvent *ev) {
     {                                                                                    \
         call_boss(                                                                       \
             on_drag_source_finished,                                                     \
-            "OOsiOO",                                                                    \
+            "OOsiOOO",                                                                   \
             ds.was_dropped && !global_state.drop_dest.os_window_id ? Py_True : Py_False, \
             ds.was_canceled ? Py_True : Py_False,                                        \
             ds.accepted_mime_type ? ds.accepted_mime_type : "",                          \
             ds.action,                                                                   \
             ds.drag_data ? ds.drag_data : Py_None,                                       \
-            ds.needs_toplevel_on_wayland ? Py_True : Py_False);                          \
+            ds.needs_toplevel_on_wayland ? Py_True : Py_False,                           \
+            ds.was_dropped && global_state.drop_dest.os_window_id ? Py_True : Py_False); \
         free_drag_source();                                                              \
     }
     Window *w = NULL;
@@ -1562,6 +1580,29 @@ freetype_render_ctx_for_family(const char *family) {
     return family_render_ctx;
 }
 
+static FreeTypeRenderCtx csd_title_render_ctx = NULL;
+static struct {
+    char family[256];
+    bool bold, italic, initialized;
+} csd_title_render_ctx_key;
+
+static FreeTypeRenderCtx
+csd_title_render_ctx_for(const GLFWTitlebarFont *font) {
+    const char *family = font->family ? font->family : "";
+    if (csd_title_render_ctx_key.initialized && csd_title_render_ctx_key.bold == font->bold && csd_title_render_ctx_key.italic == font->italic &&
+        strcmp(csd_title_render_ctx_key.family, family) == 0)
+        return csd_title_render_ctx;
+    // Remember failures as well, so as to not retry and report them on every redraw
+    release_freetype_render_context(csd_title_render_ctx);
+    csd_title_render_ctx = create_freetype_render_context(family[0] ? family : NULL, font->bold, font->italic);
+    if (!csd_title_render_ctx && PyErr_Occurred()) PyErr_Print();
+    snprintf(csd_title_render_ctx_key.family, sizeof(csd_title_render_ctx_key.family), "%s", family);
+    csd_title_render_ctx_key.bold = font->bold;
+    csd_title_render_ctx_key.italic = font->italic;
+    csd_title_render_ctx_key.initialized = true;
+    return csd_title_render_ctx;
+}
+
 static bool
 draw_text_callback(
     GLFWwindow *window,
@@ -1575,17 +1616,19 @@ draw_text_callback(
     float y_offset,
     size_t right_margin,
     bool is_single_glyph) {
+    // Used only to render the title in Wayland client side decorations
     if (!set_callback_window(window)) return false;
-    FreeTypeRenderCtx ctx;
-    if (!(ctx = freetype_render_ctx(true))) return false;
     double xdpi, ydpi;
     get_window_dpi(window, &xdpi, &ydpi);
-    unsigned px_sz = 2 * height / 3;
-    static char title[2048];
-    if (!is_single_glyph) {
-        snprintf(title, sizeof(title), " ❭ %s", text);
-        text = title;
-    }
+    const GLFWTitlebarFont font = glfwGetTitlebarFont();
+    FreeTypeRenderCtx ctx = csd_title_render_ctx_for(&font);
+    if (!ctx && !(ctx = freetype_render_ctx(true))) return false;
+    unsigned px_sz = (unsigned)round(font.point_size * ydpi / 72. * font.text_scale);
+    px_sz = MIN(px_sz, (unsigned)(height * 3 / 4));
+    // Center the title
+    size_t text_width = freetype_text_width_for_single_line(ctx, text, px_sz);
+    size_t available = width > right_margin + (size_t)x_offset ? width - right_margin - (size_t)x_offset : 0;
+    if (text_width < available) x_offset += (float)((available - text_width) / 2.);
     bool ok = render_single_line(ctx, text, px_sz, fg, bg, output_buf, width, height, x_offset, y_offset, right_margin, is_single_glyph);
     if (!ok && PyErr_Occurred()) PyErr_Print();
     return ok;
@@ -1684,7 +1727,8 @@ set_glfw_mouse_pointer_shape_in_window(GLFWwindow *w, MouseShape type) {
 
 void
 set_mouse_cursor(MouseShape type) {
-    if (global_state.callback_os_window) {
+    // Headless mock OS windows have no native cursor.
+    if (global_state.callback_os_window && global_state.callback_os_window->handle) {
         GLFWwindow *w = (GLFWwindow *)global_state.callback_os_window->handle;
         set_glfw_mouse_pointer_shape_in_window(w, type);
     }
@@ -1959,6 +2003,7 @@ filter_option(int key UNUSED, int mods, unsigned int native_key UNUSED, unsigned
 
 static bool
 on_application_reopen(int has_visible_windows) {
+    if (cocoa_yield_reopen_to_other_instance()) return false;
     if (has_visible_windows) return true;
     set_cocoa_pending_action(NEW_OS_WINDOW, NULL);
     return false;
@@ -2452,6 +2497,8 @@ create_os_window(PyObject UNUSED *self, PyObject *args, PyObject *kw) {
     glfwWindowHintString(GLFW_X11_INSTANCE_NAME, wm_class_name);
     glfwWindowHintString(GLFW_X11_CLASS_NAME, wm_class_class);
     glfwWindowHintString(GLFW_WAYLAND_APP_ID, wm_class_class);
+    // wm_class_name defaults to wm_class_class when not specified, only set the tag when it was specified
+    glfwWindowHintString(GLFW_WAYLAND_WINDOW_TAG, strcmp(wm_class_name, wm_class_class) == 0 ? "" : wm_class_name);
 #endif
 
     if (global_state.num_os_windows >= MAX_CHILDREN) {
@@ -2655,7 +2702,7 @@ create_os_window(PyObject UNUSED *self, PyObject *args, PyObject *kw) {
     glfwSetDropEventCallback(glfw_window, drop_dest_callback);
     monotonic_t now = monotonic();
     w->is_focused = true;
-    w->shader_anim_event_registry |= (1u << SHADER_ANIM_EVENT_OS_WINDOW_FOCUS_IN) | (1u << SHADER_ANIM_EVENT_WINDOW_FOCUS_IN);
+    record_os_window_focus_change_for_shaders(w, true);
     w->cursor_blink_zero_time = now;
     w->last_mouse_activity_at = now;
     w->mouse_activate_deadline = -1;
@@ -3916,12 +3963,13 @@ dbus_send_notification(PyObject *self UNUSED, PyObject *args, PyObject *kw) {
     int timeout = -1, urgency = 1;
     unsigned int replaces = 0;
     GLFWDBUSNotificationData d = {0};
-    static const char *kwlist[] = {"app_name", "app_icon", "title", "body", "actions", "timeout", "urgency", "replaces", "category", "muted", NULL};
+    static const char *kwlist[] = {
+        "app_name", "app_icon", "title", "body", "actions", "timeout", "urgency", "replaces", "category", "muted", "desktop_entry", NULL};
     PyObject *actions = NULL;
     if (!PyArg_ParseTupleAndKeywords(
             args,
             kw,
-            "ssssO!|iiIsp",
+            "ssssO!|iiIsps",
             (char **)kwlist,
             &d.app_name,
             &d.icon,
@@ -3933,7 +3981,8 @@ dbus_send_notification(PyObject *self UNUSED, PyObject *args, PyObject *kw) {
             &urgency,
             &replaces,
             &d.category,
-            &d.muted))
+            &d.muted,
+            &d.desktop_entry))
         return NULL;
     if (!glfwDBusUserNotify) {
         PyErr_SetString(PyExc_RuntimeError, "Failed to load glfwDBusUserNotify, did you call glfw_init?");
@@ -4471,6 +4520,7 @@ cleanup_glfw(void) {
     Py_CLEAR(dbus_session_state_callback);
     release_freetype_render_context(bold_render_ctx);
     release_freetype_render_context(normal_render_ctx);
+    release_freetype_render_context(csd_title_render_ctx);
 #endif
 }
 

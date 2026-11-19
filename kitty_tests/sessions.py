@@ -1,6 +1,13 @@
 #!/usr/bin/env python
 # License: GPL v3 Copyright: 2026, Kovid Goyal <kovid at kovidgoyal.net>
 
+from collections.abc import Callable, Iterator
+from functools import partial
+from pathlib import Path
+from tempfile import TemporaryDirectory
+from types import SimpleNamespace
+from typing import cast
+from unittest.mock import Mock, patch
 
 import json
 import os
@@ -12,7 +19,7 @@ import tempfile
 from kitty.constants import unserialize_launch_flag
 from kitty.fast_data_types import Screen
 from kitty.os_window_size import WindowSize, WindowSizes, initial_window_size_func
-from kitty.session import get_os_window_sizing_data, parse_session
+from kitty.session import get_os_window_sizing_data, parse_session, save_as_session
 
 from .base import BaseTest, parse_bytes
 
@@ -28,6 +35,83 @@ class TestSessions(BaseTest):
         old_encoded = unserialize_launch_flag + '{"id": 8}'
         (session,) = parse_session(f'launch {shlex.join((old_encoded,))}', opts)
         self.ae(session.tabs[0].windows[0].font_size_override, None)
+
+    def test_snapshot_preserves_os_window_docks_and_pane_fonts(self) -> None:
+        from kitty.boss import Boss
+        from kitty.logout_session import save_session_snapshot
+        from kitty.tabs import Tab, TabManager
+        from kitty.types import OverlayType, parse_dock_spec
+        from kitty.window import EdgeWidths, Window
+        from kitty.window_list import WindowList
+
+        opts = self.set_options()
+        tm = object.__new__(TabManager)
+        tm.os_window_id, tm.wm_class, tm.wm_name = 1, '', ''
+        tm.tabs, tm.os_window_docks = [], []
+        tm._active_tab_idx = 1
+        tm.serialize_geometry_as_session = lambda: []
+        windows = []
+        for tab_id in (1, 2):
+            tab = object.__new__(Tab)
+            tab.id, tab.os_window_id, tab.sidebar_id = tab_id, 1, f'saved-{tab_id}'
+            tab.name, tab.enabled_layouts, tab._current_layout_name = f'tab-{tab_id}', ['tall'], 'tall'
+            tab.serialize_layout_state_for_session = lambda: {}
+            tab.windows = WindowList(tab, tm.os_window_docks)
+            tab.windows.hosts_os_window_docks = tab_id == 2
+            tm.tabs.append(tab)
+            for wid in ((1,) if tab_id == 1 else (2, 3)):
+                window = SimpleNamespace(
+                    id=wid, os_window_id=1, tab_id=tab_id, overlay_type=OverlayType.transient,
+                    actions_on_close=[], actions_on_focus_change=[], actions_on_removal=[],
+                    allow_remote_control=False, remote_control_passwords=None, creation_spec=None,
+                    user_vars={}, padding=EdgeWidths(), margin=EdgeWidths(), override_title=None,
+                    font_size_override=15.5 if wid == 3 else None, last_focused_at=float(wid),
+                    cwd_for_serialization='/tmp', agent_for_resume=lambda: '',
+                    screen=self.create_screen(cols=20, lines=2),
+                )
+                window.as_launch_command = partial(Window.as_launch_command, window)
+                windows.append(window)
+                tab.windows.add_window(
+                    window, make_active=False,
+                    dock=parse_dock_spec('right', '25%') if wid == 3 else None,
+                    os_window_dock=wid == 3,
+                )
+        parse_bytes(windows[-1].screen, b'docked history')
+        boss = SimpleNamespace(
+            os_window_map={1: tm}, native_tabs_enabled=lambda: True, all_windows=windows,
+            agent_sidebar_enabled=True, agent_sidebar_cols=36, agent_sidebar_collapsed_groups={'tab:saved-2'},
+        )
+        boss.serialize_state_as_session = partial(Boss.serialize_state_as_session, boss)
+        captured = {}
+
+        def save(base, pid, session, scrollback, process_state, key_store):
+            captured.update(session=session, scrollback=scrollback)
+            return os.path.join(base, 'snapshot')
+
+        with (
+            TemporaryDirectory() as directory,
+            patch('kitty.boss.native_tab_group_order', return_value=(1,)),
+            patch('kitty.boss.current_focused_os_window_id', return_value=1),
+            patch('kitty.boss.last_focused_os_window_id', return_value=1),
+            patch('kitty.tabs.get_boss', return_value=boss),
+            patch('kitty.window.get_window_logo_settings_if_not_default', return_value=None),
+            patch('kitty.logout_session.snapshots_dir', return_value=os.path.join(directory, 'snapshots')),
+            patch('kitty.logout_session.get_key_store', return_value=None),
+            patch('kitty.logout_session.save_snapshot', side_effect=save),
+            patch('kitty.logout_session.lock_snapshot_for_saver'),
+            patch('kitty.logout_session.last_saved_session', ''),
+        ):
+            self.assertTrue(save_session_snapshot(boss))
+        (session,) = parse_session(captured['session'], opts)
+        self.ae((session.os_window_tab_group, session.focus_os_window, session.focus_tab_spec), ('1', True, '1'))
+        self.ae((session.agent_sidebar_enabled, session.agent_sidebar_cols, session.agent_sidebar_collapsed_groups), (True, 36, ('tab:saved-2',)))
+        self.ae([tab.sidebar_id for tab in session.tabs], ['saved-1', 'saved-2'])
+        saved = [window for tab in session.tabs for window in tab.windows]
+        self.ae(sorted(window.serialized_id for window in saved), [1, 2, 3])
+        dock = next(window for window in saved if window.serialized_id == 3)
+        self.ae((dock.launch_spec.opts.type, dock.launch_spec.opts.dock_edge, dock.launch_spec.opts.dock_size), ('os-window-dock', 'right', '25%'))
+        self.ae(dock.font_size_override, 15.5)
+        self.assertIn(b'docked history', captured['scrollback'][3])
 
     def test_restored_window_user_vars(self) -> None:
         opts = self.set_options()
@@ -142,6 +226,7 @@ class TestSessions(BaseTest):
                 active_tab=tab,
                 wm_class='',
                 wm_name='',
+                os_window_docks=[],
                 serialize_geometry_as_session=lambda: [
                     'os_window_size 1180 760',
                     'os_window_position 100x80',
@@ -176,6 +261,108 @@ class TestSessions(BaseTest):
             self.ae([s.tabs[0].name for s in filtered], [f'window-{wid}' for wid in (1, 2, 6, 7)])
             self.ae([s.os_window_tab_group for s in filtered], ['1', '1', '3', '4'])
             self.assertTrue(filtered[0].focus_os_window)
+
+    def test_save_as_session_first_os_window(self) -> None:
+        # Only the first OS window that has something to save is loaded into the
+        # current OS window, the rest go into new OS windows
+        from kitty.boss import Boss
+        from kitty.session import default_save_as_session_opts
+
+        def serialize(focused_os_window_id: int, *os_windows: list[str]) -> list[str]:
+            def tab_manager(lines: list[str]) -> SimpleNamespace:
+                def serialize_state_as_session(session_path: str, matched_windows: frozenset[object] | None, is_first: bool, ser_opts: object) -> list[str]:
+                    return (lines if is_first else ['', '', 'new_os_window'] + lines) if lines else []
+
+                return SimpleNamespace(serialize_state_as_session=serialize_state_as_session)
+
+            boss = SimpleNamespace(os_window_map={i: tab_manager(lines) for i, lines in enumerate(os_windows, start=1)}, native_tabs_enabled=lambda: False)
+            with (
+                patch('kitty.boss.current_focused_os_window_id', return_value=focused_os_window_id),
+                patch('kitty.boss.last_focused_os_window_id', return_value=focused_os_window_id),
+            ):
+                return list(Boss.serialize_state_as_session(cast(Boss, boss), '', default_save_as_session_opts()))
+
+        tab = ['', 'new_tab', 'launch']
+        # The focused OS window is serialized last
+        lines = serialize(2, [], tab)
+        self.ae(lines, tab + ['focus_os_window'])
+        self.ae(len(list(parse_session('\n'.join(lines), self.set_options()))), 1)
+        self.ae(serialize(3, [], tab, tab), tab + ['', '', 'new_os_window'] + tab + ['focus_os_window'])
+        self.ae(serialize(1, tab, []), tab + ['focus_os_window'])
+
+    def test_save_as_session_focus_tab(self) -> None:
+        from kitty.tabs import index_of_tab_to_focus_in_session as f
+
+        # The active tab, as an index among the saved tabs, when it is saved
+        self.ae(f(1, [5, 1, 2]), 1)
+        # Otherwise the saved tab with the most recently focused saved window
+        self.ae(f(-1, [1, 5, 2]), 1)
+        self.ae(f(-1, [1, 5, 7]), 2)
+        self.ae(f(-1, [0, 0]), 0)
+        lines = ['', 'new_tab a', 'launch', '', 'new_tab b', 'launch', '', 'focus_tab 1']
+        (s,) = parse_session('\n'.join(lines), self.set_options())
+        self.ae((len(s.tabs), s.focus_tab_spec), (2, '1'))
+
+    def test_save_as_session_nothing_to_save(self) -> None:
+        boss = Mock(active_session='work')
+        serialized: tuple[str, ...] = ('launch',)
+        matched: tuple[str, ...] = ()
+        boss.serialize_state_as_session.side_effect = lambda *a: iter(serialized)
+        boss.match_windows.side_effect = lambda *a: iter(matched)
+
+        def save(*args: str) -> None:
+            for m in (boss.show_error, boss.match_windows, boss.get_save_filepath):
+                m.reset_mock()
+            save_as_session(boss, args)
+
+        def assert_error(*fragments: str) -> None:
+            self.ae(boss.show_error.call_count, 1)
+            title, msg = boss.show_error.call_args.args
+            self.ae(title, 'No windows to save')
+            for frag in fragments:
+                self.assertIn(frag, msg)
+
+        match = '--match=title:^editor$'
+        with TemporaryDirectory() as tmp:
+            existing = Path(tmp, 'work.kitty-session')
+            new = Path(tmp, 'new', 'work.kitty-session')
+            with patch.dict('kitty.session.seen_session_paths', work=str(existing)):
+                with self.subTest(destination='active session'):
+                    save('--save-only', match, '.')
+                    self.ae(existing.read_bytes(), b'launch')
+                    boss.show_error.assert_not_called()
+                with self.subTest(destination='prompt for path, windows closed before answer'):
+                    save(match)
+                    boss.get_save_filepath.assert_called_once()
+                    callback = boss.get_save_filepath.call_args.args[1]
+                    serialized = ()
+                    callback(str(new))
+                    self.assertFalse(new.parent.exists())
+                    assert_error('No windows match: title:^editor$')
+                with self.subTest(destination='active session, no windows match'):
+                    save(match, '.')
+                    self.ae(existing.read_bytes(), b'launch')
+                    assert_error('No windows match: title:^editor$')
+                    boss.match_windows.assert_called_with('title:^editor$')
+                matched = ('window',)
+                with self.subTest(destination='active session, matched windows not saveable'):
+                    save(match, '.')
+                    self.ae(existing.read_bytes(), b'launch')
+                    assert_error('None of the matching windows')
+                with self.subTest(destination='active session, no --match'):
+                    save('--save-only', '.')
+                    self.ae(existing.read_bytes(), b'launch')
+                    assert_error('None of the windows')
+                    boss.match_windows.assert_not_called()
+                with self.subTest(destination='new file'):
+                    save('--save-only', match, str(new))
+                    self.assertFalse(new.parent.exists())
+                    assert_error('None of the matching windows')
+                with self.subTest(destination='prompt for path, nothing to save'):
+                    save(match)
+                    boss.get_save_filepath.assert_not_called()
+                    assert_error('None of the matching windows')
+        boss.edit_file.assert_not_called()
 
     def test_scrollback_for_restore(self) -> None:
         from kitty.logout_session import sanitize_restored_output, scrollback_for_restore
@@ -918,3 +1105,171 @@ class TestSessions(BaseTest):
                     self.ae(result.returncode, 0, result.stderr)
                     actual = [line.removeprefix('RESUMED:') for line in result.stdout.splitlines() if line.startswith('RESUMED:')]
                     self.ae(actual, ['loaded', 'login', home, *expected])
+
+    def test_moved_windows_and_tabs_keep_session(self) -> None:
+        # Drives the real Boss move methods and Tab detach/attach/take over code over fake OS Windows
+        from contextlib import nullcontext
+        from itertools import count
+
+        from kitty.boss import Boss
+        from kitty.layout.interface import Tall
+        from kitty.tabs import Tab
+        from kitty.window import Window as RealWindow
+        from kitty.window_list import WindowList, reset_group_id_counter
+
+        from .layout import Window as LayoutWindow
+        from .layout import create_layout
+
+        ids = count(1)
+
+        class FakeWindow(LayoutWindow):
+            effective_session_name = RealWindow.effective_session_name
+
+            def __init__(self, session: str) -> None:
+                super().__init__(next(ids))
+                self.created_in_session_name = session
+                self.tabref: Callable[[], FakeTab | None] = lambda: None
+
+            def change_tab(self, tab: 'FakeTab') -> None:
+                self.tabref = lambda: tab
+
+        class FakeTab:
+            name = cwd = ''
+            enabled_layouts, _last_used_layout, _current_layout_name = ['tall'], None, ''
+
+            def __init__(self, tm: 'FakeTabManager', session: str, *windows: FakeWindow) -> None:
+                self.id, self.os_window_id, self.created_in_session_name = next(ids), tm.os_window_id, session
+                self.tab_manager_ref = lambda: tm
+                self.current_layout = create_layout(Tall)
+                self.windows = WindowList(cast(Tab, self))
+                real = 'remove_window detach_window _add_window _take_ownership_of_window attach_window attach_window_at_edge attach_windows set_active_window'
+                for name in real.split():
+                    setattr(self, name, getattr(Tab, name).__get__(self))
+                for w in windows:
+                    w.change_tab(self)
+                    self._add_window(w)
+                tm.tabs.append(self)
+
+            def __len__(self) -> int:
+                return len(self.windows)
+
+            def __iter__(self) -> Iterator[FakeWindow]:
+                return iter(cast(Iterator[FakeWindow], self.windows))
+
+            def _add_window(self, w: FakeWindow) -> None:  # replaced by the real method
+                pass
+
+            def take_over_from(self, other: 'FakeTab') -> None:
+                Tab.take_over_from(cast(Tab, self), cast(Tab, other))
+
+            def mark_tab_bar_dirty(self) -> None:
+                pass
+
+            relayout = post_window_removal_update = active_window_changed = make_active = destroy = mark_tab_bar_dirty
+
+        class FakeTabManager:
+            def __init__(self, os_window_id: int, session: str = '') -> None:
+                self.os_window_id, self.created_in_session_name = os_window_id, session
+                self.tabs: list[FakeTab] = []
+
+            def __len__(self) -> int:
+                return len(self.tabs)
+
+            def new_tab(self, empty_tab: bool = False, location: str = 'last', title: str = '') -> FakeTab:
+                return FakeTab(self, '')
+
+            def tab_at_location(self, location: str) -> FakeTab | None:
+                return next((t for t in self.tabs if t.name == location), None)
+
+            def remove(self, tab: FakeTab) -> None:
+                self.tabs.remove(tab)
+
+            def park_os_window_docks(self, tab: FakeTab) -> None:
+                pass
+
+            def sync_os_window_docks(self) -> None:
+                pass
+
+        class FakeBoss:
+            shutting_down = False
+            suppress_focus_change_events = nullcontext
+
+            def __init__(self) -> None:
+                self.os_window_map: dict[int, FakeTabManager] = {}
+                real = '_move_window_to _move_tab_to _insert_window_in_direction _new_os_window_for_session _cleanup_tab_after_window_removal'
+                for name in real.split():
+                    setattr(self, name, getattr(Boss, name).__get__(self))
+
+            def add_os_window(self) -> int:
+                os_window_id = len(self.os_window_map) + 1
+                self.os_window_map[os_window_id] = FakeTabManager(os_window_id)
+                return os_window_id
+
+            @property
+            def all_tabs(self) -> Iterator[FakeTab]:
+                for tm in self.os_window_map.values():
+                    yield from tm.tabs
+
+            def mark_os_window_for_close(self, os_window_id: int) -> None:
+                pass
+
+        def world() -> tuple[FakeBoss, FakeWindow, FakeWindow, FakeTab, FakeTab]:
+            # Tab a of session a has a window of no session and one of session b, next to it is tab other of session c,
+            # tab b of session b is in another OS Window
+            boss = FakeBoss()
+            reset_group_id_counter()
+            for os_window_id, session in ((1, 'a'), (2, 'b')):
+                boss.os_window_map[os_window_id] = FakeTabManager(os_window_id, session)
+            unnamed, from_b = FakeWindow(''), FakeWindow('b')
+            tab_a = FakeTab(boss.os_window_map[1], 'a', unnamed, from_b, FakeWindow(''))
+            FakeTab(boss.os_window_map[1], 'c', FakeWindow('')).name = 'other'
+            tab_b = FakeTab(boss.os_window_map[2], 'b', FakeWindow('b'))
+            return boss, unnamed, from_b, tab_a, tab_b
+
+        def sessions(w: FakeWindow) -> tuple[str, str, str]:
+            tab = w.tabref()
+            assert tab is not None
+            tm = tab.tab_manager_ref()
+            return w.effective_session_name, tab.created_in_session_name, tm.created_in_session_name
+
+        patches = (patch('kitty.tabs.detach_window'), patch('kitty.tabs.attach_window'), patch('kitty.boss.current_os_window', return_value=1))
+        with patches[0], patches[1], patches[2]:
+            # A window keeps its own session, which may be none, wherever it goes. New tabs and OS Windows made for it
+            # belong to its effective session, a window of no session in an existing tab belongs to that tab's session.
+            # (window, target_tab_id, target_os_window_id) -> (window session, its tab's session, its OS Window's session)
+            for which, target_tab_id, target_os_window_id, expected in (
+                ('unnamed', 'new', None, ('a', 'a', 'a')),
+                ('from_b', 'new', None, ('b', 'b', 'a')),
+                ('unnamed', 'left', None, ('a', 'a', 'a')),  # no tab there, so a new one
+                ('unnamed', 'other', None, ('c', 'c', 'a')),  # the existing tab there
+                ('from_b', 'other', None, ('b', 'c', 'a')),
+                ('unnamed', None, 'new', ('a', 'a', 'a')),
+                ('from_b', None, 'new', ('b', 'b', 'b')),
+                ('unnamed', 'tab_b', None, ('b', 'b', 'b')),
+            ):
+                boss, unnamed, from_b, tab_a, tab_b = world()
+                w = unnamed if which == 'unnamed' else from_b
+                own_session = w.created_in_session_name
+                tid = tab_b.id if target_tab_id == 'tab_b' else target_tab_id
+                cast(Boss, boss)._move_window_to(cast(RealWindow, w), tid, target_os_window_id)
+                self.ae(sessions(w), expected, f'{which} {target_tab_id} {target_os_window_id}')
+                self.ae(w.created_in_session_name, own_session)
+
+            # Dropped next to a window in a tab of another session, the same as moving into that tab
+            boss, unnamed, from_b, tab_a, tab_b = world()
+            cast(Boss, boss)._insert_window_in_direction(cast(RealWindow, unnamed), cast(RealWindow, next(iter(tab_b))), 'left')
+            self.ae((sessions(unnamed), unnamed.created_in_session_name), (('b', 'b', 'b'), ''))
+
+            # A tab moved to a new OS Window, or an existing one, keeps its session and that of its windows
+            for target_os_window_id, expected in ((None, ('a', 'a', 'a')), (2, ('a', 'a', 'b'))):
+                boss, unnamed, from_b, tab_a, tab_b = world()
+                cast(Boss, boss)._move_tab_to(cast(Tab, tab_a), target_os_window_id)
+                self.ae(sessions(unnamed), expected)
+                self.ae(sessions(from_b)[0], 'b')
+                self.assertNotIn(tab_a, boss.os_window_map[1].tabs)
+
+            # A window of no session in a tab of no session stays in no session
+            boss, unnamed, from_b, tab_a, tab_b = world()
+            tab_a.created_in_session_name = boss.os_window_map[1].created_in_session_name = ''
+            cast(Boss, boss)._move_window_to(cast(RealWindow, unnamed), 'new')
+            self.ae(sessions(unnamed), ('', '', ''))

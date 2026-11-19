@@ -28,10 +28,12 @@ from typing import (
 from .child import ProcessDesc
 from .cli_stub import CLIOptions, SaveAsSessionOptions
 from .clipboard import ClipboardRequestManager, set_clipboard_string
+from .colors import ColorSchemes, SessionColorSchemes, parse_color_scheme_variants
 from .constants import (
     appname,
     clear_handled_signals,
     config_dir,
+    config_dir_files_ignored,
     is_macos,
     kitten_exe,
     unserialize_launch_flag,
@@ -75,6 +77,7 @@ from .fast_data_types import (
     get_options,
     get_window_logo_settings_if_not_default,
     glfw_get_keyboard_repeat_interval,
+    glfw_get_system_color_theme,
     is_css_pointer_name_valid,
     is_modifier_key,
     last_focused_os_window_id,
@@ -93,7 +96,6 @@ from .fast_data_types import (
     set_window_title_bar_render_data,
     start_drag_with_data,
     update_ime_position_for_window,
-    update_pointer_shape,
     update_window_title,
     update_window_visibility,
     wakeup_main_loop,
@@ -106,7 +108,7 @@ from .program_status import ProgramStatus
 from .progress import Progress
 from .rgb import to_color
 from .terminfo import get_capabilities
-from .types import MouseEvent, NeighborsMap, OverlayType, WindowGeometry, ac, run_once
+from .types import CloseEvent, MouseEvent, NeighborsMap, OverlayType, WindowGeometry, ac, run_once
 from .typing_compat import BossType, ChildType, EdgeLiteral, TabType, TypedDict
 from .utils import (
     color_as_int,
@@ -136,6 +138,7 @@ class ScrollAnimation:
     duration: float = 0.0
     total: float = 0.0
     start_scrolled_by: int = 0
+    last_scrolled_by: int = 0
     frame_interval: float = 1.0 / 60.0  # Target ~60 fps for scroll animation ticks
 
 
@@ -172,9 +175,20 @@ class CwdRequest:
         window = self.window
         if not window:
             return ''
-        reported_cwd = path_from_osc7_url(window.screen.last_reported_cwd) if window.screen.last_reported_cwd else ''
+        reported_cwd = self.usable_reported_cwd(window)
         if reported_cwd and not window.child_is_remote and (self.request_type is CwdRequestType.last_reported or window.at_prompt):
             return reported_cwd
+        return self.cwd_of_process(window)
+
+    def usable_reported_cwd(self, window: 'Window') -> str:
+        reported_cwd = path_from_osc7_url(window.screen.last_reported_cwd) if window.screen.last_reported_cwd else ''
+        # For root, the reported cwd is only meaningful if it comes from the
+        # root process rather than from some other program it is running
+        if reported_cwd and (self.request_type is not CwdRequestType.root or window.root_in_foreground_processes):
+            return reported_cwd
+        return ''
+
+    def cwd_of_process(self, window: 'Window') -> str:
         if self.request_type is CwdRequestType.root:
             return window.get_cwd_of_root_child() or ''
         return window.get_cwd_of_child(oldest=self.request_type is CwdRequestType.oldest) or ''
@@ -183,8 +197,8 @@ class CwdRequest:
         window = self.window
         if not window:
             return ''
-        reported_cwd = path_from_osc7_url(window.screen.last_reported_cwd) if window.screen.last_reported_cwd else ''
-        if reported_cwd and (self.request_type is not CwdRequestType.root or window.root_in_foreground_processes):
+        reported_cwd = self.usable_reported_cwd(window)
+        if reported_cwd:
             ssh_kitten_cmdline = window.ssh_kitten_cmdline()
             if ssh_kitten_cmdline:
                 run_shell = argv[0] == resolved_shell(get_options())[0]
@@ -232,7 +246,7 @@ class CwdRequest:
                 return ''
             if not window.child_is_remote and (self.request_type is CwdRequestType.last_reported or window.at_prompt):
                 return reported_cwd
-        return window.get_cwd_of_child(oldest=self.request_type is CwdRequestType.oldest) or ''
+        return self.cwd_of_process(window)
 
 
 def process_title_from_child(title: memoryview, is_base64: bool, default_title: str) -> str:
@@ -247,6 +261,12 @@ def process_title_from_child(title: memoryview, is_base64: bool, default_title: 
 
 
 @lru_cache(maxsize=64)
+def is_conemu_osc9_command(raw_data: str) -> bool:
+    # ConEmu uses OSC 9 with numeric sub-commands 1-12, for example: 9;9;path
+    # these must not be treated as iTerm2 style notifications
+    return re.match(r'(?:1[0-2]|[1-9])(?:;|$)', raw_data) is not None
+
+
 def compile_match_query(exp: str, is_simple: bool = True) -> MatchPatternType:
     if is_simple:
         pat: MatchPatternType = re.compile(exp)
@@ -346,6 +366,7 @@ class Watchers:
     on_focus_change: list[Watcher]
     on_set_user_var: list[Watcher]
     on_title_change: list[Watcher]
+    on_cwd_change: list[Watcher]
     on_cmd_startstop: list[Watcher]
     on_program_status_change: list[Watcher]
     on_color_scheme_preference_change: list[Watcher]
@@ -358,6 +379,7 @@ class Watchers:
         self.on_focus_change = []
         self.on_set_user_var = []
         self.on_title_change = []
+        self.on_cwd_change = []
         self.on_cmd_startstop = []
         self.on_program_status_change = []
         self.on_color_scheme_preference_change = []
@@ -375,6 +397,7 @@ class Watchers:
         merge(self.on_focus_change, others.on_focus_change)
         merge(self.on_set_user_var, others.on_set_user_var)
         merge(self.on_title_change, others.on_title_change)
+        merge(self.on_cwd_change, others.on_cwd_change)
         merge(self.on_cmd_startstop, others.on_cmd_startstop)
         merge(self.on_program_status_change, others.on_program_status_change)
         merge(self.on_color_scheme_preference_change, others.on_color_scheme_preference_change)
@@ -384,6 +407,7 @@ class Watchers:
     def clear(self) -> None:
         del self.on_close[:], self.on_resize[:], self.on_focus_change[:]
         del self.on_set_user_var[:], self.on_title_change[:], self.on_cmd_startstop[:]
+        del self.on_cwd_change[:]
         del self.on_program_status_change[:]
         del self.on_color_scheme_preference_change[:]
         del self.on_tab_bar_dirty[:]
@@ -396,6 +420,7 @@ class Watchers:
         ans.on_focus_change = self.on_focus_change[:]
         ans.on_set_user_var = self.on_set_user_var[:]
         ans.on_title_change = self.on_title_change[:]
+        ans.on_cwd_change = self.on_cwd_change[:]
         ans.on_cmd_startstop = self.on_cmd_startstop[:]
         ans.on_program_status_change = self.on_program_status_change[:]
         ans.on_color_scheme_preference_change = self.on_color_scheme_preference_change[:]
@@ -412,6 +437,7 @@ class Watchers:
             or self.on_color_scheme_preference_change
             or self.on_set_user_var
             or self.on_title_change
+            or self.on_cwd_change
             or self.on_cmd_startstop
             or self.on_program_status_change
             or self.on_tab_bar_dirty
@@ -419,15 +445,52 @@ class Watchers:
         )
 
 
-def call_watchers(windowref: Callable[[], Optional['Window']], which: str, data: dict[str, Any]) -> None:
+class DeferredWatcherCalls:
+    """
+    Deliver watcher calls on the next main loop tick, in order, using a single
+    timer. Deferring prevents infinite recursion when a watcher causes the
+    event it is watching (for example, resizing in on_resize). Using a single
+    timer prevents bursts of events from exhausting the fixed size timer table.
+    Calls made during delivery are delivered in the next batch.
+    """
 
-    def callback(timer_id: int | None) -> None:
+    def __init__(self) -> None:
+        self.pending: list[tuple[Callable[[], Optional['Window']], str, dict[str, Any]]] = []
+        self.timer_id = 0
+
+    def __call__(self, windowref: Callable[[], Optional['Window']], which: str, data: dict[str, Any]) -> None:
         w = windowref()
-        if w is not None:
-            watchers: list[Watcher] = getattr(w.watchers, which)
-            w.call_watchers(watchers, data)
+        if w is None or not getattr(w.watchers, which):
+            return
+        self.pending.append((windowref, which, data))
+        self.schedule()
 
-    add_timer(callback, 0, False)
+    def schedule(self) -> None:
+        if not self.timer_id and self.pending:
+            self.timer_id = add_timer(self.deliver, 0, False)
+            if not self.timer_id:
+                log_error(f'Failed to schedule delivery of {len(self.pending)} watcher calls, will retry on the next watched event')
+
+    def deliver(self, timer_id: int | None) -> None:
+        self.timer_id = 0
+        batch, self.pending = self.pending, []
+        delivered = 0
+        try:
+            for windowref, which, data in batch:
+                delivered += 1
+                w = windowref()
+                if w is not None:
+                    watchers: list[Watcher] = getattr(w.watchers, which)
+                    w.call_watchers(watchers, data)
+        finally:
+            if delivered < len(batch):
+                # An exception not handled by Window.call_watchers() interrupted
+                # delivery, requeue the remaining calls ahead of any new ones
+                self.pending[:0] = batch[delivered:]
+                self.schedule()
+
+
+call_watchers = DeferredWatcherCalls()
 
 
 class WindowCreationSpec(NamedTuple):
@@ -508,6 +571,8 @@ def load_paste_filter() -> Callable[[str], str]:
     import runpy
     import traceback
 
+    if config_dir_files_ignored():
+        return lambda text: text
     try:
         m = runpy.run_path(os.path.join(config_dir, 'paste-actions.py'))
         func: Callable[[str], str] = m['filter_paste']
@@ -650,13 +715,13 @@ def color_control(cp: ColorProfile, code: int, value: str | bytes | memoryview =
                         elif colnum > 15:
                             cp.set_color(colnum, NULL_COLOR_VALUE)
                         else:
-                            cp.set_color(colnum, get_options().color_table[colnum])
+                            cp.reset_color(colnum)
         else:
             if attr:
                 delattr(cp, attr)
             else:
                 if 0 <= colnum <= 255:
-                    cp.set_color(colnum, get_options().color_table[colnum])
+                    cp.reset_color(colnum)
     if responses:
         payload = ';'.join(f'{k}={v}' for k, v in responses)
         return f'{code};{payload}'
@@ -744,6 +809,8 @@ class Window:
     show_title_bar: bool = False  # must be set before calling set_geometry
     is_drag_target: bool = False  # highlight this window's title bar as a drop target
     child_died: bool = False
+    # Set when the user confirmed closing this window or its tab
+    close_confirmed: bool = False
     child_exit_status: int = 0
     child_exit_code: int = 0
 
@@ -836,8 +903,10 @@ class Window:
         opts = get_options()
         self.screen: Screen = Screen(self, 24, 80, opts.scrollback_lines, cell_width, cell_height, self.id)
         self.screen.track_activity = bool(opts.tab_activity_symbol)
+        self.session_color_schemes = SessionColorSchemes()
         if copy_colors_from is not None:
             self.screen.copy_colors_from(copy_colors_from.screen)
+            self.session_color_schemes.copy_from(copy_colors_from.session_color_schemes)
         self.remote_control_passwords = remote_control_passwords
         self.allow_remote_control = allow_remote_control
         self.scroll_animation = ScrollAnimation()
@@ -944,6 +1013,14 @@ class Window:
         return tab.overlay_parent(self)
 
     @property
+    def effective_session_name(self) -> str:
+        "The session this window belongs to: the one it was created in, or else the one its tab was created in"
+        if self.created_in_session_name:
+            return self.created_in_session_name
+        tab = self.tabref()
+        return '' if tab is None else tab.created_in_session_name
+
+    @property
     def current_colors(self) -> dict[str, int | None | tuple[tuple[Color, float], ...]]:
         return self.screen.color_profile.as_dict()
 
@@ -966,7 +1043,7 @@ class Window:
         if field in ('id', 'window_id'):
             return pat.pattern == str(self.id)
         if field == 'pid':
-            return pat.pattern == str(self.child.pid)
+            return pat.pattern == str(self.child.root_pid)
         if field == 'title':
             return pat.search(self.override_title or self.title) is not None
         if field in 'cwd':
@@ -1473,6 +1550,10 @@ class Window:
                 tab.update_progress()
             self.clear_progress_if_needed()
             return
+        if osc_code == 9 and is_conemu_osc9_command(raw_data):
+            # Other ConEmu OSC 9 sub-commands (9;9 cwd reporting is handled in the parser)
+            log_error(f'Ignoring unsupported ConEmu OSC 9 command: {raw_data[:64]!r}')
+            return
         get_boss().notification_manager.handle_notification_cmd(self.id, osc_code, raw_data)
 
     def clear_progress_if_needed(self, timer_id: int | None = None) -> None:
@@ -1643,12 +1724,7 @@ class Window:
             self.last_focused_at = monotonic()
             update_ime_position_for_window(self.id, False, 1)
             self.program_status_seen_by_user()
-            changed = self.needs_attention
-            self.needs_attention = False
-            if changed:
-                tab = self.tabref()
-                if tab is not None:
-                    tab.relayout_borders()
+            self.clear_needs_attention()
             if self.last_cmd_end_notification is not None:
                 from .notifications import OnlyWhen
 
@@ -1660,6 +1736,12 @@ class Window:
             # Cancel IME composition after loses focus
             update_ime_position_for_window(self.id, False, -1)
 
+    def clear_needs_attention(self) -> None:
+        if self.needs_attention:
+            self.needs_attention = False
+            if (tab := self.tabref()) is not None:
+                tab.relayout_borders()
+
     def title_changed(self, new_title: memoryview | None, is_base64: bool = False) -> None:
         self.child_title = process_title_from_child(new_title or memoryview(b''), is_base64, self.default_title)
         self.call_watchers(self.watchers.on_title_change, {'title': self.child_title, 'from_child': True})
@@ -1668,6 +1750,14 @@ class Window:
         get_boss().mark_agent_window_dirty(self.id)
         if self.override_title is None:
             self.title_updated()
+
+    def on_cwd_change(self, raw_url: bytes) -> None:
+        if self.watchers.on_cwd_change:
+            url = raw_url.decode('utf-8', 'replace')
+            host = ''
+            if url.startswith(('file://', 'kitty-shell-cwd://')):
+                host = url.partition('://')[2].partition('/')[0]
+            self.call_watchers(self.watchers.on_cwd_change, {'cwd': path_from_osc7_url(url), 'host': host})
 
     def osc_context(self, ctx_data: memoryview) -> None:
         pass  # this is systemd's useless OSC 3008 context protocol https://systemd.io/OSC_CONTEXT/
@@ -1727,7 +1817,10 @@ class Window:
             env = self.child.foreground_environ
             env['KITTY_CHILD_CMDLINE'] = ' '.join(map(shlex.quote, self.child.cmdline))
             subprocess.Popen(cb, env=env, cwd=self.child.foreground_cwd, preexec_fn=clear_handled_signals)
-        if not self.is_active:
+        # Mark as needing attention unless the user is looking at this window,
+        # which requires both that it be the active window and that its OS
+        # window have keyboard focus. Attention is cleared when the window gains focus.
+        if not self.is_active or self.os_window_id != current_focused_os_window_id():
             changed = not self.needs_attention
             self.needs_attention = True
             tab = self.tabref()
@@ -1737,8 +1830,18 @@ class Window:
                 tab.on_bell(self)
 
     def color_profile_popped(self, bg_changed: bool) -> None:
+        if self.session_color_schemes.color_stack_popped(self.screen.color_profile.color_stack_depth()):
+            self.apply_session_color_scheme()
         if bg_changed:
             get_boss().default_bg_changed_for(self.id, via_escape_code=True)
+
+    def apply_session_color_scheme(self, scheme: ColorSchemes | None = None) -> None:
+        cp = self.screen.color_profile
+        bg_before = cp.default_bg
+        self.session_color_schemes.apply(cp, glfw_get_system_color_theme() if scheme is None else scheme)
+        if cp.default_bg != bg_before:
+            get_boss().default_bg_changed_for(self.id)
+        self.refresh()
 
     def report_color(self, code: str, col: Color) -> None:
         r, g, b = col.red, col.green, col.blue
@@ -1752,6 +1855,10 @@ class Window:
 
         if is_hard_reset and self.program_status.clear():
             self.program_status_changed()
+        # A reset clears the color stack, so the session color schemes, which
+        # are associated with color stack entries, are cleared as well
+        if self.session_color_schemes.clear():
+            self.apply_session_color_scheme()
         if self.progress.state is not ProgressState.unset:
             self.progress.update(0)  # unset
             self.progress_payload = ''
@@ -1772,7 +1879,7 @@ class Window:
         if isinstance(value, (bytes, memoryview)):
             value = str(value, 'utf-8', 'replace')
         if code == 22:
-            ret = set_pointer_shape(self.screen, value, self.os_window_id)
+            ret = set_pointer_shape(self.screen, value)
             if ret:
                 self.screen.send_escape_code_to_child(ESC_OSC, '22;' + ret)
             return
@@ -1890,6 +1997,22 @@ class Window:
 
         for line in get_ssh_data(msg, f'{os.getpid()}-{self.id}'):
             self.write_to_child(line)
+
+    def handle_remote_color_scheme(self, msg: memoryview) -> None:
+        # Used by the ssh kitten to set colors for the dark, light and no
+        # preference system color schemes, after pushing the current colors onto
+        # the color stack. The colors are removed when the stack is popped.
+        try:
+            variants = parse_color_scheme_variants(json.loads(base64_decode(msg)))
+        except Exception as e:
+            log_error(f'Invalid color scheme received from client: {e}')
+            return
+        depth = self.screen.color_profile.color_stack_depth()
+        if not depth:
+            log_error('Ignoring color scheme received from client as it was not preceded by pushing colors onto the color stack')
+            return
+        self.session_color_schemes.add(depth, variants)
+        self.apply_session_color_scheme()
 
     def handle_kitten_result(self, msg: memoryview) -> None:
         import base64
@@ -2233,11 +2356,16 @@ class Window:
 
                 traceback.print_exc()
 
-    def destroy(self) -> None:
+    def destroy(self, close_event: CloseEvent | None = None) -> None:
+        from .remote_control import abort_active_streams_from
+
         if self.scrollback_search is not None:
             self.scrollback_search.close()
-        self.call_watchers(self.watchers.on_close, {})
+        if close_event is None:
+            close_event = {'reason': 'window', 'cause': 'closed', 'confirmed': self.close_confirmed}
+        self.call_watchers(self.watchers.on_close, dict(close_event))
         self.destroyed = True
+        abort_active_streams_from(window_id=self.id)
         if self.clear_progress_timer:
             remove_timer(self.clear_progress_timer)
             self.clear_progress_timer = 0
@@ -2290,7 +2418,7 @@ class Window:
 
     @property
     def root_in_foreground_processes(self) -> bool:
-        q = self.child.pid
+        q = self.child.root_pid
         for p in self.child.foreground_processes:
             if p['pid'] == q:
                 return True
@@ -2488,7 +2616,7 @@ class Window:
             'is_active': is_active,
             'title': self.title,
             'title_overridden': self.override_title is not None,
-            'pid': self.child.pid,
+            'pid': self.child.root_pid,
             'cwd': self.child.current_cwd or self.child.cwd,
             'cmdline': self.child.cmdline,
             'last_reported_cmdline': self.last_cmd_cmdline,
@@ -2650,7 +2778,7 @@ class Window:
             elif not self.at_prompt:
                 if self.last_cmd_cmdline:
                     unserialize_data['cmd_at_shell_startup'] = self.last_cmd_cmdline
-                elif self.child.pid != (pid := self.child.pid_for_cwd) and pid is not None:
+                elif self.child.root_pid != (pid := self.child.pid_for_cwd) and pid is not None:
                     # we have a shell running some command
                     with suppress(Exception):
                         fcmd = self.child.cmdline_of_pid(pid)
@@ -2856,6 +2984,15 @@ class Window:
             return None
         return True
 
+    def scroll_animation_to(self, target: float) -> None:
+        a = self.scroll_animation
+        # Follow changes to scrolled_by not made by the animation, such as the
+        # viewport being kept anchored while new output is added to the scrollback
+        drift = self.screen.scrolled_by - a.last_scrolled_by
+        a.start_scrolled_by += drift
+        self.screen.scroll_to_absolute(max(0.0, target + drift))
+        a.last_scrolled_by = self.screen.scrolled_by
+
     def scroll_animation_tick(self, timer_id: int | None) -> None:
         a = self.scroll_animation
         if not a.timer:
@@ -2865,12 +3002,12 @@ class Window:
         progress = min(1.0, elapsed / a.duration) if a.duration > 0 else 1.0
         if progress >= 1.0:
             # Ensure we land exactly on a line boundary with pixel_scroll_offset_y = 0
-            self.screen.scroll_to_absolute(max(0, a.start_scrolled_by - a.total))
+            self.scroll_animation_to(a.start_scrolled_by - a.total)
             remove_timer(a.timer)
             a.timer = 0
         else:
             # Use absolute positioning to avoid pixel rounding errors from incremental fractional scrolls
-            self.screen.scroll_to_absolute(max(0.0, a.start_scrolled_by - a.total * progress))
+            self.scroll_animation_to(a.start_scrolled_by - a.total * progress)
 
     def finish_scroll_animation(self) -> None:
         "Finish any in-progress scroll animation immediately"
@@ -2879,7 +3016,7 @@ class Window:
             remove_timer(a.timer)
             a.timer = 0
             # Scroll to the exact integer target line, ensuring pixel_scroll_offset_y = 0
-            self.screen.scroll_to_absolute(max(0, a.start_scrolled_by - a.total))
+            self.scroll_animation_to(a.start_scrolled_by - a.total)
 
     def start_scroll_animation(self, lines: float) -> None:
         "Start a smooth scroll animation for the given number of lines (negative=up, positive=down)"
@@ -2895,6 +3032,7 @@ class Window:
         a.duration = duration
         a.total = lines
         a.start_scrolled_by = self.screen.scrolled_by
+        a.last_scrolled_by = a.start_scrolled_by
         a.timer = add_timer(self.scroll_animation_tick, min(ScrollAnimation.frame_interval, duration / 2), True)
 
     @ac(
@@ -3085,7 +3223,9 @@ class Window:
     # }}}
 
 
-def set_pointer_shape(screen: Screen, value: str, os_window_id: int = 0) -> str:
+def set_pointer_shape(screen: Screen, value: str) -> str:
+    # The OS pointer shape is updated once after the current batch of child
+    # output is parsed, see do_parse() in child-monitor.c
     op, ret = '=', ''
     if value and value[0] in '><=?':
         op = value[0]
@@ -3097,12 +3237,8 @@ def set_pointer_shape(screen: Screen, value: str, os_window_id: int = 0) -> str:
                     screen.change_pointer_shape(op, v)
                 except KeyError:
                     log_error(f'Ignoring unknown pointer shape name: {v!r}')
-        if os_window_id and current_focused_os_window_id() == os_window_id:
-            update_pointer_shape(os_window_id)
     elif op == '<':
         screen.change_pointer_shape('<', '')
-        if os_window_id and current_focused_os_window_id() == os_window_id:
-            update_pointer_shape(os_window_id)
     elif op == '?':
         ans = []
         for q in value.split(','):

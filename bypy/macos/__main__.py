@@ -54,7 +54,7 @@ def flipwritable(fn, mode=None):
     return old_mode
 
 
-STRIPCMD = ('/usr/bin/strip', '-x', '-S', '-')
+STRIPCMD = (subprocess.check_output(['/usr/bin/xcrun', '--find', 'strip'], text=True).strip(), '-x', '-S', '-')
 
 
 def strip_files(files, argv_max=(256 * 1024)) -> None:
@@ -537,9 +537,9 @@ class Freeze(object):
         else:
             size_in_mb = int(subprocess.check_output(['du', '-s', '-k', tdir]).decode('utf-8').split()[0]) / 1024.0
             cmd = ['/usr/bin/hdiutil', 'create', '-srcfolder', tdir, '-volname', volname, '-format', format]
-            if 190 < size_in_mb < 250:
-                # Older hdiutil needs extra space for source folders close to 200MB.
-                cmd += ['-size', '255m']
+            if size_in_mb > 190:
+                # Leave headroom for filesystem overhead and hdiutil's resize bug.
+                cmd += ['-size', f'{max(255, int(size_in_mb * 1.2) + 32)}m']
         print('\nCreating dmg...')
         with timeit() as times:
             subprocess.check_call(cmd + [dmg])

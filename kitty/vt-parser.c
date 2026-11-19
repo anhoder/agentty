@@ -589,6 +589,18 @@ dispatch_osc(PS *self, uint8_t *buf, size_t limit, bool is_extended_osc) {
             break;
         case 8: dispatch_hyperlink(self, (char *)buf + i); break;
         case 9:
+            if (limit - i >= 2 && buf[i] == '9' && buf[i + 1] == ';') {
+                // ConEmu cwd reporting: OSC 9;9;path
+                i += 2;
+#ifdef DUMP_COMMANDS
+                START_DISPATCH
+                REPORT_OSC2(process_cwd_notification, code, mv);
+                END_DISPATCH_WITHOUT_BREAK
+#endif
+                process_cwd_notification(self->screen, code, (char *)buf + i, limit - i);
+                break;
+            }
+            /* fallthrough */
         case 99:
         case 777:
         case 1337:
@@ -726,7 +738,7 @@ parse_kitty_dcs(PS *self, uint8_t *buf, size_t bufsz) {
     dispatch("cmd{", handle_remote_cmd, 1);
     dispatch("overlay-ready|", handle_overlay_ready, 0) dispatch("kitten-result|", handle_kitten_result, 0) dispatch("print|", handle_remote_print, 0)
         dispatch("echo|", handle_remote_echo, 0) dispatch("ssh|", handle_remote_ssh, 0) dispatch("ask|", handle_remote_askpass, 0)
-            dispatch("clone|", handle_remote_clone, 0) dispatch("edit|", handle_remote_edit, 0)
+            dispatch("clone|", handle_remote_clone, 0) dispatch("edit|", handle_remote_edit, 0) dispatch("color-scheme|", handle_remote_color_scheme, 0)
                 dispatch("restore-cursor-appearance|", handle_restore_cursor_appearance, 0)
 
                     return false;

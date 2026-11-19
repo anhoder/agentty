@@ -12,7 +12,7 @@
 #define GRAPHICS_USAGE_HINT_TRANSIENT 1u
 
 typedef struct {
-    unsigned char action, transmission_type, compressed, delete_action;
+    unsigned char action, transmission_type, compressed, delete_action, report_supported;
     uint32_t format, more, id, image_number, data_sz, data_offset, placement_id, quiet, parent_id, parent_placement_id, usage_hints;
     uint32_t width, height, x_offset, y_offset;
     union {
@@ -40,7 +40,7 @@ typedef struct {
         int32_t z_index, gap;
     };
     size_t payload_sz;
-    bool unicode_placement;
+    uint32_t unicode_placement;
     int32_t offset_from_parent_x, offset_from_parent_y;
 } GraphicsCommand;
 
@@ -271,6 +271,7 @@ png_from_data(void *png_data, size_t png_data_sz, const char *path_for_error_mes
 bool image_path_to_bitmap(const char *path, uint8_t **data, unsigned int *width, unsigned int *height, size_t *sz);
 bool scan_active_animations(GraphicsManager *self, const monotonic_t now, monotonic_t *minimum_gap, bool os_window_context_set);
 void grman_pause_rendering(GraphicsManager *self, GraphicsManager *dest);
+PyObject *grman_render_data_as_python(GraphicsManager *self);
 void grman_mark_layers_dirty(GraphicsManager *self);
 void grman_set_window_id(GraphicsManager *self, id_type id);
 bool grman_has_images(GraphicsManager *self);
