@@ -1151,7 +1151,7 @@ cocoa_initialize_agents_sidebar_toggle(void *ptr) {
     unsigned long long window_id = [node isKindOfClass:[NSNumber class]] ? [node unsignedLongLongValue] : 0;
     NSMenu *menu = [[[NSMenu alloc] initWithTitle:@"Agent and sidebar actions"] autorelease];
     if (window_id && row_indices[node]) {
-        [self addMenuItemTo:menu title:@"Focus Agent" command:"focus" windowID:window_id];
+        [self addMenuItemTo:menu title:@"Mark as Unread" command:"mark_unread" windowID:window_id];
         [self addMenuItemTo:menu title:@"New Window Here" command:"new_window" windowID:window_id];
         [self addMenuItemTo:menu title:@"Copy Working Directory" command:"copy_cwd" windowID:window_id];
         [menu addItem:[NSMenuItem separatorItem]];

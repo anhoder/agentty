@@ -15,7 +15,7 @@ from kitty.agent_manifest import (
 from kitty.agents import AgentSidebarRow, AgentState, AgentTracker, detect_agent, group_sidebar_rows, state_code, state_from_signals, state_icon
 
 from .base import BaseTest
-
+from kitty.agents import AgentSidebarRow, AgentSnapshot, AgentState, AgentTracker, detect_agent, group_sidebar_rows, state_code, state_from_signals, state_icon
 
 def screen(*lines: str, title: str = '', progress: str = '') -> Screen:
     return Screen(lines, title, progress)
@@ -312,6 +312,19 @@ class TestAgents(BaseTest):
 
     def test_state_codes_are_stable(self):
         self.ae([state_code(s) for s in AgentState], [1, 2, 3, 4, 0])
+
+
+    def test_mark_idle_agent_as_unseen_done(self):
+        from types import SimpleNamespace
+
+        tracker = AgentTracker()
+        snapshot = AgentSnapshot(7, 'omp', AgentState.idle, 'task', '/tmp')
+        tracker.snapshots[7] = snapshot
+        self.assertTrue(tracker.mark_unseen_done(7))
+        self.ae(tracker.snapshot_for(7).state, AgentState.done)
+        self.assertIn(7, tracker.unseen_done)
+        self.assertFalse(tracker.mark_unseen_done(7))
+        self.assertFalse(tracker.mark_unseen_done(99))
 
     def test_sidebar_grouping_strategies(self):
         rows = (

@@ -419,6 +419,16 @@ class AgentTracker:
         self.pending_idle_since.pop(window_id, None)
         self.unseen_done.discard(window_id)
 
+    def mark_unseen_done(self, window_id: int) -> bool:
+        """Keep an idle agent marked done until the user opens it again."""
+        snapshot = self.snapshots.get(window_id)
+        if snapshot is None or snapshot.state is not AgentState.idle:
+            return False
+        self.unseen_done.add(window_id)
+        self.snapshots[window_id] = replace(snapshot, state=AgentState.done)
+        self.mark_dirty(window_id)
+        return True
+
     def snapshot_for(self, window_id: int) -> AgentSnapshot | None:
         return self.snapshots.get(window_id)
 

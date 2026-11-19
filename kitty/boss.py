@@ -2180,6 +2180,9 @@ class Boss:
             set_agents_sidebar_focus(os_window_id, False)
             if (target_os_window_id := self.set_active_window(window, switch_os_window_if_needed=True)) is not None:
                 set_agents_sidebar_focus(target_os_window_id, False)
+        elif command == 'mark_unread':
+            if self.agent_tracker.mark_unseen_done(window_id):
+                self.flush_agent_sidebar_updates()
         elif command == 'new_window':
             if (tab := window.tabref()) is not None:
                 set_agents_sidebar_focus(os_window_id, False)
