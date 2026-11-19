@@ -536,6 +536,7 @@ cocoa_initialize_agents_sidebar_toggle(void *ptr) {
 @class KittyAgentsSidebarView;
 
 @interface KittyAgentsOutlineView : NSOutlineView
+@property BOOL keyboardFocusRequested;
 @end
 
 @interface KittyAgentsScrollView : NSScrollView
@@ -608,6 +609,9 @@ cocoa_initialize_agents_sidebar_toggle(void *ptr) {
 @end
 
 @implementation KittyAgentsOutlineView
+// Mouse activation returns to the terminal; only explicit keyboard navigation
+// may acquire sidebar focus and show its accent border.
+- (BOOL)acceptsFirstResponder { return self.keyboardFocusRequested; }
 - (BOOL)becomeFirstResponder {
     BOOL accepted = [super becomeFirstResponder];
     [self setNeedsDisplay:YES];
@@ -615,6 +619,7 @@ cocoa_initialize_agents_sidebar_toggle(void *ptr) {
 }
 - (BOOL)resignFirstResponder {
     BOOL accepted = [super resignFirstResponder];
+    if (accepted) self.keyboardFocusRequested = NO;
     [self setNeedsDisplay:YES];
     return accepted;
 }
@@ -1059,6 +1064,7 @@ cocoa_initialize_agents_sidebar_toggle(void *ptr) {
         [outline selectRowIndexes:[NSIndexSet indexSetWithIndex:(NSUInteger)row] byExtendingSelection:NO];
         [self revealRow:row];
     }
+    outline.keyboardFocusRequested = YES;
     [self.window makeFirstResponder:outline];
     [self setFocusBorderNeedsDisplay];
 }
