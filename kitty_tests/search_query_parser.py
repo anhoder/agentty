@@ -64,3 +64,5 @@ class TestSQP(BaseTest):
 
         tree = build_tree(r'id:"a\"b" and id:"c d"', 'id')
         self.ae([(n.location, n.query) for n in tree.iter_token_nodes()], [('id', 'a"b'), ('id', 'c d')])
+
+

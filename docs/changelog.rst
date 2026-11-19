@@ -9,8 +9,35 @@ To update |kitty|, :doc:`follow the instructions <binary>`.
 Recent major new features
 ---------------------------
 
+- Disable pane resizing from outer borders in both normal and fullscreen windows,
+  including their mouse tolerance area, while preserving internal divider
+  dragging. Native OS window borders still resize the entire normal window.
+  Detect neighbors rather than viewport contact so margins, padding and reserved
+  UI do not make an outer pane border draggable.
+- macOS: Search the screen and scrollback directly in a native find bar without
+  launching an external pager. Each pane has an independent floating top-right
+  bar that searches on Enter or previous/next navigation,
+  with case sensitivity, whole-word matching and regular expressions. Typing,
+  pasting and terminal output do not submit searches. Toggling case sensitivity,
+  whole-word matching or regular expressions immediately searches with the new
+  options. Hide result counts for an edited query until the next submission.
+  Search options sit inside the input, with compact counts and hover-aware buttons.
+  Show a pointing-hand cursor over enabled search buttons.
+  Keep the search field free of focus outlines and navigation buttons free of
+  persistent selection, with a compact input and result-count layout.
+  Keep each bar attached to its source pane, hiding it with that pane or tab
+  while preserving its query, options and results. Enter/Shift+Enter and
+  Cmd+G/Shift+Cmd+G submit unsearched or stale queries and otherwise navigate
+  existing matches. Isolate clicks, drags, scrolling and hover from the terminal
+  underneath. Independent highlights preserve text selection; Unicode,
+  wrapped text and native input methods are supported.
+  Expensive regular expressions time out without blocking the terminal.
 - macOS: Add a full accent border around the Agents sidebar while it owns
   keyboard focus, making Cmd+B focus state visible without changing agent rows.
+  Avoid briefly acquiring sidebar keyboard focus when clicking an agent, so
+  mouse selection does not flash the focus border.
+- macOS: Add an Agents sidebar context-menu action to mark an idle agent as
+  unread again, restoring its done indicator without reopening the agent.
 - macOS: Animate Agents group expansion and collapse with a short native
   transition. Preserve in-flight motion during status/title refreshes, support
   rapid reversal, and respect the system Reduce Motion preference.
