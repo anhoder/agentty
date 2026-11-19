@@ -1078,11 +1078,33 @@ typedef struct MouseRegion {
     Window *window;
 } MouseRegion;
 
+static Edge
+resizable_window_border(OSWindow *osw, const Window *w, Edge edges) {
+    if (!edges || !w) return edges;
+    const Tab *tab = osw->tabs + osw->active_tab;
+    const WindowGeometry *g = &w->render_data.geometry;
+    Edge internal = 0;
+    for (unsigned i = 0; i < tab->num_windows; i++) {
+        const Window *other = tab->windows + i;
+        if (other == w || !other->visible || !other->render_data.screen) continue;
+        const WindowGeometry *n = &other->render_data.geometry;
+        if (n->top < g->bottom && n->bottom > g->top) {
+            if (n->right <= g->left) internal |= LEFT_EDGE;
+            if (n->left >= g->right) internal |= RIGHT_EDGE;
+        }
+        if (n->left < g->right && n->right > g->left) {
+            if (n->bottom <= g->top) internal |= TOP_EDGE;
+            if (n->top >= g->bottom) internal |= BOTTOM_EDGE;
+        }
+    }
+    return edges & internal;
+}
+
 static MouseRegion
 mouse_region(bool detect_borders, bool detect_title_bar) {
     MouseRegion ans = {0};
     Region central, tab_bar;
-    const OSWindow *w = global_state.callback_os_window;
+    OSWindow *w = global_state.callback_os_window;
     os_window_regions(w, &central, &tab_bar);
     const bool in_central = mouse_in_region(&central);
     if (!in_central) {
@@ -1164,7 +1186,8 @@ mouse_region(bool detect_borders, bool detect_title_bar) {
                                 break;
                             }
                     }
-                    return ans;
+                    ans.window_border = resizable_window_border(w, ans.window, ans.window_border);
+                    if (ans.window_border) return ans;
                 }
                 ans.window_border = 0;
             }
