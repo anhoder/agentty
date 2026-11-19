@@ -173,9 +173,18 @@ vertex_main(
             crd.inactive_text_alpha * if_one_then(has_dim, lerp(crd.dim_opacity, 1.0, undim), 1.0) * if_one_then(has_blink, crd.blink_opacity, 1.0);
         float in_url = float((is_selected >> 1) & BIT_MASK);
         vo.decoration_fg = if_one_then(in_url, crd.url_color_lin.rgb, to_color(colors[2], fg_as_uint));
+        // Keep search text legible on both light and dark terminal themes.
+        // User selection and cursors are applied afterward and take priority.
+        float search_match = float((is_selected >> 5) & BIT_MASK);
+        float search_current = float((is_selected >> 6) & BIT_MASK);
+        float3 search_text = if_one_then(search_current, float3(0.02f), foreground);
+        float3 contrast_text = if_less_than(dot(background_rgb, Y), 0.4f, float3(1.f), float3(0.02f));
+        search_text = if_less_than(contrast_ratio(background_rgb, search_text), 4.5f, contrast_text, search_text);
+        foreground = if_one_then(search_match, search_text, foreground);
+        vo.decoration_fg = if_one_then(search_match, search_text, vo.decoration_fg);
         // Selection
         float3 selection_color = if_one_then(crd.use_cell_bg_for_selection_fg, bo.bg, crd.highlight_fg_lin.rgb);
-        selection_color = if_one_then(crd.use_cell_fg_for_selection_fg, foreground, selection_color);
+        selection_color = if_one_then(crd.use_cell_fg_for_selection_fg, bo.foreground, selection_color);
         foreground = if_one_then(float(is_selected & BIT_MASK), selection_color, foreground);
         vo.decoration_fg = if_one_then(float(is_selected & BIT_MASK), selection_color, vo.decoration_fg);
         // Underline and strike through (rendered via sprites)

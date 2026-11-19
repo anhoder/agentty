@@ -940,6 +940,7 @@ static void _glfwUpdateNotchCover(_GLFWwindow *);
     bool marked_text_cleared_by_insert;
     int in_key_handler;
     bool input_suspended;
+    bool pointer_in_overlay;
     NSString *input_source_at_last_key_event;
     GLFWDraggingSource *dragging_source;
 }
@@ -1084,9 +1085,24 @@ static void _glfwUpdateNotchCover(_GLFWwindow *);
     _glfwInputWindowDamage(window);
 }
 
+// Parent tracking areas still receive motion over native child views. Treat an
+// overlay as leaving the terminal, clearing URL/scrollbar hover exactly once.
+- (BOOL)terminalOwnsPointerEvent:(NSEvent *)event {
+    NSPoint point = [self.superview convertPoint:event.locationInWindow fromView:nil];
+    BOOL in_overlay = [self hitTest:point] != self;
+    if (in_overlay != pointer_in_overlay) {
+        pointer_in_overlay = in_overlay;
+        _glfwInputCursorEnter(window, !in_overlay);
+        if (in_overlay) {
+            showCursor(window);
+            [[NSCursor arrowCursor] set];
+        }
+    }
+    return !in_overlay;
+}
+
 - (void)cursorUpdate:(NSEvent *)event {
-    (void)event;
-    if (window) updateCursorImage(window);
+    if (window && [self terminalOwnsPointerEvent:event]) updateCursorImage(window);
 }
 
 - (BOOL)acceptsFirstMouse:(NSEvent *)event {
@@ -1110,6 +1126,7 @@ static void _glfwUpdateNotchCover(_GLFWwindow *);
 
 - (void)mouseMoved:(NSEvent *)event {
     if (!window) return;
+    if (![self terminalOwnsPointerEvent:event]) return;
     if (window->cursorMode == GLFW_CURSOR_DISABLED) {
         const double dx = [event deltaX] - window->ns.cursorWarpDeltaX;
         const double dy = [event deltaY] - window->ns.cursorWarpDeltaY;
@@ -1161,15 +1178,15 @@ static void _glfwUpdateNotchCover(_GLFWwindow *);
 }
 
 - (void)mouseExited:(NSEvent *)event {
-    (void)event;
+    pointer_in_overlay = false;
     if (!window) return;
     _glfwInputCursorEnter(window, false);
     [[NSCursor arrowCursor] set];
 }
 
 - (void)mouseEntered:(NSEvent *)event {
-    (void)event;
     if (!window) return;
+    if (![self terminalOwnsPointerEvent:event]) return;
     _glfwInputCursorEnter(window, true);
     updateCursorImage(window);
 }

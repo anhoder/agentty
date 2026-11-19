@@ -1531,6 +1531,10 @@ typedef struct {
         struct { CocoaPendingAction action; char *data; } *items;
         size_t count, capacity;
     } sidebar_actions;
+    struct {
+        char **items;
+        size_t count, capacity;
+    } search_events;
 } CocoaPendingActionsData;
 static CocoaPendingActionsData cocoa_pending_actions_data = {0};
 
@@ -1558,6 +1562,9 @@ cocoa_free_actions_data(void) {
     for (size_t i = 0; i < cocoa_pending_actions_data.sidebar_actions.count; i++) free(cocoa_pending_actions_data.sidebar_actions.items[i].data);
     free(cocoa_pending_actions_data.sidebar_actions.items);
     zero_at_ptr(&cocoa_pending_actions_data.sidebar_actions);
+    for (size_t i = 0; i < cocoa_pending_actions_data.search_events.count; i++) free(cocoa_pending_actions_data.search_events.items[i]);
+    free(cocoa_pending_actions_data.search_events.items);
+    zero_at_ptr(&cocoa_pending_actions_data.search_events);
 }
 
 void
@@ -1566,6 +1573,12 @@ set_cocoa_pending_action(CocoaPendingAction action, const char *data) {
         switch (action) {
             case LAUNCH_URLS: cocoa_append_to_pending_list(&cocoa_pending_actions_data.open_urls, data); break;
             case COCOA_NOTIFICATION_UNTRACKED: cocoa_append_to_pending_list(&cocoa_pending_actions_data.untracked_notifications, data); break;
+            case SEARCH_EVENT: {
+                size_t index = cocoa_pending_actions_data.search_events.count++;
+                ensure_space_for(&cocoa_pending_actions_data.search_events, items, char *, index + 1, capacity, 8, false);
+                cocoa_pending_actions_data.search_events.items[index] = strdup(data);
+                break;
+            }
             case AGENTS_SIDEBAR_CLICK:
             case AGENTS_SIDEBAR_MENU:
             case AGENTS_SIDEBAR_RESIZE:
@@ -1585,8 +1598,6 @@ set_cocoa_pending_action(CocoaPendingAction action, const char *data) {
     }
     cocoa_pending_actions[action] = true;
     has_cocoa_pending_actions = true;
-    // The main loop may be blocking on the event queue, if e.g. unfocused.
-    // Unjam it so the pending action is processed right now.
     wakeup_main_loop();
 }
 
@@ -1628,6 +1639,17 @@ process_cocoa_pending_actions(void) {
         free(cocoa_pending_actions_data.wd);
         cocoa_pending_actions_data.wd = NULL;
     }
+    char **search_events = cocoa_pending_actions_data.search_events.items;
+    size_t search_event_count = cocoa_pending_actions_data.search_events.count;
+    cocoa_pending_actions_data.search_events.items = NULL;
+    cocoa_pending_actions_data.search_events.count = cocoa_pending_actions_data.search_events.capacity = 0;
+    for (size_t i = 0; i < search_event_count; i++) {
+        if (search_events[i]) {
+            call_boss(scrollback_search_event, "s", search_events[i]);
+            free(search_events[i]);
+        }
+    }
+    free(search_events);
     for (size_t i = 0; i < cocoa_pending_actions_data.sidebar_actions.count; i++) {
         const char *payload = cocoa_pending_actions_data.sidebar_actions.items[i].data;
         switch (cocoa_pending_actions_data.sidebar_actions.items[i].action) {

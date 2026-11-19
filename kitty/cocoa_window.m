@@ -69,6 +69,488 @@ typedef struct {
     CGRect rect;
 } PaneFrame;
 
+static CGRect pane_animation_rect(const Window *w);
+static const void *kitty_search_overlay_key = &kitty_search_overlay_key;
+
+@interface KittySearchButton : NSButton {
+    NSTrackingArea *hover_tracking_area;
+    BOOL hovered;
+}
+@property(nonatomic, readonly) BOOL hovered;
+@end
+
+@interface KittySearchButtonCell : NSButtonCell
+@end
+
+@implementation KittySearchButtonCell
+- (void)drawBezelWithFrame:(NSRect)frame inView:(NSView *)view {
+    KittySearchButton *button = (KittySearchButton *)view;
+    if (!self.enabled) return;
+    BOOL selected = button.tag == 1 && self.state == NSControlStateValueOn;
+    BOOL active = button.hovered || self.highlighted;
+    if (!selected && !active) return;
+    NSColor *color = selected ? NSColor.selectedControlColor : NSColor.labelColor;
+    [[color colorWithAlphaComponent:selected ? (active ? 0.28 : 0.18) : (self.highlighted ? 0.14 : 0.08)] setFill];
+    [[NSBezierPath bezierPathWithRoundedRect:NSInsetRect(frame, 1, 2) xRadius:5 yRadius:5] fill];
+}
+@end
+
+@implementation KittySearchButton
++ (Class)cellClass { return [KittySearchButtonCell class]; }
+- (BOOL)hovered { return hovered; }
+- (void)dealloc {
+    if (hover_tracking_area) [self removeTrackingArea:hover_tracking_area];
+    [hover_tracking_area release];
+    [super dealloc];
+}
+- (void)updateTrackingAreas {
+    if (hover_tracking_area) [self removeTrackingArea:hover_tracking_area];
+    [hover_tracking_area release];
+    hover_tracking_area = [[NSTrackingArea alloc] initWithRect:NSZeroRect
+        options:NSTrackingMouseEnteredAndExited | NSTrackingMouseMoved | NSTrackingCursorUpdate | NSTrackingActiveInKeyWindow | NSTrackingInVisibleRect
+        owner:self userInfo:nil];
+    [self addTrackingArea:hover_tracking_area];
+    [super updateTrackingAreas];
+}
+- (void)resetCursorRects {
+    [super resetCursorRects];
+    if (self.enabled) [self addCursorRect:self.visibleRect cursor:[NSCursor pointingHandCursor]];
+}
+- (void)mouseEntered:(NSEvent *)event {
+    (void)event;
+    if (self.enabled) { hovered = YES; self.needsDisplay = YES; }
+    [(self.enabled ? NSCursor.pointingHandCursor : NSCursor.arrowCursor) set];
+}
+- (void)mouseMoved:(NSEvent *)event { [self mouseEntered:event]; }
+- (void)cursorUpdate:(NSEvent *)event { [self mouseEntered:event]; }
+- (void)mouseExited:(NSEvent *)event {
+    (void)event;
+    hovered = NO; self.needsDisplay = YES;
+    [[NSCursor arrowCursor] set];
+}
+- (void)setEnabled:(BOOL)enabled {
+    [super setEnabled:enabled];
+    if (!enabled && hovered) [[NSCursor arrowCursor] set];
+    if (!enabled) hovered = NO;
+    self.needsDisplay = YES;
+    [self.window invalidateCursorRectsForView:self];
+}
+@end
+
+@interface KittySearchInput : NSView
+@end
+
+@implementation KittySearchInput
+- (BOOL)isFlipped { return YES; }
+- (void)drawRect:(NSRect)dirtyRect {
+    (void)dirtyRect;
+    [[[NSColor labelColor] colorWithAlphaComponent:0.06] setFill];
+    [[NSBezierPath bezierPathWithRoundedRect:self.bounds xRadius:7 yRadius:7] fill];
+}
+@end
+
+@interface KittySearchOverlay : NSView <NSSearchFieldDelegate> {
+    id_type pane_id;
+    NSSearchField *search_field;
+    NSTextField *count_label;
+    KittySearchInput *input_background;
+    NSButton *case_button, *whole_button, *regex_button, *previous_button, *next_button, *close_button;
+    id local_event_monitor;
+}
+@property(nonatomic) id_type paneID;
+@property(nonatomic, retain) NSSearchField *searchField;
+@property(nonatomic, retain) NSTextField *countLabel;
+@property(nonatomic, retain) KittySearchInput *inputBackground;
+@property(nonatomic, retain) NSButton *caseButton;
+@property(nonatomic, retain) NSButton *wholeButton;
+@property(nonatomic, retain) NSButton *regexButton;
+@property(nonatomic, retain) NSButton *previousButton;
+@property(nonatomic, retain) NSButton *nextButton;
+@property(nonatomic, retain) NSButton *closeButton;
+@property(nonatomic, assign) id localEventMonitor;
+- (void)updateStatus:(NSString *)status focus:(BOOL)focus;
+- (void)sendCommand:(NSString *)command;
+- (void)toggleCase:(id)sender;
+- (void)toggleWholeWord:(id)sender;
+- (void)toggleRegex:(id)sender;
+- (BOOL)handleSearchKey:(NSEvent *)event;
+@end
+
+static void
+search_event(id_type pane_id, NSString *command, NSString *query) {
+    NSData *data = [NSJSONSerialization dataWithJSONObject:@[@(pane_id), command, query ? query : @""] options:0 error:nil];
+    if (data) {
+        NSString *payload = [[[NSString alloc] initWithData:data encoding:NSUTF8StringEncoding] autorelease];
+        set_cocoa_pending_action(SEARCH_EVENT, payload.UTF8String);
+    }
+}
+
+@implementation KittySearchOverlay
+@synthesize paneID = pane_id, searchField = search_field, countLabel = count_label, inputBackground = input_background;
+@synthesize caseButton = case_button, wholeButton = whole_button, regexButton = regex_button;
+@synthesize previousButton = previous_button, nextButton = next_button, closeButton = close_button;
+@synthesize localEventMonitor = local_event_monitor;
+- (BOOL)isFlipped { return YES; }
+// Stop unhandled child events here instead of forwarding them to the terminal.
+- (void)mouseDown:(NSEvent *)event { (void)event; }
+- (void)mouseUp:(NSEvent *)event { (void)event; }
+- (void)mouseDragged:(NSEvent *)event { (void)event; }
+- (void)rightMouseDown:(NSEvent *)event { (void)event; }
+- (void)rightMouseUp:(NSEvent *)event { (void)event; }
+- (void)rightMouseDragged:(NSEvent *)event { (void)event; }
+- (void)otherMouseDown:(NSEvent *)event { (void)event; }
+- (void)otherMouseUp:(NSEvent *)event { (void)event; }
+- (void)otherMouseDragged:(NSEvent *)event { (void)event; }
+- (void)mouseMoved:(NSEvent *)event { (void)event; }
+- (void)scrollWheel:(NSEvent *)event { (void)event; }
+- (void)dealloc {
+    if (local_event_monitor) [NSEvent removeMonitor:local_event_monitor];
+    [search_field release]; [count_label release]; [input_background release];
+    [case_button release]; [whole_button release]; [regex_button release];
+    [previous_button release]; [next_button release]; [close_button release];
+    [super dealloc];
+}
+- (void)layout {
+    [super layout];
+    CGFloat w = NSWidth(self.bounds), h = NSHeight(self.bounds);
+    CGFloat inset = MIN(8, w / 8), available = MAX(0, w - 2 * inset);
+    CGFloat button = MIN(24, available / 5), gap = MIN(4, available / 20);
+    CGFloat row_height = MIN(32, MAX(0, h - 2 * inset));
+    CGFloat x = w - inset, y = inset;
+    if (w < 400) y = MAX(inset, h - inset - row_height);
+    close_button.frame = NSMakeRect(x - button, y, button, row_height); x -= button + gap;
+    next_button.frame = NSMakeRect(x - button, y, button, row_height); x -= button + gap;
+    previous_button.frame = NSMakeRect(x - button, y, button, row_height); x -= button + gap;
+    CGFloat count_width = MIN(MAX(24, count_label.fittingSize.width), MIN(64, MAX(0, x - inset)));
+    count_label.frame = NSMakeRect(x - count_width, y + MAX(0, (row_height - 16) / 2), count_width, MIN(16, row_height));
+    x -= count_width + 4;
+    CGFloat input_width = w < 400 ? available : MAX(0, x - inset);
+    CGFloat input_height = MIN(w < 220 ? 56 : 32, MAX(0, h - 2 * inset));
+    input_background.frame = NSMakeRect(inset, inset, input_width, input_height);
+    CGFloat inner_inset = MIN(8, input_width / 8), option_gap = MIN(2, input_width / 30);
+    CGFloat option = MIN(26, MAX(0, input_width - 2 * inner_inset - 2 * option_gap) / 3);
+    CGFloat option_y = w < 220 ? MAX(0, input_height - 28) : MAX(0, (input_height - 28) / 2);
+    CGFloat option_height = MIN(28, input_height), option_x = input_width - inner_inset;
+    regex_button.frame = NSMakeRect(option_x - option, option_y, option, option_height); option_x -= option + option_gap;
+    whole_button.frame = NSMakeRect(option_x - option, option_y, option, option_height); option_x -= option + option_gap;
+    case_button.frame = NSMakeRect(option_x - option, option_y, option, option_height); option_x -= option + option_gap;
+    // A borderless search cell top-aligns its text and field editor. Give both only
+    // the font's line height, then center that line inside the input background.
+    CGFloat text_width = w < 220 ? input_width - 2 * inner_inset : option_x - inner_inset - 4;
+    NSFont *font = search_field.font;
+    CGFloat text_height = MIN(ceil(font.ascender - font.descender + font.leading), input_height);
+    CGFloat text_area_height = w < 220 ? MIN(28, input_height) : input_height;
+    search_field.frame = NSMakeRect(inner_inset, MAX(0, (text_area_height - text_height) / 2), MAX(0, text_width), text_height);
+}
+- (void)drawRect:(NSRect)dirtyRect {
+    (void)dirtyRect;
+    [[NSColor controlBackgroundColor] setFill];
+    [[NSBezierPath bezierPathWithRoundedRect:self.bounds xRadius:10 yRadius:10] fill];
+}
+- (void)sendCommand:(NSString *)command {
+    search_event(pane_id, command, search_field.stringValue);
+}
+- (BOOL)hasMarkedText {
+    NSText *editor = search_field.currentEditor;
+    return [editor isKindOfClass:[NSTextView class]] && [(NSTextView *)editor hasMarkedText];
+}
+- (BOOL)control:(NSControl *)control textView:(NSTextView *)textView doCommandBySelector:(SEL)selector {
+    (void)control; (void)textView;
+    if ([self hasMarkedText]) return NO;
+    if (selector == @selector(cancelOperation:)) { [self sendCommand:@"close"]; return YES; }
+    if (selector == @selector(insertNewline:) || selector == @selector(insertNewlineIgnoringFieldEditor:)) {
+        [self sendCommand:([NSApp.currentEvent modifierFlags] & NSEventModifierFlagShift) ? @"submit_previous" : @"submit"];
+        return YES;
+    }
+    return NO;
+}
+- (void)controlTextDidChange:(NSNotification *)notification {
+    if (notification.object != search_field || [self hasMarkedText]) return;
+    NSPasteboard *pasteboard = [NSPasteboard pasteboardWithName:NSPasteboardNameFind];
+    [pasteboard clearContents];
+    [pasteboard setString:search_field.stringValue forType:NSPasteboardTypeString];
+    search_event(pane_id, @"query", search_field.stringValue);
+    previous_button.enabled = next_button.enabled = search_field.stringValue.length > 0;
+}
+- (void)previous:(id)sender { (void)sender; previous_button.state = NSControlStateValueOff; [self sendCommand:@"previous"]; }
+- (void)next:(id)sender { (void)sender; next_button.state = NSControlStateValueOff; [self sendCommand:@"next"]; }
+- (void)close:(id)sender { (void)sender; [self sendCommand:@"close"]; }
+- (void)toggleCase:(id)sender {
+    if (sender != case_button) case_button.state = case_button.state == NSControlStateValueOn ? NSControlStateValueOff : NSControlStateValueOn;
+    search_event(pane_id, @"case_sensitive", case_button.state == NSControlStateValueOn ? @"1" : @"0");
+}
+- (void)toggleWholeWord:(id)sender {
+    if (sender != whole_button) whole_button.state = whole_button.state == NSControlStateValueOn ? NSControlStateValueOff : NSControlStateValueOn;
+    search_event(pane_id, @"whole_word", whole_button.state == NSControlStateValueOn ? @"1" : @"0");
+}
+- (void)toggleRegex:(id)sender {
+    if (sender != regex_button) regex_button.state = regex_button.state == NSControlStateValueOn ? NSControlStateValueOff : NSControlStateValueOn;
+    search_event(pane_id, @"regex", regex_button.state == NSControlStateValueOn ? @"1" : @"0");
+}
+- (void)updateStatus:(NSString *)status focus:(BOOL)focus {
+    // The field owns the draft, including while unfocused. Status updates must
+    // never replace its text, marked range, selection, or undo history.
+    NSString *message = status ? status : @"";
+    BOOL invalid = [message hasPrefix:@"Invalid regex:"];
+    BOOL timed_out = [message isEqualToString:@"Search timed out"];
+    count_label.stringValue = invalid || timed_out ? @"Error" : message;
+    count_label.textColor = invalid || timed_out ? NSColor.systemRedColor : NSColor.secondaryLabelColor;
+    count_label.toolTip = message;
+    count_label.accessibilityValue = message;
+    search_field.toolTip = invalid || timed_out ? message : @"Search terminal scrollback";
+    // Navigation also submits an unsearched draft or refreshes stale results.
+    previous_button.enabled = next_button.enabled = search_field.stringValue.length > 0;
+    if (focus && ![self hasMarkedText]) {
+        [self.window makeFirstResponder:search_field];
+        [search_field selectText:nil];
+    }
+    [self setNeedsLayout:YES];
+}
+- (BOOL)handleSearchKey:(NSEvent *)event {
+    if ([self hasMarkedText]) return NO;
+    NSUInteger flags = event.modifierFlags & NSEventModifierFlagDeviceIndependentFlagsMask;
+    NSString *chars = event.charactersIgnoringModifiers.lowercaseString;
+    if ((flags & (NSEventModifierFlagCommand | NSEventModifierFlagOption)) == (NSEventModifierFlagCommand | NSEventModifierFlagOption)) {
+        if ([chars isEqualToString:@"c"]) { [self toggleCase:nil]; return YES; }
+        if ([chars isEqualToString:@"w"]) { [self toggleWholeWord:nil]; return YES; }
+        if ([chars isEqualToString:@"r"]) { [self toggleRegex:nil]; return YES; }
+    }
+    if ((flags & NSEventModifierFlagCommand) && [chars isEqualToString:@"g"]) {
+        [self sendCommand:(flags & NSEventModifierFlagShift) ? @"previous" : @"next"]; return YES;
+    }
+    if (event.keyCode == 53) { [self sendCommand:@"close"]; return YES; }
+    if ((flags & NSEventModifierFlagCommand) && [chars isEqualToString:@"f"]) {
+        [self.window makeFirstResponder:search_field]; [search_field selectText:nil]; return YES;
+    }
+    return NO;
+}
+- (void)keyDown:(NSEvent *)event {
+    if (![self handleSearchKey:event]) [super keyDown:event];
+}
+@end
+
+static NSMutableDictionary<NSNumber *, KittySearchOverlay *> *
+search_overlays_for_window(NSWindow *window) {
+    return objc_getAssociatedObject(window, kitty_search_overlay_key);
+}
+
+static void
+remove_search_overlay(NSWindow *window, id_type pane_id) {
+    NSMutableDictionary *overlays = search_overlays_for_window(window);
+    KittySearchOverlay *overlay = overlays[@(pane_id)];
+    if (overlay) {
+        NSResponder *first = window.firstResponder;
+        BOOL fieldFocused = first == overlay.searchField.currentEditor ||
+            ([first isKindOfClass:[NSView class]] && [(NSView *)first isDescendantOf:overlay]);
+        if (overlay.localEventMonitor) {
+            [NSEvent removeMonitor:overlay.localEventMonitor];
+            overlay.localEventMonitor = nil;
+        }
+        if (fieldFocused) [window makeFirstResponder:window.contentView];
+        [overlay removeFromSuperview];
+        [overlays removeObjectForKey:@(pane_id)];
+    }
+}
+
+static void
+position_search_overlay(OSWindow *osw) {
+    NSWindow *window = glfwGetCocoaWindow(osw->handle);
+    NSDictionary<NSNumber *, KittySearchOverlay *> *overlays = search_overlays_for_window(window);
+    for (KittySearchOverlay *overlay in overlays.objectEnumerator) {
+        Window *pane = NULL;
+        if (osw->active_tab < osw->num_tabs) {
+            Tab *tab = osw->tabs + osw->active_tab;
+            for (unsigned i = 0; i < tab->num_windows; i++) {
+                Window *candidate = tab->windows + i;
+                if (candidate->id == overlay.paneID && candidate->visible && candidate->render_data.screen) {
+                    pane = candidate;
+                    break;
+                }
+            }
+        }
+        CGFloat scale = window.backingScaleFactor > 0 ? window.backingScaleFactor : 1;
+        NSRect bounds = window.contentView.bounds;
+        CGFloat left = NSMinX(bounds), right = NSMaxX(bounds), top = 0, bottom = NSHeight(bounds);
+        if (pane) {
+            const WindowGeometry *g = &pane->render_data.geometry;
+            left = MAX(left, NSMinX(bounds) + g->left / scale);
+            right = MIN(right, NSMinX(bounds) + g->right / scale);
+            top = MAX(0, g->top / scale);
+            bottom = MIN(bottom, g->bottom / scale);
+        }
+        // Leave room for the soft shadow without changing the terminal's geometry.
+        CGFloat width = MIN(440, MAX(0, right - left - 32));
+        CGFloat desired_height = width < 220 ? 104 : width < 400 ? 80 : 48;
+        CGFloat height = MIN(desired_height, MAX(0, bottom - top - 32));
+        if (!pane || width <= 0 || height <= 0) {
+            if (window.firstResponder == overlay.searchField.currentEditor ||
+                ([window.firstResponder isKindOfClass:[NSView class]] && [(NSView *)window.firstResponder isDescendantOf:overlay]))
+                [window makeFirstResponder:window.contentView];
+            overlay.hidden = YES;
+            continue;
+        }
+        overlay.hidden = NO;
+        CGFloat y = window.contentView.isFlipped ? NSMinY(bounds) + top + 16 : NSMaxY(bounds) - top - height - 16;
+        overlay.frame = NSMakeRect(right - width - 16, y, width, height);
+        [overlay layoutSubtreeIfNeeded];
+    }
+}
+
+void
+set_scrollback_search(id_type os_window_id, id_type window_id, const char *query, const char *status, bool visible, bool focus) {
+    OSWindow *osw = os_window_for_id(os_window_id);
+    if (!osw || !osw->handle) return;
+    NSWindow *window = glfwGetCocoaWindow(osw->handle);
+    NSMutableDictionary<NSNumber *, KittySearchOverlay *> *overlays = search_overlays_for_window(window);
+    KittySearchOverlay *overlay = overlays[@(window_id)];
+    if (!visible) {
+        remove_search_overlay(window, window_id);
+        return;
+    }
+    if (!overlay) {
+        if (!overlays) {
+            overlays = [NSMutableDictionary dictionary];
+            objc_setAssociatedObject(window, kitty_search_overlay_key, overlays, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        }
+        if (!query || !*query) {
+            NSString *saved = [[NSPasteboard pasteboardWithName:NSPasteboardNameFind] stringForType:NSPasteboardTypeString];
+            if (saved.length) {
+                query = saved.UTF8String;
+                search_event(window_id, @"query", saved);
+            }
+        }
+        overlay = [[[KittySearchOverlay alloc] initWithFrame:NSMakeRect(0, 0, 440, 48)] autorelease];
+        overlay.paneID = window_id;
+        overlay.inputBackground = [[[KittySearchInput alloc] initWithFrame:NSZeroRect] autorelease];
+        [overlay addSubview:overlay.inputBackground];
+        overlay.searchField = [[[NSSearchField alloc] initWithFrame:NSZeroRect] autorelease];
+        overlay.searchField.delegate = overlay;
+        overlay.searchField.placeholderString = @"Search...";
+        overlay.searchField.font = [NSFont systemFontOfSize:13];
+        overlay.searchField.accessibilityLabel = @"Search terminal scrollback";
+        overlay.searchField.bezeled = NO;
+        overlay.searchField.bordered = NO;
+        overlay.searchField.drawsBackground = NO;
+        overlay.searchField.focusRingType = NSFocusRingTypeNone;
+        NSSearchFieldCell *search_cell = (NSSearchFieldCell *)overlay.searchField.cell;
+        search_cell.searchButtonCell = nil;
+        search_cell.cancelButtonCell = nil;
+        overlay.searchField.stringValue = @(query ? query : "");
+        overlay.countLabel = [[[NSTextField alloc] initWithFrame:NSZeroRect] autorelease];
+        overlay.countLabel.editable = NO; overlay.countLabel.selectable = NO;
+        overlay.countLabel.bezeled = NO; overlay.countLabel.drawsBackground = NO;
+        overlay.countLabel.font = [NSFont monospacedDigitSystemFontOfSize:11 weight:NSFontWeightRegular];
+        overlay.countLabel.alignment = NSTextAlignmentCenter;
+        overlay.countLabel.lineBreakMode = NSLineBreakByTruncatingTail;
+        overlay.countLabel.accessibilityLabel = @"Search results";
+        overlay.caseButton = [KittySearchButton buttonWithTitle:@"Aa" target:overlay action:@selector(toggleCase:)];
+        overlay.wholeButton = [KittySearchButton buttonWithTitle:@"ab" target:overlay action:@selector(toggleWholeWord:)];
+        overlay.regexButton = [KittySearchButton buttonWithTitle:@".*" target:overlay action:@selector(toggleRegex:)];
+        overlay.previousButton = [KittySearchButton buttonWithTitle:@"" target:overlay action:@selector(previous:)];
+        overlay.nextButton = [KittySearchButton buttonWithTitle:@"" target:overlay action:@selector(next:)];
+        overlay.closeButton = [KittySearchButton buttonWithTitle:@"" target:overlay action:@selector(close:)];
+        NSArray<NSButton *> *buttons = @[overlay.caseButton, overlay.wholeButton, overlay.regexButton, overlay.previousButton, overlay.nextButton, overlay.closeButton];
+        NSArray<NSString *> *labels = @[@"Match case", @"Match whole word", @"Use regular expression", @"Previous match", @"Next match", @"Close search"];
+        NSArray<NSString *> *tips = @[@"Match case (Option-Command-C)", @"Match whole word (Option-Command-W)", @"Use regular expression (Option-Command-R)", @"Previous match (Shift-Command-G)", @"Next match (Command-G)", @"Close search (Escape)"];
+        NSArray<NSString *> *symbols = @[@"chevron.up", @"chevron.down", @"xmark"];
+        for (NSUInteger i = 0; i < buttons.count; i++) {
+            NSButton *button = buttons[i];
+            [button setButtonType:i < 3 ? NSButtonTypeToggle : NSButtonTypeMomentaryPushIn];
+            button.tag = i < 3 ? 1 : 0;
+            button.bordered = YES;
+            button.focusRingType = NSFocusRingTypeExterior;
+            button.font = [NSFont systemFontOfSize:12 weight:NSFontWeightMedium];
+            button.toolTip = tips[i];
+            button.accessibilityLabel = labels[i];
+            if (i >= 3) {
+            if (@available(macOS 11.0, *)) {
+                button.image = [NSImage imageWithSystemSymbolName:symbols[i - 3] accessibilityDescription:labels[i]];
+                button.imagePosition = NSImageOnly;
+            } else {
+                // SF Symbols require macOS 11; keep the same stroked controls on older systems.
+                NSImage *image = [[[NSImage alloc] initWithSize:NSMakeSize(14, 14)] autorelease];
+                [image lockFocus];
+                NSBezierPath *path = [NSBezierPath bezierPath];
+                path.lineWidth = 1.5;
+                path.lineCapStyle = NSLineCapStyleRound;
+                if (i == 5) {
+                    [path moveToPoint:NSMakePoint(3, 3)]; [path lineToPoint:NSMakePoint(11, 11)];
+                    [path moveToPoint:NSMakePoint(3, 11)]; [path lineToPoint:NSMakePoint(11, 3)];
+                } else {
+                    CGFloat end = i == 3 ? 5 : 9, middle = i == 3 ? 9 : 5;
+                    [path moveToPoint:NSMakePoint(2, end)]; [path lineToPoint:NSMakePoint(7, middle)]; [path lineToPoint:NSMakePoint(12, end)];
+                }
+                [[NSColor blackColor] setStroke]; [path stroke];
+                [image unlockFocus];
+                image.template = YES;
+                button.image = image;
+                button.imagePosition = NSImageOnly;
+            }
+            }
+            // Only our bezel supplies hover/selection; native content and focus stay intact.
+            [(NSButtonCell *)button.cell setHighlightsBy:NSNoCellMask];
+            [(NSButtonCell *)button.cell setShowsStateBy:NSNoCellMask];
+            if (i < 3) [overlay.inputBackground addSubview:button];
+            else [overlay addSubview:button];
+        }
+        NSMutableParagraphStyle *whole_word_style = [[[NSMutableParagraphStyle alloc] init] autorelease];
+        whole_word_style.alignment = NSTextAlignmentCenter;
+        overlay.wholeButton.attributedTitle = [[[NSAttributedString alloc] initWithString:@"ab" attributes:@{
+            NSFontAttributeName: overlay.wholeButton.font, NSForegroundColorAttributeName: NSColor.controlTextColor,
+            NSUnderlineStyleAttributeName: @(NSUnderlineStyleSingle), NSParagraphStyleAttributeName: whole_word_style
+        }] autorelease];
+        overlay.wholeButton.attributedAlternateTitle = overlay.wholeButton.attributedTitle;
+        [overlay.inputBackground addSubview:overlay.searchField]; [overlay addSubview:overlay.countLabel];
+        overlay.searchField.nextKeyView = overlay.caseButton;
+        overlay.caseButton.nextKeyView = overlay.wholeButton;
+        overlay.wholeButton.nextKeyView = overlay.regexButton;
+        overlay.regexButton.nextKeyView = overlay.previousButton;
+        overlay.previousButton.nextKeyView = overlay.nextButton;
+        overlay.nextButton.nextKeyView = overlay.closeButton;
+        overlay.closeButton.nextKeyView = overlay.searchField;
+        overlay.wantsLayer = YES;
+        overlay.layer.masksToBounds = NO;
+        NSShadow *shadow = [[[NSShadow alloc] init] autorelease];
+        shadow.shadowColor = [[NSColor blackColor] colorWithAlphaComponent:0.20];
+        shadow.shadowOffset = NSMakeSize(0, -2);
+        shadow.shadowBlurRadius = 10;
+        overlay.shadow = shadow;
+        [window.contentView addSubview:overlay positioned:NSWindowAbove relativeTo:nil];
+        overlays[@(window_id)] = overlay;
+        // __block is non-retaining under MRC; remove the monitor before releasing the overlay.
+        __block KittySearchOverlay *monitored_overlay = overlay;
+        __block NSWindow *monitored_window = window;
+        overlay.localEventMonitor = [NSEvent addLocalMonitorForEventsMatchingMask:NSEventMaskKeyDown handler:^NSEvent *(NSEvent *event) {
+            // A command may synchronously remove the overlay and its monitor.
+            KittySearchOverlay *current_overlay = [[monitored_overlay retain] autorelease];
+            NSWindow *current_window = [[monitored_window retain] autorelease];
+            if (event.window != current_window || current_overlay.hidden) return event;
+            NSResponder *first = current_window.firstResponder;
+            BOOL editing = first == current_overlay.searchField.currentEditor;
+            BOOL in_overlay = [first isKindOfClass:[NSView class]] && [(NSView *)first isDescendantOf:current_overlay];
+            if (!editing && !in_overlay) return event;
+            if (editing && [(NSTextView *)first hasMarkedText]) return event;
+            if ([current_overlay handleSearchKey:event]) return nil;
+            if (!editing && (event.keyCode == 36 || event.keyCode == 76)) {
+                [current_overlay sendCommand:(event.modifierFlags & NSEventModifierFlagShift) ? @"submit_previous" : @"submit"];
+                return nil;
+            }
+            NSUInteger flags = event.modifierFlags & NSEventModifierFlagDeviceIndependentFlagsMask;
+            NSString *chars = event.charactersIgnoringModifiers.lowercaseString;
+            if (editing && (flags & NSEventModifierFlagCommand) && !(flags & (NSEventModifierFlagOption | NSEventModifierFlagControl))) {
+                NSTextView *editor = (NSTextView *)first;
+                if ([chars isEqualToString:@"a"]) { [editor selectAll:nil]; return nil; }
+                if ([chars isEqualToString:@"c"]) { [editor copy:nil]; return nil; }
+                if ([chars isEqualToString:@"v"]) { [editor paste:nil]; return nil; }
+                if ([chars isEqualToString:@"x"]) { [editor cut:nil]; return nil; }
+            }
+            return event;
+        }];
+    }
+    [overlay updateStatus:@(status ? status : "") focus:focus];
+    position_search_overlay(osw);
+}
+
 @interface KittyPaneAnimationView : NSView {
     PaneFrame *frames;
     size_t count, capacity;
@@ -365,6 +847,7 @@ cocoa_animate_pane_layout(void *ptr) {
         [view release];
     }
     [view updateForWindow:osw];
+    position_search_overlay(osw);
 }
 
 static void

@@ -4327,21 +4327,11 @@ Requires :ref:`shell integration <shell_integration>` to work.
 """,
 )
 
-map(
-    'Search the scrollback within a pager',
-    'search_scrollback kitty_mod+/ search_scrollback',
-    long_text="""
-Search for currently selected text in the scrollback using the configured :opt:`scrollback_pager`.
-Assumes that pressing the :kbd:`/` key triggers search mode in the pager. If you want to create
-a manual mapping with a special pager for this, you can use something like:
-
-    map f1 combine : launch --stdin-source=@screen_scrollback --stdin-add-formatting --type=overlay mypager : send_key /
-
-For more sophisticated control, such as using the current selection, use :ac:`remote_control_script`.
-""",
-)
-
-map('Search the scrollback within a pager', 'search_scrollback --allow-fallback=shifted,ascii cmd+f search_scrollback', only='macos')
+map('Search scrollback', 'search_scrollback kitty_mod+/ search_scrollback')
+map('Next scrollback search match', 'search_next cmd+g search_next', only='macos')
+map('Previous scrollback search match', 'search_previous cmd+shift+g search_previous', only='macos')
+map('End scrollback search', 'end_scrollback_search cmd+escape end_scrollback_search', only='macos')
+map('Search scrollback', 'search_scrollback --allow-fallback=shifted,ascii cmd+f search_scrollback', only='macos')
 
 
 egr()  # }}}

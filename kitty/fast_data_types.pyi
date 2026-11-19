@@ -910,6 +910,7 @@ def macos_cycle_through_os_windows(backwards: bool) -> None:
 def native_tab_group_order(os_window_id: int) -> tuple[int, ...] | None:
     pass
 
+def set_scrollback_search(os_window_id: int, window_id: int, query: str, status: str, visible: bool, focus: bool = False) -> None: ...
 def set_agents_sidebar(
     os_window_id: int,
     enabled: bool,
@@ -1285,8 +1286,14 @@ class Screen:
     def scroll_prompt_to_bottom(self) -> None:
         pass
 
-    def clear_selection(self) -> None:
-        pass
+    def clear_selection(self) -> None: ...
+    def start_selection(self, x: int, y: int, rectangle_select: bool = False, extend_mode: int = 0, in_left_half_of_cell: bool = True) -> None: ...
+    def update_selection(self, x: int, y: int, in_left_half_of_cell: bool = False, ended: bool = True, nearest: bool = False) -> None: ...
+    search_generation: int
+    search_history_added: int
+    def search_rows(self, start: int, count: int) -> tuple[tuple[str, tuple[int, ...], bool], ...]: ...
+    def set_search_matches(self, matches: Sequence[tuple[int, int, int, int]], current: int = -1) -> None: ...
+    def clear_search(self) -> None: ...
 
     def set_mode(self, mode: int, private: bool = False) -> None:
         pass

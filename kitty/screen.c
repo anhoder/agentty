@@ -48,6 +48,21 @@
 static const ScreenModes empty_modes = {0, .mDECAWM = true, .mDECTCEM = true, .mDECARM = true};
 
 #define CSI_REP_MAX_REPETITIONS 65535u
+static void
+screen_clear_search(Screen *self) {
+    if (self->search.count) self->search.dirty = true;
+    self->search.count = 0;
+    self->search.current = -1;
+}
+
+static void
+search_content_changed(Screen *self) {
+    // IME preedit is temporarily drawn into live cells and then restored.
+    if (self->search.drawing_overlay) return;
+    self->search_generation++;
+    screen_clear_search(self);
+}
+
 
 // Constructor/destructor {{{
 
@@ -209,6 +224,7 @@ static Line *range_line_(Screen *self, int y);
 
 static void
 do_screen_reset(Screen *self, bool is_hard_reset) {
+    search_content_changed(self);
     screen_pause_rendering(self, false, 0);
     self->dnd_chunking.active = false;
     self->extra_cursors.count = 0;
@@ -466,6 +482,7 @@ index_selection(const Screen *self, Selections *selections, bool up, index_type 
         else self->last_visited_prompt.is_set = false;                                                  \
     }                                                                                                   \
     INDEX_GRAPHICS(1, scroll_history)                                                                   \
+    search_content_changed(self);                                                                       \
     self->is_dirty = true;                                                                              \
     if (UNLIKELY(self->selections.count)) index_selection(self, &self->selections, false, top, bottom); \
     if (UNLIKELY(self->url_ranges.count || self->url_ranges.in_progress)) clear_selection(&self->url_ranges);
@@ -505,6 +522,7 @@ nuke_multicell_char_at(Screen *self, index_type x_, index_type y_, bool replace_
         if (y > -1) linebuf_mark_line_dirty(self->linebuf, y);
         else historybuf_mark_line_dirty(self->historybuf, -(y + 1));
     }
+    search_content_changed(self);
     self->is_dirty = true;
 }
 
@@ -643,6 +661,7 @@ remove_blank_output_line_reservation_marker(Cursor *cursor, LineBuf *linebuf) {
 
 static bool
 screen_resize(Screen *self, unsigned int lines, unsigned int columns) {
+    search_content_changed(self);
     screen_pause_rendering(self, false, 0);
     lines = MAX(1u, lines);
     columns = MAX(1u, columns);
@@ -809,6 +828,7 @@ dealloc(Screen *self) {
     Py_CLEAR(self->paused_rendering.grman);
     free(self->selections.items);
     free(self->url_ranges.items);
+    PyMem_Free(self->search.items);
     free(self->paused_rendering.url_ranges.items);
     free(self->paused_rendering.selections.items);
     free_hyperlink_pool(self->hyperlink_pool);
@@ -1004,6 +1024,156 @@ range_line_is_continued(Screen *self, int y) {
     return self->linebuf == self->main_linebuf ? history_buf_endswith_wrap(self->historybuf) : false;
 }
 
+// Search uses live row coordinates: history is negative and the screen starts
+// at zero, independent of the viewport. No returned object references cells.
+static PyObject *
+search_rows(Screen *self, PyObject *args) {
+    int start, count;
+    if (!PyArg_ParseTuple(args, "ii", &start, &count)) return NULL;
+    const int first = self->linebuf == self->main_linebuf ? -(int)self->historybuf->count : 0;
+    if (count < 0) {
+        PyErr_SetString(PyExc_ValueError, "Search row count must be non-negative");
+        return NULL;
+    }
+    if (start < first || start > (int)self->lines) {
+        PyErr_SetString(PyExc_IndexError, "Search row out of range");
+        return NULL;
+    }
+    count = MIN(count, (int)self->lines - start);
+    RAII_PyObject(ans, PyTuple_New(count));
+    if (!ans) return NULL;
+    RAII_ListOfChars(text);
+    RAII_ListOfChars(columns);
+    Line line = {.text_cache = self->text_cache, .xnum = self->columns};
+    for (int row = 0; row < count; row++) {
+        const int y = start + row;
+        range_line(self, y, &line);
+        const index_type limit = range_line_is_continued(self, y + 1) ? line.xnum : xlimit_for_line(&line);
+        text.count = columns.count = 0;
+        index_type end = 0;
+        for (index_type x = 0; x < limit; x++) {
+            const CPUCell *c = line.cpu_cells + x;
+            if (c->is_multicell && (c->x || c->y)) continue;
+            text_in_cell(c, self->text_cache, self->lc);
+            size_t n = self->lc->count;
+            index_type width = c->is_multicell ? mcd_x_limit(c) : 1;
+            const bool is_tab = n && self->lc->chars[0] == '\t';
+            if (is_tab) {
+                // The second cached codepoint is tab metadata, not text.
+                width = MIN(limit - x, n > 1 ? 1 + self->lc->chars[1] : 1);
+                // A later write can have replaced cells inside the original tab.
+                for (index_type i = 1; i < width; i++) {
+                    if (!cell_is_char(line.cpu_cells + x + i, ' ')) {
+                        width = i;
+                        break;
+                    }
+                }
+                n = 1;
+            }
+            if (!n) continue;
+            ensure_space_for_chars(&text, text.count + n);
+            ensure_space_for_chars(&columns, columns.count + n + 1);
+            for (size_t i = 0; i < n; i++) {
+                text.chars[text.count++] = self->lc->chars[i] ? self->lc->chars[i] : ' ';
+                columns.chars[columns.count++] = x;
+            }
+            end = MIN(line.xnum, x + width);
+            if (is_tab) x += width - 1;
+        }
+        ensure_space_for_chars(&columns, columns.count + 1);
+        columns.chars[columns.count] = end;
+        RAII_PyObject(mapping, PyTuple_New(columns.count + 1));
+        if (!mapping) return NULL;
+        for (size_t i = 0; i <= columns.count; i++) {
+            PyObject *column = PyLong_FromUnsignedLong(columns.chars[i]);
+            if (!column) return NULL;
+            PyTuple_SET_ITEM(mapping, i, column);
+        }
+        RAII_PyObject(value, PyUnicode_FromKindAndData(PyUnicode_4BYTE_KIND, text.chars, text.count));
+        if (!value) return NULL;
+        PyObject *snapshot = PyTuple_Pack(3, value, mapping, range_line_is_continued(self, y) ? Py_True : Py_False);
+        if (!snapshot) return NULL;
+        PyTuple_SET_ITEM(ans, row, snapshot);
+    }
+    return Py_NewRef(ans);
+}
+
+static bool
+parse_search_match(Screen *self, PyObject *item, SearchMatch *match) {
+    if (!PyTuple_Check(item) || PyTuple_GET_SIZE(item) != 4) {
+        PyErr_SetString(PyExc_TypeError, "Search matches must be (start_y, start_x, end_y, end_x) tuples");
+        return false;
+    }
+    int values[4];
+    for (unsigned i = 0; i < arraysz(values); i++) {
+        PyObject *value = PyTuple_GET_ITEM(item, i);
+        if (!PyLong_Check(value)) {
+            PyErr_SetString(PyExc_TypeError, "Search match coordinates must be integers");
+            return false;
+        }
+        long n = PyLong_AsLong(value);
+        if (PyErr_Occurred()) return false;
+        if (n < INT_MIN || n > INT_MAX) {
+            PyErr_SetString(PyExc_OverflowError, "Search match coordinate is too large");
+            return false;
+        }
+        values[i] = n;
+    }
+    *match = (SearchMatch){values[0], values[1], values[2], values[3]};
+    const int first = self->linebuf == self->main_linebuf ? -(int)self->historybuf->count : 0;
+    if (match->start_y < first || match->end_y >= (int)self->lines || match->start_y > match->end_y ||
+        match->start_x < 0 || match->start_x >= (int)self->columns || match->end_x < 0 || match->end_x > (int)self->columns ||
+        (match->start_y == match->end_y && match->start_x >= match->end_x)) {
+        PyErr_SetString(PyExc_ValueError, "Search match range is empty or out of bounds");
+        return false;
+    }
+    return true;
+}
+
+static PyObject *
+set_search_matches(Screen *self, PyObject *args, PyObject *kwds) {
+    PyObject *matches;
+    Py_ssize_t current = -1;
+    static char *kwlist[] = {"matches", "current", NULL};
+    if (!PyArg_ParseTupleAndKeywords(args, kwds, "O|n", kwlist, &matches, &current)) return NULL;
+    RAII_PyObject(seq, PySequence_Fast(matches, "Search matches must be a sequence"));
+    if (!seq) return NULL;
+    const Py_ssize_t count = PySequence_Fast_GET_SIZE(seq);
+    if (current < -1 || current >= count) {
+        PyErr_SetString(PyExc_ValueError, "Current search match index is out of bounds");
+        return NULL;
+    }
+    // Validate before modifying the old results; invalid calls are atomic.
+    SearchMatch match;
+    for (Py_ssize_t i = 0; i < count; i++) {
+        if (!parse_search_match(self, PySequence_Fast_GET_ITEM(seq, i), &match)) return NULL;
+    }
+    if ((size_t)count > self->search.capacity) {
+        if ((size_t)count > SIZE_MAX / sizeof(SearchMatch)) return PyErr_NoMemory();
+        SearchMatch *items = PyMem_Realloc(self->search.items, (size_t)count * sizeof(SearchMatch));
+        if (!items) return PyErr_NoMemory();
+        self->search.items = items;
+        self->search.capacity = count;
+    }
+    for (Py_ssize_t i = 0; i < count; i++) {
+        PyObject *item = PySequence_Fast_GET_ITEM(seq, i);
+        self->search.items[i] = (SearchMatch){
+            PyLong_AsLong(PyTuple_GET_ITEM(item, 0)), PyLong_AsLong(PyTuple_GET_ITEM(item, 1)),
+            PyLong_AsLong(PyTuple_GET_ITEM(item, 2)), PyLong_AsLong(PyTuple_GET_ITEM(item, 3))
+        };
+    }
+    self->search.count = count;
+    self->search.current = current;
+    self->search.dirty = true;
+    Py_RETURN_NONE;
+}
+
+static PyObject *
+clear_search(Screen *self, PyObject *a UNUSED) {
+    screen_clear_search(self);
+    Py_RETURN_NONE;
+}
+
 static void
 insert_characters(Screen *self, index_type at, index_type num, index_type y, bool replace_with_spaces) {
     // insert num chars at x=at setting them to the value of the num chars at [at, at + num)
@@ -1050,6 +1220,7 @@ halve_multicell_width(Screen *self, index_type x_, index_type y_) {
         }
         if (y > -1) linebuf_mark_line_dirty(self->linebuf, y);
     }
+    search_content_changed(self);
     self->is_dirty = true;
     return true;
 }
@@ -1524,6 +1695,7 @@ draw_text_loop(Screen *self, const uint32_t *chars, size_t num_chars, text_loop_
 static void
 draw_text(Screen *self, const uint32_t *chars, size_t num_chars) {
     PREPARE_FOR_DRAW_TEXT;
+    search_content_changed(self);
     self->is_dirty = true;
     draw_text_loop(self, chars, num_chars, &s);
 }
@@ -1543,6 +1715,7 @@ draw_codepoint(Screen *self, char_type ch) {
 
 void
 screen_align(Screen *self) {
+    search_content_changed(self);
     self->margin_top = 0;
     self->margin_bottom = self->lines - 1;
     screen_cursor_position(self, 1, 1);
@@ -1615,6 +1788,7 @@ handle_fixed_width_multicell_command(Screen *self, CPUCell mcd, ListOfChars *lc)
         }
     }
     self->cursor->x += width;
+    search_content_changed(self);
     self->is_dirty = true;
 }
 
@@ -1682,6 +1856,7 @@ screen_handle_multicell_command(Screen *self, const MultiCellCommand *cmd, const
 
 void
 screen_alignment_display(Screen *self) {
+    search_content_changed(self);
     // https://www.vt100.net/docs/vt510-rm/DECALN.html
     screen_cursor_position(self, 1, 1);
     self->margin_top = 0;
@@ -1956,6 +2131,7 @@ screen_handle_graphics_command(Screen *self, const GraphicsCommand *cmd, const u
 
 void
 screen_toggle_screen_buffer(Screen *self, bool save_cursor, bool clear_alt_screen) {
+    search_content_changed(self);
     bool to_alt = self->linebuf == self->main_linebuf;
     self->active_hyperlink_id = 0;
     reset_pixel_scroll(self, 0);
@@ -2396,6 +2572,7 @@ screen_tab(Screen *self) {
                 }
                 cpu_cell->ch_or_idx = idx;
                 cpu_cell->ch_is_idx = true;
+                search_content_changed(self);
             }
         }
         self->cursor->x = found;
@@ -2520,12 +2697,14 @@ screen_cursor_to_column(Screen *self, unsigned int column) {
         linebuf_init_line(self->linebuf, bottom);                                                                         \
         historybuf_add_line(self->historybuf, self->linebuf->line, &self->as_ansi_buf);                                   \
         self->history_line_added_count++;                                                                                 \
+        self->search_history_added++;                                                                                     \
         if (self->last_visited_prompt.is_set) {                                                                           \
             if (self->last_visited_prompt.scrolled_by < self->historybuf->count) self->last_visited_prompt.scrolled_by++; \
             else self->last_visited_prompt.is_set = false;                                                                \
         }                                                                                                                 \
     }                                                                                                                     \
     linebuf_clear_line(self->linebuf, bottom, true);                                                                      \
+    search_content_changed(self);                                                                                          \
     self->is_dirty = true;                                                                                                \
     if (UNLIKELY(self->selections.count)) index_selection(self, &self->selections, true, top, bottom);                    \
     if (UNLIKELY(self->url_ranges.count || self->url_ranges.in_progress)) clear_selection(&self->url_ranges);
@@ -2899,6 +3078,7 @@ screen_erase_in_line(Screen *self, unsigned int how, bool private) {
         } else {
             line_apply_cursor(self->linebuf->line, self->cursor, s, n, true);
         }
+        search_content_changed(self);
         self->is_dirty = true;
         clear_intersecting_selections(self, self->cursor->y);
         linebuf_mark_line_dirty(self->linebuf, self->cursor->y);
@@ -2913,6 +3093,7 @@ dirty_scroll(Screen *self) {
 
 static void
 screen_clear_scrollback(Screen *self) {
+    search_content_changed(self);
     historybuf_clear(self->historybuf);
     reset_pixel_scroll(self, 0);
     if (self->scrolled_by != 0) {
@@ -3022,6 +3203,7 @@ screen_erase_in_display(Screen *self, unsigned int how, bool private) {
                 linebuf_clear_attrs_and_dirty(self->linebuf, i);
             }
         } else linebuf_clear_lines(self->linebuf, self->cursor, a, b);
+        search_content_changed(self);
         self->is_dirty = true;
         if (selection_intersects_screen_lines(&self->selections, a, b)) clear_selection(&self->selections);
         if (selection_intersects_screen_lines(&self->url_ranges, a, b)) clear_selection(&self->url_ranges);
@@ -3045,6 +3227,7 @@ screen_insert_lines(Screen *self, unsigned int count) {
         }
         screen_dirty_line_graphics(self, top, bottom, self->linebuf == self->main_linebuf);
         linebuf_insert_lines(self->linebuf, count, self->cursor->y, bottom);
+        search_content_changed(self);
         self->is_dirty = true;
         clear_all_selections(self);
         screen_carriage_return(self);
@@ -3089,6 +3272,7 @@ screen_delete_lines_impl(Screen *self, index_type start, index_type count, index
     nuke_multiline_char_intersecting_with(self, 0, self->columns, y, y + 1, false);
     screen_dirty_line_graphics(self, top, bottom, self->linebuf == self->main_linebuf);
     linebuf_delete_lines(self->linebuf, count, start, bottom);
+    search_content_changed(self);
     self->is_dirty = true;
     clear_all_selections(self);
 }
@@ -3114,6 +3298,7 @@ screen_insert_characters(Screen *self, unsigned int count) {
         linebuf_init_line(self->linebuf, self->cursor->y);
         line_apply_cursor(self->linebuf->line, self->cursor, x, num, true);
         linebuf_mark_line_dirty(self->linebuf, self->cursor->y);
+        search_content_changed(self);
         self->is_dirty = true;
         clear_intersecting_selections(self, self->cursor->y);
     }
@@ -3160,6 +3345,7 @@ screen_delete_characters(Screen *self, unsigned int count) {
         linebuf_init_line(self->linebuf, self->cursor->y);
         line_apply_cursor(self->linebuf->line, self->cursor, self->columns - num, num, true);
         linebuf_mark_line_dirty(self->linebuf, self->cursor->y);
+        search_content_changed(self);
         self->is_dirty = true;
         clear_intersecting_selections(self, self->cursor->y);
     }
@@ -3175,6 +3361,7 @@ screen_erase_characters(Screen *self, unsigned int count) {
     linebuf_init_line(self->linebuf, self->cursor->y);
     line_apply_cursor(self->linebuf->line, self->cursor, x, num, true);
     linebuf_mark_line_dirty(self->linebuf, self->cursor->y);
+    search_content_changed(self);
     self->is_dirty = true;
     clear_intersecting_selections(self, self->cursor->y);
 }
@@ -4418,6 +4605,42 @@ screen_is_cell_selected(Screen *self, index_type x, index_type y) {
     return false;
 }
 
+static void
+apply_search_matches(Screen *self, uint8_t *data, size_t size, int offset, int scrolled_by) {
+    if (self->paused_rendering.expires_at) return;
+    const int rows = MIN(size / self->columns, self->lines + offset);
+    const int first_visible = -offset - scrolled_by, last_visible = rows - offset - scrolled_by;
+    for (size_t i = 0; i < self->search.count; i++) {
+        const SearchMatch *m = self->search.items + i;
+        const uint8_t mask = 32 | ((Py_ssize_t)i == self->search.current ? 64 : 0);
+        // Scaled glyphs can extend down from origins above the viewport.
+        const int first = MAX(m->start_y, first_visible - ((1 << SCALE_BITS) - 1));
+        const int last = MIN(m->end_y + 1, last_visible);
+        for (int y = first; y < last; y++) {
+            const Line *line = checked_range_line(self, y);
+            if (!line) continue;
+            XRange xr = {
+                y == m->start_y ? m->start_x : 0,
+                y == m->end_y ? m->end_x : self->columns
+            };
+            if (xr.x_limit > xr.x) {
+                const CPUCell *c = line->cpu_cells + xr.x;
+                if (c->is_multicell && c->x) xr.x -= MIN(xr.x, (index_type)c->x);
+                c = line->cpu_cells + xr.x_limit - 1;
+                if (c->is_multicell) xr.x_limit = MIN(line->xnum, xr.x_limit + mcd_x_limit(c) - 1 - c->x);
+            }
+            for (index_type x = xr.x; x < xr.x_limit; x++) {
+                const CPUCell *c = line->cpu_cells + x;
+                const int top = c->is_multicell ? y - c->y : y;
+                const int bottom = top + cell_scale(c);
+                for (int r = MAX(top, first_visible); r < MIN(bottom, last_visible); r++) {
+                    data[(size_t)(r + offset + scrolled_by) * self->columns + x] |= mask;
+                }
+            }
+        }
+    }
+}
+
 void
 screen_apply_selection(Screen *self, void *address_, size_t size) {
     uint8_t *address = address_;
@@ -4434,6 +4657,8 @@ screen_apply_selection(Screen *self, void *address_, size_t size) {
         apply_selection(self, address, s, 2, offset, scrolled_by);
     }
     sel->last_rendered_count = sel->count;
+    apply_search_matches(self, address, size, offset, scrolled_by);
+    self->search.dirty = false;
     address += (size_t)offset * self->columns;
     size -= (size_t)offset * self->columns;
     ExtraCursors *ec = self->paused_rendering.expires_at ? &self->paused_rendering.extra_cursors : &self->extra_cursors;
@@ -5049,6 +5274,7 @@ screen_draw_overlay_line(Screen *self) {
     // Line instead). Without this, line->cpu_cells can be NULL or stale,
     // crashing the cell loops below.
     linebuf_init_line(self->linebuf, self->overlay_line.ynum);
+    self->search.drawing_overlay = true;
     const index_type xstart = screen_overlay_line_start(self);
     index_type columns_exceeded = self->overlay_line.text_len <= self->columns ? 0 : self->overlay_line.text_len - self->columns;
     bool orig_line_wrap_mode = self->modes.mDECAWM;
@@ -5137,6 +5363,7 @@ screen_draw_overlay_line(Screen *self) {
     self->modes.mDECAWM = orig_line_wrap_mode;
     self->modes.mDECTCEM = orig_cursor_enable_mode;
     self->modes.mIRM = orig_insert_replace_mode;
+    self->search.drawing_overlay = false;
 }
 
 static void
@@ -5460,6 +5687,7 @@ erase_last_command(Screen *self, PyObject *args UNUSED) {
         // otherwise the deletion of off-screen lines is not reflected until the
         // next scroll event forces the history viewport to be recomputed.
         self->scrolled_by = MIN(self->scrolled_by, self->historybuf->count);
+        search_content_changed(self);
         self->is_dirty = true;
         dirty_scroll(self);
     }
@@ -6171,6 +6399,7 @@ set_last_visited_prompt(Screen *self, PyObject *args) {
 bool
 screen_is_selection_dirty(Screen *self) {
     IterationData q;
+    if (self->search.dirty) return true;
     if (self->paused_rendering.expires_at) return false;
     if (self->scrolled_by != self->last_rendered.scrolled_by) return true;
     if (self->selections.last_rendered_count != self->selections.count || self->url_ranges.last_rendered_count != self->url_ranges.count ||
@@ -7250,6 +7479,9 @@ test_ch_and_idx(PyObject *self UNUSED, PyObject *val) {
 }
 
 static PyMethodDef methods[] = {
+    {"search_rows", (PyCFunction)search_rows, METH_VARARGS, "Immutable text, codepoint columns plus end sentinel, and soft-wrap state for live rows"},
+    {"set_search_matches", (PyCFunction)(void (*)(void))set_search_matches, METH_VARARGS | METH_KEYWORDS, "Set independent end-exclusive search highlights"},
+    {"clear_search", (PyCFunction)clear_search, METH_NOARGS, "Clear only search highlights"},
     METHODB(test_create_write_buffer, METH_NOARGS),
     METHODB(test_commit_write_buffer, METH_VARARGS),
     METHODB(test_parse_written_data, METH_VARARGS),
@@ -7307,6 +7539,8 @@ static PyGetSetDef getsetters[] = {
 
 static PyMemberDef members[] = {
     {"callbacks", T_OBJECT_EX, offsetof(Screen, callbacks), 0, "callbacks"},
+    {"search_generation", T_ULONGLONG, offsetof(Screen, search_generation), READONLY, "Text/history mutation generation"},
+    {"search_history_added", T_ULONGLONG, offsetof(Screen, search_history_added), READONLY, "Cumulative history row additions"},
     {"track_activity", T_BOOL, offsetof(Screen, track_activity), 0, "track_activity"},
     {"cursor", T_OBJECT_EX, offsetof(Screen, cursor), READONLY, "cursor"},
     {"vt_parser", T_OBJECT_EX, offsetof(Screen, vt_parser), READONLY, "vt_parser"},

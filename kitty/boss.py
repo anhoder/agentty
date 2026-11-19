@@ -4824,6 +4824,49 @@ class Boss:
         if w := self.active_window:
             w.search_scrollback()
 
+    def start_direct_scrollback_search(self, window: Window | None = None) -> None:
+        window = window or self.active_window
+        if not is_macos:
+            if window is not None:
+                window.search_scrollback()
+            return
+        if window is None:
+            return
+        from .scrollback_search import ScrollbackSearch
+
+        if window.scrollback_search is None:
+            window.scrollback_search = ScrollbackSearch(window)
+        window.scrollback_search.show(window.text_for_selection())
+
+    def navigate_direct_scrollback_search(self, window: Window | None = None, backwards: bool = False) -> None:
+        window = window or self.active_window
+        if window is not None and window.scrollback_search is not None:
+            window.scrollback_search.submit(window.scrollback_search.query, backwards=backwards)
+
+    def end_direct_scrollback_search(self, window: Window | None = None) -> None:
+        window = window or self.active_window
+        if window is not None and window.scrollback_search is not None:
+            window.scrollback_search.close()
+
+    def scrollback_search_event(self, payload: str) -> None:
+        window_id, command, query = json.loads(payload)
+        window = self.window_id_map.get(window_id)
+        if window is None or window.scrollback_search is None:
+            return
+        if command == 'query':
+            window.scrollback_search.update(query)
+        elif command in ('submit', 'submit_previous'):
+            window.scrollback_search.submit(query, backwards=command == 'submit_previous')
+        elif command in ('case_sensitive', 'regex', 'whole_word'):
+            window.scrollback_search.set_option(command, query == '1')
+            window.scrollback_search.submit(window.scrollback_search.query)
+        elif command == 'next':
+            window.scrollback_search.submit(query)
+        elif command == 'previous':
+            window.scrollback_search.submit(query, backwards=True)
+        elif command == 'close':
+            window.scrollback_search.close()
+
     def copy_or_noop(self) -> bool | None:
         if w := self.active_window:
             ans = w.copy_or_noop()

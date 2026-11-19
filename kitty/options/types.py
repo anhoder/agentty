@@ -961,7 +961,9 @@ defaults.map = [
     # show_last_command_output
     KeyDefinition(trigger=SingleKey(mods=256, key=103), options=KeyMapOptions(when_focus_on='', new_mode='', mode='', on_unknown='beep', on_action='keep', timeout=None, allow_fallback=(KeyFallbackType.shifted, KeyFallbackType.alternate)), definition='show_last_command_output'),
     # search_scrollback
-    KeyDefinition(trigger=SingleKey(mods=256, key=47), definition='search_scrollback'),
+    KeyDefinition(trigger=SingleKey(mods=256, key=47), definition='start_scrollback_search'),
+    KeyDefinition(trigger=SingleKey(mods=256, key=103), definition='search_next'),
+    KeyDefinition(trigger=SingleKey(mods=257, key=103), definition='search_previous'),
     # new_window
     KeyDefinition(trigger=SingleKey(mods=256, key=57345), definition='new_window'),
     # new_os_window

@@ -841,6 +841,7 @@ class Window:
         self.remote_control_passwords = remote_control_passwords
         self.allow_remote_control = allow_remote_control
         self.scroll_animation = ScrollAnimation()
+        self.scrollback_search: Any = None
 
     def remote_control_allowed(self, pcmd: dict[str, Any], extra_data: dict[str, Any]) -> bool:
         if not self.allow_remote_control:
@@ -2233,6 +2234,8 @@ class Window:
                 traceback.print_exc()
 
     def destroy(self) -> None:
+        if self.scrollback_search is not None:
+            self.scrollback_search.close()
         self.call_watchers(self.watchers.on_close, {})
         self.destroyed = True
         if self.clear_progress_timer:
@@ -2675,26 +2678,37 @@ class Window:
         cursor_on_screen = self.screen.scrolled_by < self.screen.lines - self.screen.cursor.y
         return get_boss().display_scrollback(self, data['text'], data['input_line_number'], report_cursor=cursor_on_screen)
 
-    @ac(
-        'sc',
-        """
-        Search scrollback in a pager like less. If there is selected text, it is automatically searched for.
-        Note that this assumes that pressing the / key triggers search mode in the page configured as the
-        scrollback pager.
-    """,
-    )
+    @ac('sc', 'Start direct in-terminal scrollback search')
+    def start_scrollback_search(self) -> None:
+        get_boss().start_direct_scrollback_search(self)
+
+    @ac('sc', 'Search the next direct scrollback match')
+    def search_next(self) -> None:
+        get_boss().navigate_direct_scrollback_search(self, backwards=False)
+
+    @ac('sc', 'Search the previous direct scrollback match')
+    def search_previous(self) -> None:
+        get_boss().navigate_direct_scrollback_search(self, backwards=True)
+
+    @ac('sc', 'End direct scrollback search')
+    def end_scrollback_search(self) -> None:
+        get_boss().end_direct_scrollback_search(self)
+
+    @ac('sc', 'Search the screen and scrollback directly on macOS')
     def search_scrollback(self) -> None:
+        if is_macos:
+            self.start_scrollback_search()
+            return
         text = self.text_for_selection()
-        w = self.show_scrollback()
-        if w is not None:
-            w.send_key('/')
+        window = self.show_scrollback()
+        if window is not None:
+            window.send_key('/')
             if text:
-                btext = text.encode()
-                sanitized = replace_c0_codes_except_nl_space_tab(btext)
-                if not w.screen.in_bracketed_paste_mode:
+                sanitized = replace_c0_codes_except_nl_space_tab(text.encode())
+                if not window.screen.in_bracketed_paste_mode:
                     sanitized = sanitized.replace(b'\n', b'\x1bE')
-                w.screen.paste_bytes(sanitized)
-                w.send_key('enter')
+                window.screen.paste_bytes(sanitized)
+                window.send_key('enter')
 
     def show_cmd_output(self, which: CommandOutput, title: str = 'Command output', as_ansi: bool = True, add_wrap_markers: bool = True) -> None:
         text = self.cmd_output(which, as_ansi=as_ansi, add_wrap_markers=add_wrap_markers)

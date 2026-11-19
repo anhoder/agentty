@@ -333,11 +333,16 @@ compute_background(uint3 colors, uint2 sprite_idx, uint is_selected, uint instan
     // }}}
 
     // Background {{{
+    // Search bits are independent of selection, URL and extra-cursor bits.
+    float search_match = float((is_selected >> 5) & BIT_MASK);
+    float search_current = float((is_selected >> 6) & BIT_MASK);
+    float3 search_yellow = color_to_vec(0xffcf40u);
+    bg = if_one_then(search_match, lerp(bg, search_yellow, lerp(0.28f, 1.f, search_current)), bg);
     float bg_alpha = calc_background_opacity(bg_as_uint);
     // we use max so that opacity of the block cursor cell background goes from bg_alpha to 1
     float effective_cursor_opacity = max(crd.cursor_opacity, bg_alpha);
     // is_special_cell is either 0 or 1
-    float is_special_cell = cell_data.has_block_cursor + float(is_selected & BIT_MASK);
+    float is_special_cell = cell_data.has_block_cursor + float(is_selected & BIT_MASK) + search_match;
     is_special_cell += float(is_reversed); // reverse video cells should be opaque as well
     is_special_cell = zero_or_one(is_special_cell);
     cell_has_default_bg = if_one_then(is_special_cell, 0., cell_has_default_bg);

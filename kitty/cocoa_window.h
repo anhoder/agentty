@@ -32,8 +32,9 @@ typedef enum {
     TOGGLE_MACOS_SECURE_KEYBOARD_ENTRY,
     MACOS_CYCLE_THROUGH_OS_WINDOWS,
     MACOS_CYCLE_THROUGH_OS_WINDOWS_BACKWARDS,
-    TOGGLE_MACOS_TAB_OVERVIEW,
     SEARCH_SCROLLBACK,
+    SEARCH_EVENT,
+    TOGGLE_MACOS_TAB_OVERVIEW,
     TOGGLE_FULLSCREEN,
     OPEN_KITTY_WEBSITE,
     HIDE,
@@ -76,6 +77,7 @@ size_t cocoa_text_width_for_single_line(const char *text, const size_t height, c
 extern uint8_t *render_single_ascii_char_as_mask(const char ch, size_t *result_width, size_t *result_height);
 void get_cocoa_key_equivalent(uint32_t, int, char *key, size_t key_sz, int *);
 void set_cocoa_pending_action(CocoaPendingAction action, const char *);
+void set_scrollback_search(id_type os_window_id, id_type window_id, const char *query, const char *status, bool visible, bool focus);
 void cocoa_initialize_agents_sidebar_toggle(void *);
 bool cocoa_set_agents_sidebar_focus(void *nswindow, bool focused, bool toggle);
 void cocoa_set_agents_sidebar(

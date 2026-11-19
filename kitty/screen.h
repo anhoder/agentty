@@ -122,6 +122,10 @@ typedef struct ExtraCursors {
     bool dirty;
 } ExtraCursors;
 
+typedef struct {
+    int start_y, start_x, end_y, end_x;
+} SearchMatch;
+
 
 typedef struct {
     PyObject_HEAD
@@ -132,6 +136,14 @@ typedef struct {
     OverlayLine overlay_line;
     id_type window_id;
     Selections selections, url_ranges;
+    struct {
+        SearchMatch *items;
+        size_t count, capacity;
+        Py_ssize_t current;
+        bool dirty, drawing_overlay;
+    } search;
+    unsigned long long search_generation, search_history_added;
+
     struct {
         unsigned int scrolled_by;
         index_type lines, columns;

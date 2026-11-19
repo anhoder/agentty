@@ -25,13 +25,48 @@ Previous shell prompt       :sc:`scroll_to_previous_prompt` (see :ref:`shell_int
 Next shell prompt           :sc:`scroll_to_next_prompt` (see :ref:`shell_integration`)
 Browse scrollback in less   :sc:`show_scrollback`
 Browse last cmd output      :sc:`show_last_command_output` (see :ref:`shell_integration`)
-Search scrollback in less   :sc:`search_scrollback` (also :kbd:`⌘+F` on macOS)
+Find in scrollback          :sc:`search_scrollback` (also :kbd:`⌘+F` on macOS)
+Next/previous match         :sc:`search_next` / :sc:`search_previous` (:kbd:`⌘+G` / :kbd:`⇧+⌘+G` on macOS)
 =========================   =======================
 
 The scroll actions only take effect when the terminal is in the main screen.
 When the alternate screen is active (for example when using a full screen
 program like an editor) the key events are instead passed to program running in the
 terminal.
+
+On macOS, find opens a floating search bar at the top right of the current pane
+instead of an external pager. Each pane has its own independently opened bar,
+query, options and results. Type a query and press Enter or click a previous/next
+button to search. Typing, pasting and new terminal output never start a search
+by themselves. Changing a search option immediately submits the current query.
+Inside the input, ``Aa``
+toggles case sensitivity, underlined ``ab`` toggles whole-word matching, and
+``.*`` toggles regular expressions; all are off by default. Their shortcuts
+while searching are Option+Cmd+C, Option+Cmd+W and Option+Cmd+R respectively.
+Whole-word matching excludes adjacent Unicode letters, digits and underscores,
+and works with both literal queries and regular expressions.
+After submission, Enter and Shift+Enter select the next and previous occurrence
+when the query and terminal content are unchanged. The previous/next buttons,
+Cmd+G and Shift+Cmd+G also submit the current query when results are absent or
+stale; otherwise they navigate existing results. Each bar stays attached to its
+source pane and is hidden while that pane or its tab is hidden. Click its close
+button or press Escape inside the bar to close only that pane's search. Closing
+the source pane also releases its search state. Copy, paste and select-all
+operate on the search field while it has focus, not on the terminal. Mouse
+clicks, dragging, scrolling and hovering over the bar do not pass through to
+the terminal underneath.
+
+Empty text clears the results. Editing the query hides the result count until
+a search is submitted. Submitted counts display as ``1/3``, or
+``0/0`` when there are no matches. Invalid regular expressions show an error
+without discarding the query. Expressions use Python regular expression syntax, including groups
+and lookarounds; zero-width matches do not highlight cells. Regex evaluation is
+isolated with a one-second limit so expensive expressions cannot block terminal
+input. Only the pane's
+retained interactive scrollback and its current screen are searched, not the
+separate :opt:`scrollback_pager_history_size` archive. Wrapped lines are searched
+as one logical line, and ordinary text selection is preserved. Non-macOS
+platforms keep the configured pager search behavior.
 
 Tabs
 ~~~~~~~~~~~

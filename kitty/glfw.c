@@ -154,6 +154,17 @@ strip_csi_(const char *title, char *buf, size_t bufsz) {
 }
 
 
+#ifdef __APPLE__
+static PyObject *
+cocoa_set_scrollback_search(PyObject *self UNUSED, PyObject *args) {
+    unsigned long long os_window_id, window_id;
+    const char *query, *status;
+    int visible, focus = 0;
+    if (!PyArg_ParseTuple(args, "KKssp|p", &os_window_id, &window_id, &query, &status, &visible, &focus)) return NULL;
+    set_scrollback_search((id_type)os_window_id, (id_type)window_id, query, status, visible != 0, focus != 0);
+    Py_RETURN_NONE;
+}
+#endif
 void
 update_menu_bar_title(PyObject *title UNUSED) {
 #ifdef __APPLE__
@@ -4425,7 +4436,8 @@ static PyMethodDef module_methods[] = {
     METHODB(dbus_monitor_session_state, METH_O),
     {"dbus_send_notification", (PyCFunction)(void (*)(void))(dbus_send_notification), METH_KEYWORDS | METH_VARARGS, NULL},
 #else
-    {"cocoa_recreate_global_menu", (PyCFunction)py_recreate_global_menu, METH_NOARGS, ""},
+    {"set_scrollback_search", (PyCFunction)cocoa_set_scrollback_search, METH_VARARGS, ""},
+    {"recreate_global_menu", (PyCFunction)py_recreate_global_menu, METH_NOARGS, ""},
     {"cocoa_clear_global_shortcuts", (PyCFunction)py_clear_global_shortcuts, METH_NOARGS, ""},
 #endif
     METHODB(cocoa_window_id, METH_O),
