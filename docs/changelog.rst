@@ -12,6 +12,23 @@ Recent major new features
 - Integrate upstream kitty 0.51.0, preserving Agentty's agent management,
   persistent sessions, native macOS tabs and search, and pane appearance.
 
+- macOS: Composite pane spring animations from live OpenGL textures without
+  reading terminal pixels back to the CPU. Keep rapid layout changes continuous
+  and preserve transparency, live output and interactive resize behavior.
+- macOS: Animate working-agent sidebar indicators using Core Animation layers
+  instead of a timer that redraws visible rows. Stop motion for hidden indicators
+  and respect the system Reduce Motion preference.
+- macOS: Preserve render requests made inside display-link callbacks and avoid
+  recreating a healthy display link while its callback waits on the main thread.
+  Retain watchdog recovery for a running link that stops delivering callbacks.
+- macOS: Update only changed Agents sidebar rows, preserving working-indicator
+  rotation and stable selection during title and status refreshes.
+- macOS: Reuse pane-animation content on geometry-only frames while keeping
+  terminal output, cursor changes and palette updates live. Bound cached texture
+  retention and precompute spring coefficients when layout targets change.
+- Keep Agents sidebar content refreshes independent of pane layout. Share
+  foreground process details within each observation batch and extract agent
+  detection text only when needed, reusing unchanged live-screen evidence.
 - Disable pane resizing from outer borders in both normal and fullscreen windows,
   including their mouse tolerance area, while preserving internal divider
   dragging. Native OS window borders still resize the entire normal window.
@@ -35,6 +52,9 @@ Recent major new features
   underneath. Independent highlights preserve text selection; Unicode,
   wrapped text and native input methods are supported.
   Expensive regular expressions time out without blocking the terminal.
+- macOS: Preserve submitted search highlights when unrelated terminal output
+  changes, tracking matches into scrollback and removing overwritten matches
+  without automatically starting another search.
 - macOS: Add a full accent border around the Agents sidebar while it owns
   keyboard focus, making Cmd+B focus state visible without changing agent rows.
   Avoid briefly acquiring sidebar keyboard focus when clicking an agent, so
@@ -98,11 +118,16 @@ Recent major new features
   Preserve explicit launch labels and agent resume metadata in new saved
   sessions; older snapshots retain only agent metadata because they do not
   distinguish launch labels from runtime state.
+- Place the restored-session timestamp above its divider and leave two blank
+  lines below the divider before new terminal output.
 - Fix startup crashing during pane creation because the border visibility state
   was not initialized; preserve tab bar background rectangles during refresh.
 - Limit macOS Python test workers to two to avoid subprocess startup timeouts
   when concurrent executable admission stalls in dyld; keep test deadlines and
   assertions unchanged.
+- macOS: Run the display-link scheduling build probe from the source tree when
+  checking frozen packages, rather than looking for unbundled Objective-C
+  sources in the app's resources.
 - Render stack (zoom) panes as inset rounded cards with an outside-only dark
   shadow diffused symmetrically around all four sides and across the outer margin.
   Preserve the terminal content's original colors, brightness and alpha instead

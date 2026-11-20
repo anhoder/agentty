@@ -6,6 +6,10 @@ show them in a native macOS vertical surface on the left side of the kitty
 window. It is not a nested TUI and does not use kitty's existing tab-bar
 renderer.
 
+Working indicators rotate in independently composited Core Animation layers;
+their motion does not redraw the row's text and icons. They stop when hidden or
+no longer working, and remain static when macOS Reduce Motion is enabled.
+
 On macOS, press :kbd:`Cmd+B` to show the sidebar and focus its agent list.
 Press it again, or :kbd:`Esc`, to return to the terminal without hiding the
 sidebar. :kbd:`Cmd+Shift+B` shows or hides the sidebar. Both shortcuts can be
