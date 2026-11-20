@@ -138,6 +138,27 @@ class TestBuild(BaseTest):
             self.assertEqual(cp.returncode, 0, cp.stdout)
             self.assertIn('dictation forwarding probe passed', cp.stdout)
 
+    def test_macos_displaylink_scheduling(self) -> None:
+        from kitty.constants import is_macos, kitty_base_dir
+
+        if not is_macos or not shutil.which('clang'):
+            self.skipTest('Display-link scheduling probe requires macOS and clang')
+        # Frozen-build tests run from bypy's source tree, not the app resources.
+        source_dir = os.getcwd() if getattr(sys, 'frozen', False) else kitty_base_dir
+        build_dir = os.path.join(source_dir, 'build')
+        os.makedirs(build_dir, exist_ok=True)
+        with tempfile.TemporaryDirectory(prefix='displaylink-', dir=build_dir) as tdir:
+            exe = os.path.join(tdir, 'probe')
+            source = os.path.join(source_dir, 'kitty_tests', 'displaylink_probe.m')
+            cp = subprocess.run(
+                ['clang', source, '-framework', 'Cocoa', '-framework', 'CoreVideo', '-framework', 'Carbon', '-o', exe],
+                capture_output=True, text=True,
+            )
+            self.assertEqual(cp.returncode, 0, cp.stdout + cp.stderr)
+            cp = subprocess.run([exe], capture_output=True, text=True, timeout=15)
+            self.assertEqual(cp.returncode, 0, cp.stdout + cp.stderr)
+            self.assertIn('display-link scheduling probe passed', cp.stdout)
+
     def test_glfw_modules(self) -> None:
         from kitty.constants import glfw_path, is_macos
 

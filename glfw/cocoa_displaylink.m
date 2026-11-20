@@ -178,12 +178,11 @@ _glfwRequestRenderFrame(_GLFWwindow *w) {
                 dl->first_unserviced_render_frame_request_at = now;
                 first_unserviced = now;
             }
-            dl->pending_dispatch = false;
             if (link) {
                 if (!CVDisplayLinkIsRunning(link)) {
                     need_start = true;
                     retain_link = true;
-                } else if (now - first_unserviced > s_to_monotonic_t(1ll)) {
+                } else if (!dl->pending_dispatch && now - first_unserviced > s_to_monotonic_t(1ll)) {
                     need_recreate = true;
                     dl->first_unserviced_render_frame_request_at = now;
                     dl->displayLink = NULL;
@@ -244,6 +243,18 @@ _glfwRequestRenderFrame(_GLFWwindow *w) {
 static void
 _glfwDispatchRenderFrame(void *passed_in_data) {
     CGDirectDisplayID displayID = (uintptr_t)passed_in_data;
+    // A callback can request the next frame. Consume this dispatch before
+    // invoking callbacks so their requests survive until the next display tick.
+    for (size_t i = 0; i < displayLinks.count; i++) {
+        _GLFWDisplayLinkNS *dl = &displayLinks.entries[i];
+        os_unfair_lock *lock = &displayLinks.locks[i];
+        os_unfair_lock_lock(lock);
+        if (dl->displayID == displayID) {
+            dl->first_unserviced_render_frame_request_at = 0;
+            dl->pending_dispatch = false;
+        }
+        os_unfair_lock_unlock(lock);
+    }
     _GLFWwindow *w = _glfw.windowListHead;
     while (w) {
         if (w->ns.renderFrameRequested && displayID == displayIDForWindow(w)) {
@@ -259,8 +270,6 @@ _glfwDispatchRenderFrame(void *passed_in_data) {
         os_unfair_lock *lock = &displayLinks.locks[i];
         os_unfair_lock_lock(lock);
         if (dl->displayID == displayID) {
-            dl->first_unserviced_render_frame_request_at = 0;
-            dl->pending_dispatch = false;
             bool any_pending_request = false;
             _GLFWwindow *window = _glfw.windowListHead;
             while (window) {
