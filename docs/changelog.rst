@@ -9,6 +9,9 @@ To update |kitty|, :doc:`follow the instructions <binary>`.
 Recent major new features
 ---------------------------
 
+- macOS: Use a light purple tint for the Agents sidebar section's background
+  and heading, with matching hover feedback.
+
 - macOS: Match each sidebar section's content background to its heading tint,
   preserving active-row highlights and independent heading hover feedback.
 

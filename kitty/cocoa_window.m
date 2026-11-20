@@ -1422,9 +1422,13 @@ agents_sidebar_update_string(NSString **string, const char *value) {
 @property(retain) NSTrackingArea *headerTrackingArea;
 @end
 
+static NSColor *KittySidebarSectionTint(BOOL agents_section) {
+    return agents_section ? [NSColor systemPurpleColor] : [NSColor systemTealColor];
+}
+
 static NSColor *KittySidebarSectionBackgroundColor(BOOL agents_section) {
     NSColor *base = [NSColor controlBackgroundColor];
-    NSColor *tint = agents_section ? [NSColor controlAccentColor] : [NSColor systemTealColor];
+    NSColor *tint = KittySidebarSectionTint(agents_section);
     return [base blendedColorWithFraction:agents_section ? 0.13 : 0.10 ofColor:tint];
 }
 
@@ -1452,9 +1456,12 @@ static NSColor *KittySidebarSectionBackgroundColor(BOOL agents_section) {
 - (void)mouseExited:(NSEvent *)event { (void)event; self.pointerHovered = NO; [self setNeedsDisplay:YES]; [[NSCursor arrowCursor] set]; }
 - (void)drawRect:(NSRect)dirtyRect {
     (void)dirtyRect;
-    NSColor *tint = self.agentsSection ? [NSColor controlAccentColor] : [NSColor systemTealColor];
+    NSColor *tint = KittySidebarSectionTint(self.agentsSection);
     NSColor *band = KittySidebarSectionBackgroundColor(self.agentsSection);
-    if (self.pointerHovered) band = [band blendedColorWithFraction:0.12 ofColor:[NSColor controlAccentColor]];
+    if (self.pointerHovered) {
+        NSColor *hover_tint = self.agentsSection ? tint : [NSColor controlAccentColor];
+        band = [band blendedColorWithFraction:0.12 ofColor:hover_tint];
+    }
     [band setFill]; NSRectFill(self.bounds);
     [[NSColor separatorColor] setFill]; NSRectFill(NSMakeRect(0, NSMaxY(self.bounds) - 1, self.bounds.size.width, 1));
     [tint setFill]; NSRectFill(NSMakeRect(0, 0, 2, self.bounds.size.height));
