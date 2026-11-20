@@ -712,11 +712,14 @@ class TestSessions(BaseTest):
         restored = s.tabs[0].windows[0].restored_scrollback
         screen = self.create_screen(cols=100, lines=10, scrollback=20)
         screen.restore_scrollback(restored)
+        parse_bytes(screen, b'new output')
         from kitty.window import as_text
 
         lines = as_text(screen, add_history=True).splitlines()
         self.ae(lines[:3], ['seven', '', ''])
-        self.assertTrue(lines[3].strip('-') == '' and len(lines[3]) >= 20)
+        self.assertTrue(lines[3].strip().startswith('Restored from '))
+        self.assertTrue(lines[4].strip('-') == '' and len(lines[4]) >= 20)
+        self.ae(lines[5:8], ['', '', 'new output'])
         # Repeated crashes cap automatic attempts, but retain both the normal backup name and its encryption key.
         self.ae(len(claim_snapshots(base, 2, ks, alive.__contains__)), 1)
         self.ae(claim_snapshots(base, 3, ks, alive.__contains__), [])
