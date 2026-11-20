@@ -99,7 +99,10 @@ class AgentControlRC(unittest.TestCase):
             match_windows=Mock(return_value=[self.window]),
             set_active_window=Mock(),
             cursor=17,
-            agent_tracker=SimpleNamespace(observe=Mock(return_value=SimpleNamespace(generation=3)), snapshot_for=lambda wid: None),
+            agent_tracker=SimpleNamespace(
+                observe=Mock(return_value=SimpleNamespace(generation=3)), snapshot_for=lambda wid: None,
+                live_snapshot=lambda w: (SimpleNamespace(agent=w.child.foreground_processes[0]['agent'], state=w.state), False),
+            ),
         )
         self.payload = dict(action='prompt', arguments=['hello'], match='id:42', expected_agent='claude')
 

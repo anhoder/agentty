@@ -122,7 +122,7 @@ position; visible is the current visual screen. Neither includes full scrollback
             # Do not consume dirty flags, advance debounce timers or publish state
             # as a side effect of a read-only remote-control request. In particular
             # do not carry a different agent's previous state into arbitration.
-            current = snapshot_for_window(w, w.agent_detection_snapshot())[0]
+            current = tracker.live_snapshot(w)[0]
             generation = tracker.generations.get(w.id, 0) + (0 if w.id in tracker.identities and identity_matches else 1)
             return replace(current, generation=generation) if current is not None else None
 

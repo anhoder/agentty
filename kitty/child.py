@@ -256,6 +256,14 @@ class CachedProcessData:
     cache_at: float = 0
     ttl: float = 1
 
+    def __init__(self) -> None:
+        self.cached_result = None
+        self.cache_active = False
+        self.cache_at = 0
+        self.cache_depth = 0
+        self.process_details: dict[int, ProcessDesc] = {}
+        self.foreground_pids: dict[int, tuple[int, list[int]]] = {}
+
     def process_group_map(self) -> DefaultDict[int, list[int]]:
         if self.cached_result is None or not self.cache_active:
             try:
@@ -268,18 +276,49 @@ class CachedProcessData:
     def processes_in_group(self, grp: int) -> list[int]:
         return self.process_group_map()[grp]
 
+    def foreground_processes(self, owner: int, fd: int) -> list[int]:
+        if not self.cache_active:
+            pgrp = os.tcgetpgrp(fd)
+            return list(self.processes_in_group(pgrp)) if pgrp >= 0 else []
+        cached = self.foreground_pids.get(owner)
+        if cached is None:
+            pgrp = os.tcgetpgrp(fd)
+            pids = list(self.processes_in_group(pgrp)) if pgrp >= 0 else []
+            cached = pgrp, pids
+            self.foreground_pids[owner] = cached
+        return cached[1]
+
+    def cached_process_desc(self, pid: int, resolver: Callable[[], 'ProcessDesc']) -> 'ProcessDesc':
+        if not self.cache_active:
+            return resolver()
+        ans = self.process_details.get(pid)
+        if ans is None:
+            ans = resolver()
+            self.process_details[pid] = ans
+        return ans
+
     def clear_cache(self) -> None:
         self.cached_result = None
         self.cache_at = 0
+        self.process_details.clear()
+        self.foreground_pids.clear()
 
     def start_caching(self, refresh: bool = False) -> bool:
-        prev, self.cache_active = self.cache_active, True
-        if refresh or monotonic() - self.cache_at > self.ttl:
-            self.clear_cache()
+        prev = self.cache_active
+        if not prev:
+            self.cache_active = True
+            self.cache_depth = 1
+            if refresh or monotonic() - self.cache_at > self.ttl:
+                self.clear_cache()
+        else:
+            self.cache_depth += 1
         return prev
 
     def stop_caching(self, prev: bool) -> None:
-        self.cache_active = prev
+        self.cache_depth = max(0, self.cache_depth - 1)
+        if not prev and self.cache_depth == 0:
+            self.cache_active = False
+            self.clear_cache()
 
 
 process_data_cache = CachedProcessData()
@@ -707,20 +746,22 @@ class Child:
         return ans
 
     def process_desc(self, pid: int) -> ProcessDesc:
-        ans: ProcessDesc = {'pid': pid, 'cmdline': None, 'cwd': None}
-        with suppress(Exception):
-            ans['cmdline'] = self.cmdline_of_pid(pid)
-        with suppress(Exception):
-            ans['cwd'] = cwd_of_process(pid) or None
-        return ans
+        def resolve() -> ProcessDesc:
+            ans: ProcessDesc = {'pid': pid, 'cmdline': None, 'cwd': None}
+            with suppress(Exception):
+                ans['cmdline'] = self.cmdline_of_pid(pid)
+            with suppress(Exception):
+                ans['cwd'] = cwd_of_process(pid) or None
+            return ans
+
+        return process_data_cache.cached_process_desc(pid, resolve)
 
     @property
     def foreground_processes(self) -> list[ProcessDesc]:
         if self.child_fd is None:
             return []
         try:
-            pgrp = os.tcgetpgrp(self.child_fd)
-            foreground_processes = processes_in_group(pgrp) if pgrp >= 0 else []
+            foreground_processes = process_data_cache.foreground_processes(self.id, self.child_fd)
             return [self.process_desc(x) for x in foreground_processes]
         except Exception:
             return []
@@ -865,19 +906,8 @@ class Child:
     def get_pid_for_cwd(self, oldest: bool = False) -> int | None:
         with suppress(Exception):
             assert self.child_fd is not None
-            pgrp = os.tcgetpgrp(self.child_fd)
-            foreground_processes = processes_in_group(pgrp) if pgrp >= 0 else []
+            foreground_processes = process_data_cache.foreground_processes(self.id, self.child_fd)
             if foreground_processes:
-                # there is no easy way that I know of to know which process is the
-                # foreground process in this group from the users perspective,
-                # so we assume the one with the highest PID is as that is most
-                # likely to be the newest process. This situation can happen
-                # for example with a shell script such as:
-                # #!/bin/bash
-                # cd /tmp
-                # vim
-                # With this script , the foreground process group will contain
-                # both the bash instance running the script and vim.
                 return min(foreground_processes) if oldest else max(foreground_processes)
         return self.root_pid
 
@@ -889,14 +919,14 @@ class Child:
         with suppress(Exception):
             pid = self.get_pid_for_cwd(oldest)
             if pid is not None:
-                return cwd_of_process(pid) or None
+                return self.process_desc(pid)['cwd'] or None
         return None
 
     def get_foreground_exe(self, oldest: bool = False) -> str | None:
         with suppress(Exception):
             pid = self.get_pid_for_cwd(oldest)
             if pid is not None:
-                c = cmdline_of_pid(pid)
+                c = self.process_desc(pid)['cmdline'] or ()
                 if c:
                     return c[0]
         return None

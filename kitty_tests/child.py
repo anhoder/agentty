@@ -21,6 +21,48 @@ from kitty.constants import is_macos, kitty_exe
 from .base import BaseTest
 
 
+class ProcessObservationTest(BaseTest):
+    def test_foreground_batch_refreshes_identity_and_cwd_between_scopes(self):
+        from collections import defaultdict
+        from unittest.mock import Mock
+
+        cache = child_mod.CachedProcessData()
+        child = Child(['claude'], '/initial')
+        child.child_fd = 91
+        child.pid = 10
+        group = Mock(return_value=1)
+        mapping = Mock(return_value=defaultdict(list, {1: [10, 11], 2: [12]}))
+        cmdline = Mock(side_effect=lambda pid: ['claude' if pid != 12 else 'zsh'])
+        cwd = Mock(side_effect=lambda pid: f'/process/{pid}')
+        try:
+            with (patch.object(child_mod, 'process_data_cache', cache), patch.object(child_mod.os, 'tcgetpgrp', group),
+                  patch.object(child_mod, 'process_group_map', mapping), patch.object(child_mod, 'cwd_of_process', cwd),
+                  patch.object(child, 'cmdline_of_pid', cmdline)):
+                with child_mod.cached_process_data():
+                    self.ae([p['pid'] for p in child.foreground_processes], [10, 11])
+                    with child_mod.cached_process_data():
+                        self.ae(child.get_foreground_cwd(), '/process/11')
+                        self.ae(child.get_foreground_cwd(oldest=True), '/process/10')
+                    self.ae(group.call_count, 1)
+                    self.ae(mapping.call_count, 1)
+                    self.ae(cmdline.call_count, 2)
+                    self.ae(cwd.call_count, 2)
+                self.assertFalse(cache.process_details)
+                group.return_value = 2
+                with child_mod.cached_process_data():
+                    self.ae(child.foreground_processes[0]['cmdline'], ['zsh'])
+                    self.ae(child.get_foreground_cwd(), '/process/12')
+                # Same PID, new executable/cwd after exec or PID reuse must be read anew.
+                cmdline.side_effect = lambda pid: ['node', '/agent/codex']
+                cwd.side_effect = lambda pid: '/restarted'
+                with child_mod.cached_process_data():
+                    self.ae(child.foreground_processes[0]['cmdline'], ['node', '/agent/codex'])
+                    self.ae(child.get_foreground_cwd(), '/restarted')
+                self.ae(group.call_count, 3)
+        finally:
+            child.child_fd = None
+
+
 class TestChild(unittest.TestCase):
     @unittest.skipUnless(is_macos, 'only macOS forks the default shell through login')
     def test_default_macos_shell_fork_skips_kitten(self):

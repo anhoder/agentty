@@ -167,6 +167,7 @@ class SubscriberTest(unittest.TestCase):
         self.addCleanup(self.patch.stop)
         self.boss = types.SimpleNamespace(all_windows=[])
         self.service = AgentService(self.boss)
+        self.boss.agent_tracker = types.SimpleNamespace(live_snapshot=lambda window: sys.modules['kitty.agents'].snapshot_for_window(window))
         self.ns = dict(Any=object, json=json, add_timer=add_timer, remove_timer=native.remove_timer, service_for=lambda boss: self.service)
         production_nodes('kitty/rc/agent_wait.py', {'pending', 'Waiter', 'clear_waiters'}, self.ns)
         production_nodes('kitty/rc/agent_subscribe.py', {'JournalWaiter'}, self.ns)

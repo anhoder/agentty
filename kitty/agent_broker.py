@@ -255,7 +255,9 @@ class Broker:
         self.report(window, p)
 
     def drain(self, timer_id: int | None = None) -> None:
-        with self.lock:
+        from kitty.child import cached_process_data
+
+        with cached_process_data(), self.lock:
             for token, binding in list(self.tokens.items()):
                 if binding[0] is not None and not self.live(binding):
                     if binding[2] is not None:

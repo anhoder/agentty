@@ -20,6 +20,12 @@ class AgentService:
         self.observations = {}
 
     def poll(self) -> None:
+        from kitty.child import cached_process_data
+
+        with cached_process_data():
+            self._poll()
+
+    def _poll(self) -> None:
         live = set()
         for window in self.boss.all_windows:
             live.add(window.id)
@@ -31,15 +37,12 @@ class AgentService:
             self.observations.pop(wid, None)
 
     def observe(self, window: Any) -> Any:
-        """Boss refresh hook; caller must only call on an already-created service.
+        """Share evidence, not the tracker's debounced presentation state."""
+        from kitty.child import cached_process_data
 
-        Reads live evidence without refreshing/consuming tracker state. Journal
-        coverage is observed transitions, not a claim of complete provider history.
-        """
-        from kitty.agents import snapshot_for_window
-
-        binding = self.binding(window)
-        snapshot = snapshot_for_window(window, window.agent_detection_snapshot())[0]
+        with cached_process_data():
+            binding = self.binding(window)
+            snapshot = self.boss.agent_tracker.live_snapshot(window)[0]
         state = {'instance_id': binding['instance_id'], 'state': snapshot.state.value if snapshot else None, 'state_source': 'live_observation'}
         if self.observations.get(window.id) != state:
             self.observations[window.id] = state

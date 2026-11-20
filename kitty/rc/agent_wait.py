@@ -123,11 +123,14 @@ class Waiter:
 
 
 def observe_pending(boss: Any, timer_id: int | None = None) -> None:
-    for wid in {w.spec['window_id'] for w in tuple(pending(boss).values()) if w.spec['window_id'] is not None}:
-        window = boss.window_id_map.get(wid)
-        if window is not None:
-            boss.agent_tracker.observe(window)
-        wake_waiters(boss, wid)
+    from kitty.child import cached_process_data
+
+    with cached_process_data():
+        for wid in {w.spec['window_id'] for w in tuple(pending(boss).values()) if w.spec['window_id'] is not None}:
+            window = boss.window_id_map.get(wid)
+            if window is not None:
+                boss.agent_tracker.observe(window)
+            wake_waiters(boss, wid)
 
 
 def wake_waiters(boss: Any, window_id: int) -> None:

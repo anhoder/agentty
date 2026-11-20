@@ -819,6 +819,43 @@ cocoa_initialize_agents_sidebar_toggle(void *ptr) {
     agents_sidebar_toggle_button_pressed(self);
 }
 @end
+// These records survive content refreshes and outline reordering. Only changed
+// UTF-8 fields become NSStrings; AppKit continues to use IDs and group keys.
+static BOOL
+agents_sidebar_string_matches(NSString *string, const char *value) {
+    return string && strcmp(string.UTF8String, value ? value : "") == 0;
+}
+
+static BOOL
+agents_sidebar_update_string(NSString **string, const char *value) {
+    if (agents_sidebar_string_matches(*string, value)) return NO;
+    NSString *next = [[NSString alloc] initWithUTF8String:value ? value : ""];
+    [*string release];
+    *string = next;
+    return YES;
+}
+
+@interface KittyAgentsSidebarEntry : NSObject {
+@public
+    NSNumber *identity;
+    NSString *group, *group_key, *agent, *label, *detail;
+    unsigned char state;
+    BOOL active;
+    unsigned changes;
+}
+@end
+@implementation KittyAgentsSidebarEntry
+- (void)dealloc {
+    [identity release];
+    [group release];
+    [group_key release];
+    [agent release];
+    [label release];
+    [detail release];
+    [super dealloc];
+}
+@end
+
 @class KittyAgentsSidebarView;
 
 @interface KittyAgentsOutlineView : NSOutlineView
@@ -827,9 +864,24 @@ cocoa_initialize_agents_sidebar_toggle(void *ptr) {
 
 @interface KittyAgentsScrollView : NSScrollView
 @end
-@interface KittyAgentsSidebarCell : NSTableCellView
+// Only this small view is layer-hosted; labels and icons keep native drawing.
+@interface KittyAgentsSidebarSpinnerView : NSView
+@end
+@implementation KittyAgentsSidebarSpinnerView
+- (BOOL)isFlipped { return YES; }
+- (NSView *)hitTest:(NSPoint)point { (void)point; return nil; }
+- (BOOL)isAccessibilityElement { return NO; }
+@end
+
+@interface KittyAgentsSidebarCell : NSTableCellView {
+    KittyAgentsSidebarSpinnerView *spinner_view;
+    CAShapeLayer *spinner_track, *spinner_arc;
+    BOOL spinner_rotating, window_closing;
+}
 @property(assign) KittyAgentsSidebarView *sidebar;
 @property(retain) id node;
+- (void)updateSpinner;
+- (void)stopSpinner;
 @end
 
 @interface KittyAgentsSidebarRowView : NSTableRowView {
@@ -844,13 +896,12 @@ cocoa_initialize_agents_sidebar_toggle(void *ptr) {
 
 @interface KittyAgentsSidebarView : NSView <NSOutlineViewDataSource, NSOutlineViewDelegate> {
     unsigned os_window_id;
-    NSArray<NSNumber *> *window_ids;
+    NSArray<KittyAgentsSidebarEntry *> *entries;
     // NSOutlineView owns selection; IDs survive tracker refreshes and reordering.
-    NSArray<NSString *> *groups, *group_keys, *agents, *labels, *details;
-    NSArray<NSNumber *> *states, *active_rows;
+    NSDictionary<NSNumber *, KittyAgentsSidebarEntry *> *entries_by_id;
     NSArray *root_nodes;
     NSDictionary *group_children;
-    NSDictionary *row_indices;
+    BOOL summary_dirty, row_style_changed;
     NSScrollView *scroll_view;
     KittyAgentsOutlineView *outline;
     NSTextField *summary;
@@ -861,8 +912,6 @@ cocoa_initialize_agents_sidebar_toggle(void *ptr) {
     BOOL has_entered_navigation;
     unsigned cell_width_pixels;
     NSMutableSet<NSString *> *collapsed_groups;
-    NSTimer *spinner_timer;
-    CGFloat spinner_phase;
     NSTrackingArea *resize_tracking_area;
 }
 @property(copy) NSString *grouping;
@@ -879,20 +928,21 @@ cocoa_initialize_agents_sidebar_toggle(void *ptr) {
          active:(const bool *)active
           count:(size_t)count;
 - (NSVisualEffectView *)backgroundView;
-- (void)stopAnimating;
-- (BOOL)isAnimating;
 - (BOOL)kittySidebarHasKeyboardFocus;
 - (void)kittySidebarCancelNavigation;
 - (BOOL)kittySidebarHandleKeyEvent:(NSEvent *)event;
 - (void)focusSidebar;
 - (void)drawNode:(id)node inRect:(NSRect)rect;
+- (NSColor *)workingSpinnerColorForNode:(id)node;
 - (NSString *)labelForNode:(id)node;
 - (NSMenu *)menuForNode:(id)node;
 - (void)rebuildOutline;
+- (void)syncGroupExpansion;
 - (void)setGroup:(id)group expanded:(BOOL)expanded animated:(BOOL)animated;
 + (NSMutableSet<NSString *> *)sharedCollapsedGroups;
 + (void)setSharedCollapsedGroups:(const char **)keys count:(size_t)count;
 @end
+
 
 @implementation KittyAgentsOutlineView
 // Mouse activation returns to the terminal; only explicit keyboard navigation
@@ -955,6 +1005,115 @@ cocoa_initialize_agents_sidebar_toggle(void *ptr) {
 }
 @end
 @implementation KittyAgentsSidebarCell
+- (instancetype)initWithFrame:(NSRect)frame {
+    self = [super initWithFrame:frame];
+    if (self) {
+        [NSWorkspace.sharedWorkspace.notificationCenter addObserver:self selector:@selector(spinnerPreferencesChanged:)
+            name:NSWorkspaceAccessibilityDisplayOptionsDidChangeNotification object:nil];
+    }
+    return self;
+}
+- (void)stopSpinner {
+    [spinner_arc removeAllAnimations];
+    spinner_rotating = NO;
+    spinner_view.hidden = YES;
+}
+- (void)updateSpinner {
+    if (!self.window || window_closing || !self.superview || self.hiddenOrHasHiddenAncestor || NSIsEmptyRect(self.visibleRect)) {
+        [self stopSpinner];
+        return;
+    }
+    NSColor *color = [self.sidebar workingSpinnerColorForNode:self.node];
+    if (!color) {
+        [self stopSpinner];
+        return;
+    }
+    [CATransaction begin];
+    [CATransaction setDisableActions:YES];
+    if (!spinner_view) {
+        spinner_view = [[KittyAgentsSidebarSpinnerView alloc] initWithFrame:NSZeroRect];
+        spinner_track = [CAShapeLayer layer];
+        spinner_arc = [CAShapeLayer layer];
+        spinner_track.geometryFlipped = YES;
+        spinner_track.fillColor = spinner_arc.fillColor = nil;
+        spinner_track.lineWidth = spinner_arc.lineWidth = 1.8;
+        spinner_arc.lineCap = kCALineCapRound;
+        // Preserve the existing 5.5pt outer radius, including half the stroke.
+        const CGFloat radius = 5.5 - 1.8 / 2;
+        CGMutablePathRef track = CGPathCreateMutable();
+        CGPathAddEllipseInRect(track, NULL, CGRectMake(5.5 - radius, 5.5 - radius, 2 * radius, 2 * radius));
+        spinner_track.path = track;
+        CGPathRelease(track);
+        CGMutablePathRef arc = CGPathCreateMutable();
+        CGPathAddArc(arc, NULL, 5.5, 5.5, radius, 0, -100.0 * M_PI / 180.0, true);
+        spinner_arc.path = arc;
+        CGPathRelease(arc);
+        spinner_arc.frame = CGRectMake(0, 0, 11, 11);
+        [spinner_track addSublayer:spinner_arc];
+        spinner_view.layer = spinner_track;
+        spinner_view.wantsLayer = YES;
+        [self addSubview:spinner_view];
+    }
+    spinner_view.frame = NSMakeRect(4, NSMidY(self.bounds) - 5.5, 11, 11);
+    spinner_track.contentsScale = spinner_arc.contentsScale = self.window.backingScaleFactor;
+    // Semantic NSColors must be resolved using this cell's current appearance.
+    if (@available(macOS 11.0, *)) {
+        [self.effectiveAppearance performAsCurrentDrawingAppearance:^{
+            spinner_track.strokeColor = [color colorWithAlphaComponent:0.25].CGColor;
+            spinner_arc.strokeColor = color.CGColor;
+        }];
+    } else {
+        spinner_track.strokeColor = [color colorWithAlphaComponent:0.25].CGColor;
+        spinner_arc.strokeColor = color.CGColor;
+    }
+    spinner_view.hidden = NO;
+    BOOL rotate = self.window.isVisible && !NSWorkspace.sharedWorkspace.accessibilityDisplayShouldReduceMotion;
+    if (rotate && !spinner_rotating) {
+        CABasicAnimation *rotation = [CABasicAnimation animationWithKeyPath:@"transform.rotation.z"];
+        rotation.fromValue = @0;
+        rotation.toValue = @(-2 * M_PI);
+        rotation.duration = 1.0 / 0.9;
+        rotation.repeatCount = HUGE_VALF;
+        rotation.timingFunction = [CAMediaTimingFunction functionWithName:kCAMediaTimingFunctionLinear];
+        [spinner_arc addAnimation:rotation forKey:@"working-rotation"];
+        spinner_rotating = YES;
+    } else if (!rotate && spinner_rotating) {
+        [spinner_arc removeAllAnimations];
+        spinner_rotating = NO;
+    }
+    [CATransaction commit];
+}
+- (void)spinnerPreferencesChanged:(NSNotification *)notification { (void)notification; [self updateSpinner]; }
+- (void)spinnerWindowVisibilityChanged:(NSNotification *)notification { (void)notification; [self updateSpinner]; }
+- (void)spinnerWindowWillClose:(NSNotification *)notification {
+    (void)notification;
+    window_closing = YES;
+    [self stopSpinner];
+}
+- (void)viewDidMoveToWindow {
+    [super viewDidMoveToWindow];
+    NSNotificationCenter *center = NSNotificationCenter.defaultCenter;
+    [center removeObserver:self name:NSWindowWillCloseNotification object:nil];
+    [center removeObserver:self name:NSWindowDidChangeOcclusionStateNotification object:nil];
+    window_closing = NO;
+    if (self.window) {
+        [center addObserver:self selector:@selector(spinnerWindowWillClose:) name:NSWindowWillCloseNotification object:self.window];
+        [center addObserver:self selector:@selector(spinnerWindowVisibilityChanged:) name:NSWindowDidChangeOcclusionStateNotification object:self.window];
+    }
+    [self updateSpinner];
+}
+- (void)viewDidMoveToSuperview { [super viewDidMoveToSuperview]; [self updateSpinner]; }
+- (void)viewDidHide { [super viewDidHide]; [self stopSpinner]; }
+- (void)viewDidUnhide { [super viewDidUnhide]; [self updateSpinner]; }
+- (void)viewDidChangeEffectiveAppearance { [super viewDidChangeEffectiveAppearance]; [self updateSpinner]; }
+- (void)viewDidChangeBackingProperties { [super viewDidChangeBackingProperties]; [self updateSpinner]; }
+- (void)setFrameSize:(NSSize)size { [super setFrameSize:size]; [self updateSpinner]; }
+- (void)prepareForReuse {
+    [self stopSpinner];
+    self.node = nil;
+    self.sidebar = nil;
+    [super prepareForReuse];
+}
 - (BOOL)isFlipped { return YES; }
 - (void)resetCursorRects {
     [super resetCursorRects];
@@ -968,6 +1127,10 @@ cocoa_initialize_agents_sidebar_toggle(void *ptr) {
 - (NSString *)accessibilityLabel { return [self.sidebar labelForNode:self.node]; }
 - (NSString *)accessibilityRole { return NSAccessibilityStaticTextRole; }
 - (void)dealloc {
+    [self stopSpinner];
+    [NSNotificationCenter.defaultCenter removeObserver:self];
+    [NSWorkspace.sharedWorkspace.notificationCenter removeObserver:self];
+    [spinner_view release];
     [_node release];
     [super dealloc];
 }
@@ -1049,6 +1212,7 @@ cocoa_initialize_agents_sidebar_toggle(void *ptr) {
     self = [super initWithFrame:NSMakeRect(0, 0, width, 100)];
     if (self) {
         os_window_id = window_id;
+        summary_dirty = YES;
         cell_width_pixels = MAX(1u, cell_width);
         collapsed_groups = [[KittyAgentsSidebarView sharedCollapsedGroups] retain];
         previous_responders = [[NSHashTable weakObjectsHashTable] retain];
@@ -1098,6 +1262,9 @@ cocoa_initialize_agents_sidebar_toggle(void *ptr) {
         outline.target = self;
         outline.action = @selector(outlineClicked:);
         scroll_view.documentView = outline;
+        scroll_view.contentView.postsBoundsChangedNotifications = YES;
+        [NSNotificationCenter.defaultCenter addObserver:self selector:@selector(spinnerViewportChanged:)
+            name:NSViewBoundsDidChangeNotification object:scroll_view.contentView];
         [self addSubview:scroll_view];
         self.identifier = @"kitty-agents-sidebar";
         self.autoresizingMask = NSViewHeightSizable;
@@ -1114,6 +1281,22 @@ cocoa_initialize_agents_sidebar_toggle(void *ptr) {
 }
 - (NSVisualEffectView *)backgroundView {
     return background_view;
+}
+
+@synthesize grouping = _grouping, iconsDir = _iconsDir;
+- (NSString *)grouping { return _grouping; }
+- (NSString *)iconsDir { return _iconsDir; }
+- (void)setGrouping:(NSString *)value {
+    if ([_grouping isEqualToString:value]) return;
+    [_grouping release];
+    _grouping = [value copy];
+    summary_dirty = YES;
+}
+- (void)setIconsDir:(NSString *)value {
+    if ([_iconsDir isEqualToString:value]) return;
+    [_iconsDir release];
+    _iconsDir = [value copy];
+    row_style_changed = YES;
 }
 
 - (NSView *)hitTest:(NSPoint)point {
@@ -1187,6 +1370,17 @@ cocoa_initialize_agents_sidebar_toggle(void *ptr) {
 
 + (void)setSharedCollapsedGroups:(const char **)keys count:(size_t)count {
     NSMutableSet<NSString *> *collapsed = [self sharedCollapsedGroups];
+    if (collapsed.count == count) {
+        BOOL unchanged = YES;
+        for (size_t i = 0; i < count && unchanged; i++) {
+            BOOL found = NO;
+            for (NSString *key in collapsed) {
+                if (agents_sidebar_string_matches(key, keys[i])) { found = YES; break; }
+            }
+            unchanged = found;
+        }
+        if (unchanged) return;
+    }
     [collapsed removeAllObjects];
     for (size_t i = 0; i < count; i++) {
         if (keys[i] && *keys[i]) [collapsed addObject:[NSString stringWithUTF8String:keys[i]]];
@@ -1195,7 +1389,15 @@ cocoa_initialize_agents_sidebar_toggle(void *ptr) {
 
 
 - (void)sharedGroupStateChanged:(NSNotification *)notification {
-    if (notification.object != self) [self rebuildOutline];
+    if (notification.object != self) [self syncGroupExpansion];
+}
+
+- (void)syncGroupExpansion {
+    syncing_outline = YES;
+    for (id node in root_nodes) {
+        if ([node isKindOfClass:[NSString class]]) [self setGroup:node expanded:![collapsed_groups containsObject:node] animated:YES];
+    }
+    syncing_outline = NO;
 }
 
 - (id)selectedNode {
@@ -1276,6 +1478,7 @@ cocoa_initialize_agents_sidebar_toggle(void *ptr) {
     cell.sidebar = self;
     cell.node = item;
     cell.toolTip = [self labelForNode:item];
+    [cell updateSpinner];
     [cell setNeedsDisplay:YES];
     return cell;
 }
@@ -1284,9 +1487,24 @@ cocoa_initialize_agents_sidebar_toggle(void *ptr) {
     KittyAgentsSidebarRowView *row = [[[KittyAgentsSidebarRowView alloc] initWithFrame:NSZeroRect] autorelease];
     row.sidebar = self;
     row.groupHeading = [item isKindOfClass:[NSString class]];
-    NSNumber *index = row_indices[item];
-    row.activeAgent = index && [active_rows[index.unsignedIntegerValue] boolValue];
+    KittyAgentsSidebarEntry *entry = entries_by_id[item];
+    row.activeAgent = entry && entry->active;
     return row;
+}
+- (void)outlineView:(NSOutlineView *)view didAddRowView:(NSTableRowView *)rowView forRow:(NSInteger)row {
+    (void)view; (void)row;
+    [(KittyAgentsSidebarCell *)[rowView viewAtColumn:0] updateSpinner];
+}
+- (void)outlineView:(NSOutlineView *)view didRemoveRowView:(NSTableRowView *)rowView forRow:(NSInteger)row {
+    (void)view; (void)row;
+    [(KittyAgentsSidebarCell *)[rowView viewAtColumn:0] stopSpinner];
+}
+- (void)spinnerViewportChanged:(NSNotification *)notification {
+    (void)notification;
+    [outline enumerateAvailableRowViewsUsingBlock:^(NSTableRowView *rowView, NSInteger row) {
+        (void)row;
+        [(KittyAgentsSidebarCell *)[rowView viewAtColumn:0] updateSpinner];
+    }];
 }
 - (void)outlineViewSelectionDidChange:(NSNotification *)notification {
     (void)notification;
@@ -1334,13 +1552,13 @@ cocoa_initialize_agents_sidebar_toggle(void *ptr) {
     }
     id target = remembered_selection;
     if (!has_entered_navigation || !target) {
-        for (NSUInteger i = 0; i < active_rows.count; i++) {
-            if ([active_rows[i] boolValue] && [window_ids[i] unsignedLongLongValue]) { target = window_ids[i]; break; }
+        for (KittyAgentsSidebarEntry *entry in entries) {
+            if (entry->active && entry->identity.unsignedLongLongValue) { target = entry->identity; break; }
         }
     }
     has_entered_navigation = YES;
-    if ([target isKindOfClass:[NSNumber class]] && row_indices[target]) {
-        NSString *key = group_keys[[row_indices[target] unsignedIntegerValue]];
+    if ([target isKindOfClass:[NSNumber class]] && entries_by_id[target]) {
+        NSString *key = entries_by_id[target]->group_key;
         if (key.length) [outline expandItem:key];
     }
     NSInteger row = -1;
@@ -1436,13 +1654,12 @@ cocoa_initialize_agents_sidebar_toggle(void *ptr) {
     [item release];
 }
 
-// The row list is rebuilt on a timer, which can happen while the menu is
-// tracking, so the menu carries the agent's window id rather than the row
-// index it was opened on.
+// Refreshes can arrive while a menu is tracking, so menu actions carry the
+// agent's window id rather than the row index the menu was opened on.
 - (NSMenu *)menuForNode:(id)node {
     unsigned long long window_id = [node isKindOfClass:[NSNumber class]] ? [node unsignedLongLongValue] : 0;
     NSMenu *menu = [[[NSMenu alloc] initWithTitle:@"Agent and sidebar actions"] autorelease];
-    if (window_id && row_indices[node]) {
+    if (window_id && entries_by_id[node]) {
         [self addMenuItemTo:menu title:@"Mark as Unread" command:"mark_unread" windowID:window_id];
         [self addMenuItemTo:menu title:@"New Window Here" command:"new_window" windowID:window_id];
         [self addMenuItemTo:menu title:@"Copy Working Directory" command:"copy_cwd" windowID:window_id];
@@ -1525,92 +1742,103 @@ cocoa_initialize_agents_sidebar_toggle(void *ptr) {
          states:(const unsigned char *)new_states
          active:(const bool *)active
           count:(size_t)count {
-    id old_selection = [[self selectedNode] retain];
-    NSMutableArray *next_window_ids = [NSMutableArray arrayWithCapacity:count];
-    NSMutableArray *next_groups = [NSMutableArray arrayWithCapacity:count];
-    NSMutableArray *next_group_keys = [NSMutableArray arrayWithCapacity:count];
-    NSMutableArray *next_agents = [NSMutableArray arrayWithCapacity:count];
-    NSMutableArray *next_labels = [NSMutableArray arrayWithCapacity:count];
-    NSMutableArray *next_details = [NSMutableArray arrayWithCapacity:count];
-    NSMutableArray *next_states = [NSMutableArray arrayWithCapacity:count];
-    NSMutableArray *next_active = [NSMutableArray arrayWithCapacity:count];
+    enum { content_changed = 1, tooltip_changed = 2, state_changed = 4, active_changed = 8 };
+    BOOL structure_changed = !entries || entries.count != count;
+    if (!structure_changed) {
+        for (size_t i = 0; i < count; i++) {
+            KittyAgentsSidebarEntry *entry = entries[i];
+            BOOL visible = new_window_ids[i] && new_agents[i] && *new_agents[i];
+            if (entry->identity.unsignedLongLongValue != new_window_ids[i] ||
+                !agents_sidebar_string_matches(entry->group_key, new_group_keys[i]) ||
+                (entry->identity.unsignedLongLongValue && entry->agent.length) != visible) {
+                structure_changed = YES;
+                break;
+            }
+        }
+    }
+    NSMutableArray *next_entries = structure_changed ? [NSMutableArray arrayWithCapacity:count] : nil;
+    NSMutableDictionary *next_by_id = structure_changed ? [NSMutableDictionary dictionaryWithCapacity:count] : nil;
+    NSMutableSet *changed_groups = nil;
+    BOOL outline_changed = NO;
     for (size_t i = 0; i < count; i++) {
-        [next_window_ids addObject:@(new_window_ids ? new_window_ids[i] : 0ULL)];
-        [next_groups addObject:[NSString stringWithUTF8String:new_groups[i] ? new_groups[i] : ""]];
-        [next_group_keys addObject:[NSString stringWithUTF8String:new_group_keys[i] ? new_group_keys[i] : ""]];
-        [next_agents addObject:[NSString stringWithUTF8String:new_agents[i] ? new_agents[i] : ""]];
-        [next_labels addObject:[NSString stringWithUTF8String:new_labels[i] ? new_labels[i] : ""]];
-        [next_details addObject:[NSString stringWithUTF8String:new_details[i] ? new_details[i] : ""]];
-        [next_states addObject:@(new_states ? new_states[i] : 0)];
-        [next_active addObject:@(active && active[i])];
-    }
-    [window_ids release];
-    [groups release];
-    [group_keys release];
-    [agents release];
-    [labels release];
-    [details release];
-    [states release];
-    [active_rows release];
-    window_ids = [next_window_ids copy];
-    groups = [next_groups copy];
-    group_keys = [next_group_keys copy];
-    agents = [next_agents copy];
-    labels = [next_labels copy];
-    details = [next_details copy];
-    states = [next_states copy];
-    active_rows = [next_active copy];
-    NSMutableArray *roots = [NSMutableArray array];
-    NSMutableDictionary *children = [NSMutableDictionary dictionary];
-    NSMutableDictionary *indices = [NSMutableDictionary dictionary];
-    for (NSUInteger i = 0; i < window_ids.count; i++) {
-        if (![window_ids[i] unsignedLongLongValue] || !agents[i].length) continue;
-        NSNumber *identity = window_ids[i];
-        indices[identity] = @(i);
-        NSString *key = group_keys[i];
-        if (key.length) {
-            if (!children[key]) { children[key] = [NSMutableArray array]; [roots addObject:key]; }
-            [children[key] addObject:identity];
-        } else [roots addObject:identity];
-    }
-    BOOL same_structure = [root_nodes isEqualToArray:roots] && [group_children isEqualToDictionary:children];
-    if (!same_structure) {
-        [root_nodes release];
-        [group_children release];
-        root_nodes = [roots copy];
-        group_children = [children copy];
-    }
-    [row_indices release];
-    row_indices = [indices copy];
-    summary.stringValue = indices.count ? [NSString stringWithFormat:@"Grouping: %@ · %lu agents · %lu groups", self.grouping,
-                                         (unsigned long)indices.count, (unsigned long)children.count] : @"No AI agents";
-    summary.toolTip = summary.stringValue;
-    if (!same_structure) [self rebuildOutline];
-    else {
-        syncing_outline = YES;
-        for (id node in root_nodes) {
-            if ([node isKindOfClass:[NSString class]]) [self setGroup:node expanded:![collapsed_groups containsObject:node] animated:YES];
+        KittyAgentsSidebarEntry *entry = structure_changed ? entries_by_id[@(new_window_ids[i])] : entries[i];
+        if (!entry) {
+            entry = [[[KittyAgentsSidebarEntry alloc] init] autorelease];
+            entry->identity = [[NSNumber alloc] initWithUnsignedLongLong:new_window_ids[i]];
         }
-        syncing_outline = NO;
-        for (NSInteger row = 0; row < outline.numberOfRows; row++) {
+        entry->changes = row_style_changed ? content_changed : 0;
+        if (agents_sidebar_update_string(&entry->group, new_groups[i]) && entry->group_key.length &&
+            [[group_children[entry->group_key] firstObject] isEqual:entry->identity]) {
+            if (!changed_groups) changed_groups = [NSMutableSet set];
+            [changed_groups addObject:entry->group_key];
+        }
+        agents_sidebar_update_string(&entry->group_key, new_group_keys[i]);
+        if (agents_sidebar_update_string(&entry->agent, new_agents[i])) entry->changes |= content_changed;
+        if (agents_sidebar_update_string(&entry->label, new_labels[i])) entry->changes |= content_changed | tooltip_changed;
+        if (agents_sidebar_update_string(&entry->detail, new_details[i])) entry->changes |= content_changed | tooltip_changed;
+        if (entry->state != new_states[i]) entry->changes |= content_changed | state_changed;
+        if (entry->active != (BOOL)active[i]) entry->changes |= content_changed | tooltip_changed | active_changed;
+        entry->state = new_states[i];
+        entry->active = active[i];
+        if (structure_changed) {
+            [next_entries addObject:entry];
+            if (entry->identity.unsignedLongLongValue && entry->agent.length) next_by_id[entry->identity] = entry;
+        }
+    }
+    if (structure_changed) {
+        [entries release];
+        entries = [next_entries copy];
+        [entries_by_id release];
+        entries_by_id = [next_by_id copy];
+        NSMutableArray *roots = [NSMutableArray array];
+        NSMutableDictionary *children = [NSMutableDictionary dictionary];
+        for (KittyAgentsSidebarEntry *entry in entries) {
+            if (!entry->identity.unsignedLongLongValue || !entry->agent.length) continue;
+            NSString *key = entry->group_key;
+            if (key.length) {
+                if (!children[key]) { children[key] = [NSMutableArray array]; [roots addObject:key]; }
+                [children[key] addObject:entry->identity];
+            } else [roots addObject:entry->identity];
+        }
+        outline_changed = ![root_nodes isEqualToArray:roots] || ![group_children isEqualToDictionary:children];
+        if (outline_changed) {
+            [root_nodes release];
+            [group_children release];
+            root_nodes = [roots copy];
+            group_children = [children copy];
+            [self rebuildOutline];
+        }
+        summary_dirty = YES;
+        if (remembered_selection && !entries_by_id[remembered_selection] && !group_children[remembered_selection]) {
+            [remembered_selection release];
+            remembered_selection = nil;
+        }
+    }
+    if (!outline_changed) {
+        [self syncGroupExpansion];
+        [outline enumerateAvailableRowViewsUsingBlock:^(NSTableRowView *row_view, NSInteger row) {
             id node = [outline itemAtRow:row];
-            KittyAgentsSidebarRowView *view = [outline rowViewAtRow:row makeIfNecessary:NO];
-            NSNumber *index = row_indices[node];
-            view.activeAgent = index && [active_rows[index.unsignedIntegerValue] boolValue];
-            [view setNeedsDisplay:YES];
-            NSView *cell = [outline viewAtColumn:0 row:row makeIfNecessary:NO];
-            cell.toolTip = [self labelForNode:node];
+            KittyAgentsSidebarEntry *entry = entries_by_id[node];
+            unsigned changes = entry ? entry->changes : ([changed_groups containsObject:node] ? content_changed | tooltip_changed : 0);
+            if (!changes) return;
+            KittyAgentsSidebarCell *cell = (KittyAgentsSidebarCell *)[row_view viewAtColumn:0];
+            if (changes & active_changed) {
+                ((KittyAgentsSidebarRowView *)row_view).activeAgent = entry->active;
+                [row_view setNeedsDisplay:YES];
+            }
+            if (changes & tooltip_changed) cell.toolTip = [self labelForNode:node];
+            // Working uses the same semantic color for active/inactive rows.
+            if (changes & state_changed) [cell updateSpinner];
             [cell setNeedsDisplay:YES];
-        }
+        }];
     }
-    if (old_selection && !row_indices[old_selection] && !group_children[old_selection]) {
-        [outline deselectAll:nil];
-        [remembered_selection release];
-        remembered_selection = nil;
+    if (summary_dirty) {
+        summary.stringValue = entries_by_id.count ? [NSString stringWithFormat:@"Grouping: %@ · %lu agents · %lu groups", self.grouping,
+            (unsigned long)entries_by_id.count, (unsigned long)group_children.count] : @"No AI agents";
+        summary.toolTip = summary.stringValue;
+        summary_dirty = NO;
     }
-    [old_selection release];
-    [self updateAnimationState];
-    [self setNeedsDisplay:YES];
+    row_style_changed = NO;
 }
 
 - (NSColor *)stateColor:(NSUInteger)state active:(BOOL)active {
@@ -1624,70 +1852,11 @@ cocoa_initialize_agents_sidebar_toggle(void *ptr) {
 }
 
 
-// The spinner only runs while some row is working. A sidebar full of idle
-// agents must not keep waking the CPU.
-- (BOOL)hasWorkingRow {
-    for (NSUInteger i = 0; i < states.count; i++) {
-        if ([states[i] unsignedIntegerValue] == 2) return YES;
-    }
-    return NO;
-}
-
-- (BOOL)isAnimating {
-    return spinner_timer != nil;
-}
-
-- (void)updateAnimationState {
-    BOOL want = [self hasWorkingRow] && self.window != nil;
-    if (want && !spinner_timer) {
-        spinner_timer = [NSTimer timerWithTimeInterval:(1.0 / 30.0) target:self selector:@selector(advanceSpinner:) userInfo:nil repeats:YES];
-        // Common run loop modes, so the spinner keeps turning during a live
-        // resize or a menu tracking loop instead of freezing mid-arc.
-        [[NSRunLoop currentRunLoop] addTimer:spinner_timer forMode:NSRunLoopCommonModes];
-    } else if (!want && spinner_timer) {
-        [self stopAnimating];
-    }
-}
-
-- (void)advanceSpinner:(NSTimer *)timer {
-    (void)timer;
-    spinner_phase += 1.0 / 30.0;
-    if (spinner_phase > 1.0e6) spinner_phase = 0.0;
-    for (NSInteger row = 0; row < outline.numberOfRows; row++) {
-        if (NSIntersectsRect([outline rectOfRow:row], outline.visibleRect)) [[outline viewAtColumn:0 row:row makeIfNecessary:NO] setNeedsDisplay:YES];
-    }
-}
-
-- (void)stopAnimating {
-    [spinner_timer invalidate];
-    spinner_timer = nil;
-}
-
-- (void)viewDidMoveToWindow {
-    [super viewDidMoveToWindow];
-    // Leaving a window orphans the run loop source; re-evaluate either way.
-    [self updateAnimationState];
-}
-
-// An indeterminate arc, the platform idiom for "running, length unknown".
-- (void)drawSpinnerInRect:(NSRect)rect color:(NSColor *)color {
-    const CGFloat line_width = 1.8;
-    NSPoint center = NSMakePoint(NSMidX(rect), NSMidY(rect));
-    CGFloat radius = (MIN(rect.size.width, rect.size.height) - line_width) / 2.0;
-    if (radius <= 0) return;
-    CGFloat revolutions_per_second = 0.9;
-    CGFloat start = -fmod(spinner_phase * revolutions_per_second, 1.0) * 360.0;
-    [[color colorWithAlphaComponent:0.25] setStroke];
-    NSBezierPath *track = [NSBezierPath bezierPath];
-    track.lineWidth = line_width;
-    [track appendBezierPathWithArcWithCenter:center radius:radius startAngle:0 endAngle:360];
-    [track stroke];
-    [color setStroke];
-    NSBezierPath *arc = [NSBezierPath bezierPath];
-    arc.lineWidth = line_width;
-    arc.lineCapStyle = NSLineCapStyleRound;
-    [arc appendBezierPathWithArcWithCenter:center radius:radius startAngle:start endAngle:start - 100.0 clockwise:YES];
-    [arc stroke];
+- (NSColor *)workingSpinnerColorForNode:(id)node {
+    if (!node || [node isKindOfClass:[NSString class]]) return nil;
+    KittyAgentsSidebarEntry *entry = entries_by_id[node];
+    if (!entry || entry->state != 2) return nil;
+    return [self stateColor:2 active:entry->active];
 }
 
 - (NSImage *)iconForAgent:(NSString *)agent textColor:(NSColor *)textColor {
@@ -1726,12 +1895,12 @@ cocoa_initialize_agents_sidebar_toggle(void *ptr) {
 - (NSString *)labelForNode:(id)node {
     if ([node isKindOfClass:[NSString class]]) {
         NSNumber *first = [group_children[node] firstObject];
-        return first ? groups[[row_indices[first] unsignedIntegerValue]] : @"";
+        KittyAgentsSidebarEntry *entry = entries_by_id[first];
+        return entry ? entry->group : @"";
     }
-    NSNumber *index = row_indices[node];
-    if (!index) return @"";
-    NSUInteger i = index.unsignedIntegerValue;
-    return [NSString stringWithFormat:@"%@, %@%@", labels[i], details[i], [active_rows[i] boolValue] ? @", current terminal" : @""];
+    KittyAgentsSidebarEntry *entry = entries_by_id[node];
+    if (!entry) return @"";
+    return [NSString stringWithFormat:@"%@, %@%@", entry->label, entry->detail, entry->active ? @", current terminal" : @""];
 }
 - (void)drawNode:(id)node inRect:(NSRect)rect {
     NSMutableParagraphStyle *paragraph = [[[NSMutableParagraphStyle alloc] init] autorelease];
@@ -1758,20 +1927,18 @@ cocoa_initialize_agents_sidebar_toggle(void *ptr) {
             NSParagraphStyleAttributeName: paragraph}];
         return;
     }
-    NSNumber *index = row_indices[node];
-    if (!index) return;
-    NSUInteger i = index.unsignedIntegerValue;
-    BOOL active = [active_rows[i] boolValue];
+    KittyAgentsSidebarEntry *entry = entries_by_id[node];
+    if (!entry) return;
+    BOOL active = entry->active;
     NSColor *primary = active ? [NSColor alternateSelectedControlTextColor] : [NSColor controlTextColor];
     NSColor *secondary = active ? [NSColor alternateSelectedControlTextColor] : [NSColor secondaryLabelColor];
-    NSColor *state_color = [self stateColor:[states[i] unsignedIntegerValue] active:active];
+    NSColor *state_color = [self stateColor:entry->state active:active];
     CGFloat center = NSMidY(rect), text_left = 20;
-    if ([states[i] unsignedIntegerValue] == 2) [self drawSpinnerInRect:NSMakeRect(4, center - 5.5, 11, 11) color:state_color];
-    else {
+    if (entry->state != 2) {
         [state_color setFill];
         [[NSBezierPath bezierPathWithOvalInRect:NSMakeRect(5.5, center - 4, 8, 8)] fill];
     }
-    NSImage *icon = [self iconForAgent:agents[i] textColor:primary];
+    NSImage *icon = [self iconForAgent:entry->agent textColor:primary];
     if (icon && icon.size.width > 0 && icon.size.height > 0) {
         CGFloat scale = MIN(16 / icon.size.width, 16 / icon.size.height);
         NSSize size = NSMakeSize(icon.size.width * scale, icon.size.height * scale);
@@ -1784,13 +1951,13 @@ cocoa_initialize_agents_sidebar_toggle(void *ptr) {
     NSDictionary *detail_attrs = @{NSFontAttributeName: [NSFont systemFontOfSize:10],
                                   NSForegroundColorAttributeName: secondary, NSParagraphStyleAttributeName: paragraph};
     CGFloat width = MAX(0, rect.size.width - text_left - 6);
-    [labels[i] drawInRect:NSMakeRect(text_left, center - 16, width, 17) withAttributes:title_attrs];
-    NSMutableAttributedString *detail = [[[NSMutableAttributedString alloc] initWithString:details[i] attributes:detail_attrs] autorelease];
-    NSRange separator = [details[i] rangeOfString:@" · " options:NSBackwardsSearch];
+    [entry->label drawInRect:NSMakeRect(text_left, center - 16, width, 17) withAttributes:title_attrs];
+    NSMutableAttributedString *detail = [[[NSMutableAttributedString alloc] initWithString:entry->detail attributes:detail_attrs] autorelease];
+    NSRange separator = [entry->detail rangeOfString:@" · " options:NSBackwardsSearch];
     if (separator.location != NSNotFound) {
         NSUInteger start = NSMaxRange(separator);
         [detail addAttributes:@{NSForegroundColorAttributeName:state_color, NSFontAttributeName:[NSFont boldSystemFontOfSize:10.5]}
-                        range:NSMakeRange(start, details[i].length - start)];
+                        range:NSMakeRange(start, entry->detail.length - start)];
     }
     [detail drawInRect:NSMakeRect(text_left, center + 2, width, 14)];
 }
@@ -1814,23 +1981,15 @@ cocoa_initialize_agents_sidebar_toggle(void *ptr) {
     NSRectFill(NSMakeRect(rail_x, 0.0, rail_width, self.bounds.size.height));
 }
 - (void)dealloc {
-    [self stopAnimating];
     [[NSNotificationCenter defaultCenter] removeObserver:self];
     if (resize_tracking_area) [self removeTrackingArea:resize_tracking_area];
     [resize_tracking_area release];
     outline.delegate = nil;
     outline.dataSource = nil;
-    [window_ids release];
-    [groups release];
-    [group_keys release];
-    [agents release];
-    [labels release];
-    [details release];
-    [states release];
-    [active_rows release];
+    [entries release];
+    [entries_by_id release];
     [root_nodes release];
     [group_children release];
-    [row_indices release];
     [remembered_selection release];
     [previous_responders release];
     [outline release];
@@ -1886,7 +2045,6 @@ cocoa_set_agents_sidebar(
     if (!enabled) {
         KittyAgentsSidebarView *sidebar = objc_getAssociatedObject(window, kitty_agents_sidebar_key);
         [sidebar kittySidebarCancelNavigation];
-        [sidebar stopAnimating];
         [[sidebar backgroundView] removeFromSuperview];
         [sidebar removeFromSuperview];
         objc_setAssociatedObject(window, kitty_agents_sidebar_key, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
@@ -1910,10 +2068,10 @@ cocoa_set_agents_sidebar(
         sidebar.resizePending = NO;
     }
     NSRect frame = NSMakeRect(0, 0, width, window.contentView.bounds.size.height);
-    [sidebar setFrame:frame];
-    [[sidebar backgroundView] setFrame:frame];
-    sidebar.grouping = [NSString stringWithUTF8String:grouping];
-    sidebar.iconsDir = icons_dir ? [NSString stringWithUTF8String:icons_dir] : nil;
+    if (!NSEqualRects(sidebar.frame, frame)) [sidebar setFrame:frame];
+    if (!NSEqualRects([sidebar backgroundView].frame, frame)) [[sidebar backgroundView] setFrame:frame];
+    if (!agents_sidebar_string_matches(sidebar.grouping, grouping)) sidebar.grouping = [NSString stringWithUTF8String:grouping];
+    if (!agents_sidebar_string_matches(sidebar.iconsDir, icons_dir)) sidebar.iconsDir = icons_dir ? [NSString stringWithUTF8String:icons_dir] : nil;
     [sidebar setRows:window_ids groups:groups groupKeys:group_keys agents:agents labels:labels details:details states:states active:active count:count];
 }
 

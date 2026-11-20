@@ -579,8 +579,9 @@ class Boss:
         tm = TabManager(os_window_id, self.args, wclass, wname, startup_session)
         self.os_window_map[os_window_id] = tm
         if self.agent_sidebar_enabled:
-            # A fresh tab manager has no rows yet, so the sidebar it inherits
-            # would come up blank until the next refresh. Fill it now.
+            # The manager has not yet reserved sidebar geometry; content updates
+            # intentionally do not relayout, so establish it at creation time.
+            tm.resize()
             self.refresh_agent_sidebars()
         return os_window_id
 
@@ -2072,6 +2073,12 @@ class Boss:
                 tm.set_agent_sidebar_rows(rows)
 
     def flush_agent_sidebar_updates(self, timer_id: int | None = None) -> None:
+        from .child import cached_process_data
+
+        with cached_process_data():
+            Boss._flush_agent_sidebar_updates(self, timer_id)
+
+    def _flush_agent_sidebar_updates(self, timer_id: int | None = None) -> None:
         if timer_id is None and self.agent_sidebar_flush_timer:
             remove_timer(self.agent_sidebar_flush_timer)
         self.agent_sidebar_flush_timer = 0
@@ -2155,11 +2162,14 @@ class Boss:
     def toggle_agents_sidebar(self) -> None:
         if self.active_tab_manager is None:
             return
-        self.agent_sidebar_enabled = not self.agent_sidebar_enabled
+        old_enabled = self.agent_sidebar_enabled
+        self.agent_sidebar_enabled = not old_enabled
         managers = tuple(self.all_tab_managers)
         for tm in managers:
             tm.agent_sidebar_enabled = self.agent_sidebar_enabled
         if self.agent_sidebar_enabled:
+            for tm in managers:
+                tm.resize()
             self.refresh_agent_sidebars()
         else:
             if self.agent_sidebar_timer:

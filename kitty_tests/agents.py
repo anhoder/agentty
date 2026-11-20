@@ -464,6 +464,26 @@ class TestAgents(BaseTest):
 
 
 class TestAgentSidebarActions(BaseTest):
+    def test_sidebar_content_does_not_resize_but_visibility_does(self):
+        from types import SimpleNamespace
+        from unittest.mock import Mock, patch
+
+        from kitty.boss import Boss
+        from kitty.tabs import TabManager
+
+        manager = SimpleNamespace(agent_sidebar_enabled=True, update_native_agents_sidebar=Mock(), resize=Mock())
+        rows = (AgentSidebarRow(1, '', '', 'claude', 'Changed', '', AgentState.working, True),)
+        TabManager.set_agent_sidebar_rows(manager, rows)
+        manager.update_native_agents_sidebar.assert_called_once()
+        manager.resize.assert_not_called()
+        self.ae(manager.agent_sidebar_rows, rows)
+        boss = SimpleNamespace(active_tab_manager=manager, agent_sidebar_enabled=False, all_tab_managers=(manager,),
+                               refresh_agent_sidebars=Mock(), agent_sidebar_timer=0)
+        with patch('kitty.boss.is_macos', True):
+            Boss.toggle_agents_sidebar(boss)
+        manager.resize.assert_called_once()
+        boss.refresh_agent_sidebars.assert_called_once()
+
     def sidebar(self):
         from types import MethodType, SimpleNamespace
 
@@ -689,7 +709,7 @@ class TestAgentTimerLifecycle(BaseTest):
             all_tab_managers=(manager,), active_window=None, notify_agent_done=lambda snapshot: None,
             agent_sidebar_scope=lambda tm: (tm,),
         )
-        for name in ('restore_agent_sidebar_state', 'refresh_agent_sidebars', 'flush_agent_sidebar_updates', '_refresh_agent_sidebar_scope'):
+        for name in ('restore_agent_sidebar_state', 'refresh_agent_sidebars', 'flush_agent_sidebar_updates', '_flush_agent_sidebar_updates', '_refresh_agent_sidebar_scope'):
             setattr(boss, name, MethodType(getattr(Boss, name), boss))
         timers = []
 
@@ -848,6 +868,86 @@ class TestAgentTracker(BaseTest):
         tracker.refresh_window(busy, now=100.2)
         self.ae(tracker.snapshot_for(7).state, AgentState.working)
         self.assertNotIn(7, tracker.unseen_done)
+
+    def test_live_snapshot_reuses_only_unchanged_screen_evidence(self):
+        from unittest.mock import Mock
+
+        from kitty.window import Window
+
+        window = FakeWindow(focused=True)
+        window.screen = self.create_screen(cols=80, lines=8)
+        window.screen.draw('idle text')
+        window.progress_payload = ''
+        window.agent_detection_snapshot = Mock(side_effect=lambda: Window.agent_detection_snapshot(window))
+        tracker = AgentTracker()
+        self.ae(tracker.live_snapshot(window)[0].state, AgentState.idle)
+        tracker.live_snapshot(window)
+        self.ae(window.agent_detection_snapshot.call_count, 1)
+        window.screen.draw('\r\u2733 Thinking\u2026 (3s \u00b7 esc to interrupt)')
+        self.ae(tracker.live_snapshot(window)[0].state, AgentState.working)
+        self.ae(window.agent_detection_snapshot.call_count, 2)
+        window.title = 'Changed title'
+        tracker.live_snapshot(window)
+        window.progress_payload = 'working'
+        tracker.live_snapshot(window)
+        self.ae(window.agent_detection_snapshot.call_count, 4)
+        replacement = self.create_screen(cols=80, lines=8)
+        replacement.draw('idle text')
+        window.screen = replacement
+        self.ae(tracker.live_snapshot(window)[0].state, AgentState.idle)
+        self.ae(window.agent_detection_snapshot.call_count, 5)
+        window.child.foreground_processes = [{'cmdline': ['/bin/zsh']}]
+        self.assertIsNone(tracker.live_snapshot(window)[0])
+        self.ae(window.agent_detection_snapshot.call_count, 5)
+        self.assertNotIn(window.id, tracker.detection_cache)
+
+    def test_live_snapshot_keeps_service_state_separate_from_done_hold(self):
+        from types import SimpleNamespace
+
+        from kitty.agent_service import AgentService
+
+        window = FakeWindow('\u2733 Thinking\u2026 (3s \u00b7 esc to interrupt)')
+        tracker = AgentTracker()
+        tracker.refresh_window(window, now=1.)
+        window.lines = ('\u256d\u2500\u2500\u256e', '\u2502 \u276f ', '\u2570\u2500\u2500\u256f')
+        tracker.refresh_window(window, now=2.)
+        self.ae(tracker.snapshot_for(window.id).state, AgentState.done)
+        service = AgentService(SimpleNamespace(agent_tracker=tracker))
+        self.ae(service.observe(window)['state'], 'idle')
+        self.ae(tracker.snapshot_for(window.id).state, AgentState.done)
+
+    def test_full_lifecycle_without_usable_report_still_reads_screen(self):
+        from unittest.mock import Mock
+
+        window = FakeWindow('idle text')
+        window.child.foreground_processes = [{'cmdline': ['opencode']}]
+        window.program_status = type('Status', (), {'as_list': lambda _: [{'state': 'working', 'id': 'unrelated'}]})()
+        window.agent_detection_snapshot = Mock(return_value=Screen(('idle text',), '', ''))
+        snapshot = AgentTracker().live_snapshot(window)[0]
+        self.assertIsNotNone(snapshot)
+        window.agent_detection_snapshot.assert_called_once()
+
+    def test_live_snapshot_tracks_live_bottom_through_history_and_alternate(self):
+        from unittest.mock import Mock
+
+        from kitty.window import Window
+        from .base import parse_bytes
+
+        window = FakeWindow(focused=True)
+        window.screen = self.create_screen(cols=80, lines=8, scrollback=100)
+        window.progress_payload = ''
+        window.agent_detection_snapshot = Mock(side_effect=lambda: Window.agent_detection_snapshot(window))
+        window.screen.draw(('old history\r\n' * 12) + '\u2733 Thinking\u2026 (3s \u00b7 esc to interrupt)')
+        tracker = AgentTracker()
+        self.ae(tracker.live_snapshot(window)[0].state, AgentState.working)
+        window.screen.scroll(4, True)
+        self.ae(tracker.live_snapshot(window)[0].state, AgentState.working)
+        self.ae(window.agent_detection_snapshot.call_count, 1)
+        parse_bytes(window.screen, b'\x1b[?1049h')
+        window.screen.draw('alternate idle')
+        self.ae(tracker.live_snapshot(window)[0].state, AgentState.idle)
+        parse_bytes(window.screen, b'\x1b[?1049l')
+        self.ae(tracker.live_snapshot(window)[0].state, AgentState.working)
 
 
 class TestAgentResume(BaseTest):

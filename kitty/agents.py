@@ -242,8 +242,14 @@ def resume_argv_for(agent: str, session_ref: str) -> tuple[str, ...]:
     return manifest.resume.command_for(session_ref)
 
 
-def snapshot_for_window(window: Any, screen: Screen | None = None, previous: AgentState | None = None) -> tuple[AgentSnapshot | None, bool]:
-    agent = detect_agent(window.child.foreground_processes)
+def snapshot_for_window(
+    window: Any,
+    screen: Screen | None = None,
+    previous: AgentState | None = None,
+    processes: Sequence[Mapping[str, Any]] | None = None,
+) -> tuple[AgentSnapshot | None, bool]:
+    processes = window.child.foreground_processes if processes is None else processes
+    agent = detect_agent(processes)
     if agent is None:
         return None, False
     session_id = session_id_of_window(window, agent)
@@ -282,13 +288,17 @@ class AgentTracker:
         self.events: deque[dict[str, Any]] = deque(maxlen=256)
         self.identities: dict[int, tuple[Any, ...]] = {}
         self.generations: dict[int, int] = {}
+        self.detection_cache: dict[int, tuple[Any, Screen]] = {}
 
     def observe(self, window: Any) -> AgentSnapshot | None:
-        before = self.snapshot_for(window.id)
-        self.refresh_window(window)
-        after = self.snapshot_for(window.id)
-        self.record_change(window.id, before, after)
-        return after
+        from .child import cached_process_data
+
+        with cached_process_data():
+            before = self.snapshot_for(window.id)
+            self.refresh_window(window)
+            after = self.snapshot_for(window.id)
+            self.record_change(window.id, before, after)
+            return after
 
     def record_change(self, window_id: int, before: AgentSnapshot | None, after: AgentSnapshot | None) -> None:
         """Called only by the Boss flush, after tracker arbitration/debounce."""
@@ -329,23 +339,57 @@ class AgentTracker:
     def mark_all_dirty(self, window_ids: Sequence[int]) -> None:
         self.dirty_windows.update(window_ids)
 
+    def live_snapshot(self, window: Any, previous: AgentState | None = None, processes: Sequence[Mapping[str, Any]] | None = None) -> tuple[AgentSnapshot | None, bool]:
+        """Read current evidence without presentation debounce or completion holds."""
+        from .child import cached_process_data
+
+        with cached_process_data():
+            processes = window.child.foreground_processes if processes is None else processes
+            agent = detect_agent(processes)
+            screen = None
+            manifest = manifest_for(agent) if agent is not None else None
+            session_id = session_id_of_window(window, agent) if agent is not None else ''
+            reported = None if agent == 'opencode' and not session_id else _reported_state(window.program_status.as_list(), session_id)
+            if manifest is not None and manifest.rules and not (reported is not None and authority_for(agent) is StateAuthority.full_lifecycle):
+                screen_obj = getattr(window, 'screen', None)
+                generation = getattr(screen_obj, 'search_generation', None)
+                key = (agent, session_id, screen_obj, generation, getattr(screen_obj, 'columns', None),
+                       getattr(screen_obj, 'lines', None), window.title, getattr(window, 'progress_payload', None))
+                cached = self.detection_cache.get(window.id)
+                if generation is not None and cached is not None and cached[0] == key:
+                    screen = cached[1]
+                else:
+                    screen = window.agent_detection_snapshot()
+                    if generation is not None:
+                        self.detection_cache[window.id] = (key, screen)
+            else:
+                self.detection_cache.pop(window.id, None)
+            return snapshot_for_window(window, screen, previous, processes)
+
     def drain_dirty(self) -> tuple[int, ...]:
         dirty = tuple(self.dirty_windows)
         self.dirty_windows.clear()
         return dirty
 
     def refresh_window(self, window: Any, now: float | None = None) -> bool:
-        identity = agent_identity(window)
+        from .child import cached_process_data
+
+        with cached_process_data():
+            return self._refresh_window(window, now)
+
+    def _refresh_window(self, window: Any, now: float | None = None) -> bool:
+        processes = window.child.foreground_processes
+        identity = agent_identity(window, processes)
         if self.identities.get(window.id) != identity:
             self.identities[window.id] = identity
             self.generations[window.id] = self.generations.get(window.id, 0) + 1
             self.snapshots.pop(window.id, None)
+            self.detection_cache.pop(window.id, None)
             self.pending_idle_since.pop(window.id, None)
             self.unseen_done.discard(window.id)
         previous = self.snapshots.get(window.id)
         previous_state = previous.state if previous is not None else None
-        screen = window.agent_detection_snapshot()
-        current, visible_idle = snapshot_for_window(window, screen, previous_state)
+        current, visible_idle = self.live_snapshot(window, previous_state, processes)
         if current is not None:
             current = replace(current, generation=self.generations[window.id])
         if current is not None and previous is not None:
@@ -414,6 +458,7 @@ class AgentTracker:
             )
         self.identities.pop(window_id, None)
         self.generations.pop(window_id, None)
+        self.detection_cache.pop(window_id, None)
         self.dirty_windows.discard(window_id)
         self.snapshots.pop(window_id, None)
         self.pending_idle_since.pop(window_id, None)
@@ -448,8 +493,8 @@ def agent_event_cursor(boss: Any) -> int:
     return boss.agent_tracker.event_seq
 
 
-def agent_identity(window: Any) -> tuple[Any, ...]:
-    processes = window.child.foreground_processes
+def agent_identity(window: Any, processes: Sequence[Mapping[str, Any]] | None = None) -> tuple[Any, ...]:
+    processes = window.child.foreground_processes if processes is None else processes
     agent = detect_agent(processes)
     pid = next((p.get('pid') for p in processes if detect_agent((p,)) == agent), None) if agent else None
     birth = next((p.get('start_time', p.get('create_time', p.get('birth_time'))) for p in processes if pid is not None and p.get('pid') == pid), None)

@@ -1921,7 +1921,7 @@ class TabManager:  # {{{
     def set_agent_sidebar_rows(self, rows: Sequence[AgentSidebarRow]) -> None:
         self.agent_sidebar_rows = tuple(rows)
         if self.agent_sidebar_enabled:
-            self.resize()
+            self.update_native_agents_sidebar()
 
     def update_native_agents_sidebar(self) -> None:
         if not is_macos:

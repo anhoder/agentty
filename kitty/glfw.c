@@ -3310,19 +3310,39 @@ set_agents_sidebar(PyObject *self UNUSED, PyObject *args) {
     Py_ssize_t collapsed_count = PySequence_Fast_GET_SIZE(fast_collapsed);
     PyObject *ret = NULL;
     unsigned cell_width = 0;
-    unsigned long long *window_ids = PyMem_Malloc((size_t)count * sizeof(unsigned long long));
-    const char **groups = PyMem_Malloc((size_t)count * sizeof(char *));
-    const char **group_keys = PyMem_Malloc((size_t)count * sizeof(char *));
-    const char **agents = PyMem_Malloc((size_t)count * sizeof(char *));
-    const char **labels = PyMem_Malloc((size_t)count * sizeof(char *));
-    const char **details = PyMem_Malloc((size_t)count * sizeof(char *));
-    unsigned char *states = PyMem_Malloc((size_t)count * sizeof(unsigned char));
-    bool *active = PyMem_Calloc((size_t)count, sizeof(bool));
-    const char **collapsed = PyMem_Malloc((size_t)collapsed_count * sizeof(char *));
-    if ((count && (!window_ids || !groups || !group_keys || !agents || !labels || !details || !states || !active)) || (collapsed_count && !collapsed)) {
-        PyErr_NoMemory();
-        goto cleanup;
+    // Keep small sidebars on the stack and use one allocation for larger ones.
+    // Pointer/ID arrays precede byte arrays so each retains its alignment.
+    const size_t row_size = sizeof(unsigned long long) + 5 * sizeof(char *) + sizeof(unsigned char) + sizeof(bool);
+    struct {
+        unsigned long long window_ids[32];
+        const char *groups[32], *group_keys[32], *agents[32], *labels[32], *details[32], *collapsed[32];
+        unsigned char states[32];
+        bool active[32];
+    } local;
+    void *heap_storage = NULL;
+    if ((size_t)count > SIZE_MAX / row_size || (size_t)collapsed_count > (SIZE_MAX - (size_t)count * row_size) / sizeof(char *)) {
+        Py_DECREF(fast_collapsed);
+        Py_DECREF(fast);
+        return PyErr_NoMemory();
     }
+    size_t storage_size = (size_t)count * row_size + (size_t)collapsed_count * sizeof(char *);
+    if (count > 32 || collapsed_count > 32) {
+        heap_storage = PyMem_Malloc(storage_size);
+        if (!heap_storage) {
+            Py_DECREF(fast_collapsed);
+            Py_DECREF(fast);
+            return PyErr_NoMemory();
+        }
+    }
+    unsigned long long *window_ids = heap_storage ? heap_storage : local.window_ids;
+    const char **groups = heap_storage ? (const char **)(window_ids + count) : local.groups;
+    const char **group_keys = heap_storage ? groups + count : local.group_keys;
+    const char **agents = heap_storage ? group_keys + count : local.agents;
+    const char **labels = heap_storage ? agents + count : local.labels;
+    const char **details = heap_storage ? labels + count : local.details;
+    const char **collapsed = heap_storage ? details + count : local.collapsed;
+    unsigned char *states = heap_storage ? (unsigned char *)(collapsed + collapsed_count) : local.states;
+    bool *active = heap_storage ? (bool *)(states + count) : local.active;
     for (Py_ssize_t i = 0; i < count; i++) {
         PyObject *item = PySequence_Fast_GET_ITEM(fast, i);
         if (!PyTuple_Check(item) || PyTuple_GET_SIZE(item) != 8 || !PyLong_Check(PyTuple_GET_ITEM(item, 0)) || !PyUnicode_Check(PyTuple_GET_ITEM(item, 1)) ||
@@ -3344,7 +3364,9 @@ set_agents_sidebar(PyObject *self UNUSED, PyObject *args) {
             goto cleanup;
         }
         states[i] = (unsigned char)state;
-        active[i] = PyObject_IsTrue(PyTuple_GET_ITEM(item, 7));
+        int is_active = PyObject_IsTrue(PyTuple_GET_ITEM(item, 7));
+        if (is_active < 0) goto cleanup;
+        active[i] = is_active != 0;
     }
     for (Py_ssize_t i = 0; i < collapsed_count; i++) {
         PyObject *item = PySequence_Fast_GET_ITEM(fast_collapsed, i);
@@ -3379,15 +3401,7 @@ set_agents_sidebar(PyObject *self UNUSED, PyObject *args) {
     wakeup_main_loop();
     ret = Py_NewRef(Py_None);
 cleanup:
-    PyMem_Free(window_ids);
-    PyMem_Free(groups);
-    PyMem_Free(group_keys);
-    PyMem_Free(agents);
-    PyMem_Free(labels);
-    PyMem_Free(details);
-    PyMem_Free(states);
-    PyMem_Free(active);
-    PyMem_Free(collapsed);
+    PyMem_Free(heap_storage);
     Py_DECREF(fast_collapsed);
     Py_DECREF(fast);
     return ret;

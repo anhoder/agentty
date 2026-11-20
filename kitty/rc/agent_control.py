@@ -173,7 +173,7 @@ Idempotency key.
             reject('Live session does not match --expected-session')
         if action == 'prompt':
             published = boss.agent_tracker.observe(target)
-            current, visible_idle = snapshot_for_window(target, target.agent_detection_snapshot())
+            current, visible_idle = boss.agent_tracker.live_snapshot(target)
             reported_idle = any(r.get('state') == 'idle' for r in target.program_status.as_list())
             if (
                 current is None
