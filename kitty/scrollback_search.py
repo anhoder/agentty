@@ -12,6 +12,7 @@ from typing import TYPE_CHECKING
 from .fast_data_types import add_timer, remove_timer, set_scrollback_search, wakeup_main_loop
 
 if TYPE_CHECKING:
+    from .fast_data_types import Screen
     from .window import Window
 
 Match = tuple[int, int, int, int]
@@ -105,6 +106,9 @@ class ScrollbackSearch:
         self.error = ''
         self.matches: tuple[Match, ...] = ()
         self.current = -1
+        self.match_rows: dict[int, Row] = {}
+        self.history_added = 0
+        self.match_generation = -1
         self.timer: int | None = None
         self.executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix='scrollback-search')
         self.future: Future[tuple[Match, ...]] | None = None
@@ -156,6 +160,7 @@ class ScrollbackSearch:
         self.requested = False
         self.submitted_revision = -1
         self.matches = ()
+        self.match_rows.clear()
         self.current = -1
         self.first_result = True
         self.capture_retries = 0
@@ -207,14 +212,56 @@ class ScrollbackSearch:
             self.whole_word = enabled
         self.update(self.query)
 
+    def retain_matches(self, screen: 'Screen') -> None:
+        shift = screen.search_history_added - self.history_added
+        first = -screen.historybuf.count if screen.is_main_linebuf() else 0
+        live_rows: dict[int, Row] = {}
+        retained: list[Match] = []
+        current = -1
+        for i, (sy, sx, ey, ex) in enumerate(self.matches):
+            intact = True
+            for y in range(sy, ey + 1):
+                live_y = y - shift
+                if sx >= screen.columns or ex > screen.columns:
+                    intact = False
+                    break
+                if not first <= live_y < screen.lines:
+                    intact = False
+                    break
+                if live_y not in live_rows:
+                    live_rows[live_y] = screen.search_rows(live_y, 1)[0]
+                old = self.match_rows[y]
+                live = live_rows[live_y]
+                start = sx if y == sy else 0
+                end = ex if y == ey else screen.columns
+                a, b = bisect.bisect_left(old[1], start), bisect.bisect_left(old[1], end)
+                c, d = bisect.bisect_left(live[1], start), bisect.bisect_left(live[1], end)
+                boundary_changed = self.whole_word and ((y == sy and c > 0 and re.match(r'\w', live[0][c - 1])) or (y == ey and d < len(live[0]) and re.match(r'\w', live[0][d])))
+                if (self.regex and old != live) or boundary_changed or old[0][a:b] != live[0][c:d] or old[1][a:b + 1] != live[1][c:d + 1] or (y > sy and old[2] != live[2]):
+                    intact = False
+                    break
+            if intact:
+                if i == self.current:
+                    current = len(retained)
+                retained.append((sy - shift, sx, ey - shift, ex))
+        self.matches = tuple(retained)
+        self.current = current if current >= 0 or not retained else min(max(self.current, 0), len(retained) - 1)
+        self.match_rows = {y: live_rows[y] for sy, _, ey, _ in retained for y in range(sy, ey + 1)}
+        self.history_added = screen.search_history_added
+        self.match_generation = screen.search_generation
+
     def tick(self, _: int | None) -> None:
         window = self.window_ref()
         if self.closed or window is None or window.destroyed:
             self.close()
             return
-        if not self.requested and self.future is None:
-            return
         screen = window.screen
+        if not self.requested and self.future is None:
+            if self.submitted_revision == self.revision and self.match_generation != screen.search_generation:
+                self.retain_matches(screen)
+                self.apply(scroll=False)
+                self.notify()
+            return
         if self.future is not None:
             if not self.future.done():
                 return
@@ -228,32 +275,18 @@ class ScrollbackSearch:
             self.future = None
             valid = query == self.query and self.future_revision == self.revision
             changed = self.future_generation != screen.search_generation
-            if valid and changed:
-                # Output can advance the history ring while the worker runs.
-                # Publish only occurrences whose captured cells still agree;
-                # never apply stale coordinates or starve on continuous output.
-                shift = screen.search_history_added - self.future_history_added
-                first = -screen.historybuf.count if screen.is_main_linebuf() else 0
-                checked: dict[int, bool] = {}
-                retained: list[Match] = []
-                for sy, sx, ey, ex in matches:
-                    intact = True
-                    for y in range(sy, ey + 1):
-                        if y not in checked:
-                            live_y = y - shift
-                            checked[y] = first <= live_y < screen.lines and screen.search_rows(live_y, 1)[0] == self.future_rows[y - self.future_first_row]
-                        if not checked[y]:
-                            intact = False
-                            break
-                    if intact:
-                        retained.append((sy - shift, sx, ey - shift, ex))
-                matches = tuple(retained)
+            captured_rows = self.future_rows
             self.future_rows = ()
             if valid:
                 self.requested = False
                 previous = self.matches[self.current] if self.matches and self.current >= 0 else None
                 self.matches = matches
                 self.current = matches.index(previous) if previous in matches else -1
+                self.match_rows = {y: captured_rows[y - self.future_first_row] for sy, _, ey, _ in matches for y in range(sy, ey + 1)}
+                self.history_added = self.future_history_added
+                if changed:
+                    self.retain_matches(screen)
+                matches = self.matches
                 if self.current < 0 and matches:
                     top = -screen.scrolled_by
                     self.current = next((i for i, match in enumerate(matches) if match[0] >= top), len(matches) - 1)
@@ -261,8 +294,8 @@ class ScrollbackSearch:
                 self.first_result = False
                 self.capture_retries = 0
                 self.notify()
-                if changed:
-                    self.generation = -1
+                self.generation = self.future_generation
+                self.match_generation = screen.search_generation
             else:
                 self.generation = -1
                 self.capture_retries += 1
@@ -338,6 +371,7 @@ class ScrollbackSearch:
         self.rows.clear()
         self.future_rows = ()
         self.matches = ()
+        self.match_rows.clear()
         window = self.window_ref()
         if window is not None:
             if hasattr(window, 'screen'):

@@ -39,6 +39,9 @@ instead of an external pager. Each pane has its own independently opened bar,
 query, options and results. Type a query and press Enter or click a previous/next
 button to search. Typing, pasting and new terminal output never start a search
 by themselves. Changing a search option immediately submits the current query.
+New output preserves existing highlights whose matched text is unchanged,
+including matches moving into scrollback. Overwritten or discarded matches are
+removed; submit again to search newly written text.
 Inside the input, ``Aa``
 toggles case sensitivity, underlined ``ab`` toggles whole-word matching, and
 ``.*`` toggles regular expressions; all are off by default. Their shortcuts

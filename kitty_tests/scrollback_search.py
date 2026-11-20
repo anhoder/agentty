@@ -99,7 +99,7 @@ class TestScrollbackSearch(BaseTest):
                 pass
 
         window = Window()
-        window.screen = self.create_screen(cols=20)
+        window.screen = self.create_screen(cols=20, options={'pixel_scroll': False})
         window.screen.draw('cat cat')
         with patch('kitty.scrollback_search.set_scrollback_search'), patch('kitty.scrollback_search.add_timer', return_value=1) as timer, patch('kitty.scrollback_search.remove_timer'), patch('kitty.scrollback_search.wakeup_main_loop'):
             search = window.scrollback_search = ScrollbackSearch(window)
@@ -126,6 +126,12 @@ class TestScrollbackSearch(BaseTest):
                 window.screen.draw(' cat')
                 search.tick(None)
                 self.assertIsNone(search.future)
+                self.ae(window.screen.current_selections()[:11], bytes([32] * 3 + [0] + [96] * 3 + [0] * 4))
+                self.ae(search.matches, ((0, 0, 0, 3), (0, 4, 0, 7)))
+                # Rewritten cells lose their old hits without searching the draft again.
+                parse_bytes(window.screen, b'\rno cats here\x1b[K')
+                search.tick(None)
+                self.assertFalse(any(x & 96 for x in window.screen.current_selections()))
                 self.assertFalse(search.closed)
                 search.update('new draft')
                 self.ae(search.status, '')
@@ -196,6 +202,11 @@ class TestScrollbackSearch(BaseTest):
                 parse_bytes(screen, b'\r\nnew output')
                 search.tick(None)
                 self.ae(search.matches, ((-1, 0, -1, 6),))
+                parse_bytes(screen, b'\r\nmore output')
+                search.tick(None)
+                self.ae(search.matches, ((-2, 0, -2, 6),))
+                screen.scroll_to_absolute(2)
+                self.ae(screen.current_selections()[:6], bytes([96] * 6))
                 search.update('[')
                 search.set_option('regex', True)
                 self.ae(search.status, '')
