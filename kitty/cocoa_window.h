@@ -56,6 +56,16 @@ typedef enum {
 void cocoa_focus_window(void *w);
 bool cocoa_prepare_pane_animation(void *os_window, monotonic_t now);
 void cocoa_update_search_overlay(void *os_window);
+// OSWindow pointers, not NSWindow/GLFWwindow pointers. Rows are (window_id, title)
+// pairs for the active stack tab. Opening/cycling never changes pane focus;
+// completion calls boss.pane_switcher_done(tab_id, selected_id), or 0 on cancel.
+bool cocoa_show_pane_switcher(void *os_window, id_type tab_id, PyObject *rows, id_type active_id, int delta);
+// Called once per render frame, including after all previews have been supplied,
+// to validate the switcher's lifetime. Zero means no pending preview. A matching
+// set_preview completes that request; zero dimensions mark it unavailable.
+// Pixels are top-down straight-alpha sRGB RGBA, copied before this call returns.
+id_type cocoa_pane_switcher_next_preview(void *os_window);
+void cocoa_pane_switcher_set_preview(void *os_window, id_type window_id, const unsigned char *pixels, unsigned width, unsigned height);
 long cocoa_window_number(void *w);
 void cocoa_set_native_tab_title(void *w, const char *title);
 void cocoa_application_lifecycle_event(bool);
@@ -99,7 +109,8 @@ void cocoa_set_agents_sidebar(
     const bool *,
     const char **,
     size_t,
-    size_t);
+    size_t,
+    const char **);
 void cocoa_report_live_notifications(const char *ident);
 void cocoa_set_dock_badge(const char *label);
 void cocoa_clear_dock_badge_if_set(void);

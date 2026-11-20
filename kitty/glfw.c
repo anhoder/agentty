@@ -165,6 +165,27 @@ cocoa_set_scrollback_search(PyObject *self UNUSED, PyObject *args) {
     Py_RETURN_NONE;
 }
 #endif
+
+static PyObject *
+py_cocoa_show_pane_switcher(PyObject *self UNUSED, PyObject *args) {
+    unsigned long long os_window_id, tab_id, active_id;
+    PyObject *rows;
+    int delta;
+    if (!PyArg_ParseTuple(args, "KKOKi", &os_window_id, &tab_id, &rows, &active_id, &delta)) return NULL;
+#ifdef __APPLE__
+    OSWindow *osw = os_window_for_id(os_window_id);
+    if (osw && osw->handle) {
+        bool shown = cocoa_show_pane_switcher(osw, tab_id, rows, active_id, delta);
+        if (PyErr_Occurred()) return NULL;
+        if (shown) {
+            osw->needs_render = true;
+            request_tick_callback();
+        }
+        return PyBool_FromLong(shown);
+    }
+#endif
+    Py_RETURN_FALSE;
+}
 void
 update_menu_bar_title(PyObject *title UNUSED) {
 #ifdef __APPLE__
@@ -315,6 +336,41 @@ cocoa_dispatch_agents_sidebar_shortcut(void *glfw_window, const GLFWkeyevent *ev
     if (consumed < 0) PyErr_Print();
     if (consumed > 0) request_tick_callback();
     return consumed > 0;
+}
+
+static bool
+dispatch_pane_switcher_shortcut(void *glfw_window, const GLFWkeyevent *ev) {
+    if ((ev->action != GLFW_PRESS && ev->action != GLFW_REPEAT) || !global_state.boss) return false;
+    OSWindow *osw = os_window_for_glfw_window(glfw_window);
+    if (!osw) return false;
+    extern PyTypeObject PyKeyEvent_Type;
+    RAII_PyObject(key_event, PyObject_CallFunction(
+        (PyObject *)&PyKeyEvent_Type, "IIIiiiis", ev->key, ev->shifted_key, ev->alternate_key, ev->mods,
+        ev->action, ev->native_key, ev->ime_state, ""));
+    if (!key_event) {
+        PyErr_Print();
+        return false;
+    }
+    const id_type previous_osw_id = global_state.callback_os_window ? global_state.callback_os_window->id : 0;
+    global_state.callback_os_window = osw;
+    RAII_PyObject(result, PyObject_CallMethod(global_state.boss, "dispatch_pane_switcher_shortcut", "O", key_event));
+    global_state.callback_os_window = previous_osw_id ? os_window_for_id(previous_osw_id) : NULL;
+    if (!result) {
+        PyErr_Print();
+        return false;
+    }
+    int consumed = PyObject_IsTrue(result);
+    if (consumed < 0) PyErr_Print();
+    if (consumed > 0) request_tick_callback();
+    return consumed > 0;
+}
+
+bool
+cocoa_dispatch_pane_switcher_shortcut(void *glfw_window, const GLFWkeyevent *ev) {
+    PyGILState_STATE gil = PyGILState_Ensure();
+    bool consumed = dispatch_pane_switcher_shortcut(glfw_window, ev);
+    PyGILState_Release(gil);
+    return consumed;
 }
 #endif
 
@@ -3312,10 +3368,10 @@ set_agents_sidebar(PyObject *self UNUSED, PyObject *args) {
     unsigned cell_width = 0;
     // Keep small sidebars on the stack and use one allocation for larger ones.
     // Pointer/ID arrays precede byte arrays so each retains its alignment.
-    const size_t row_size = sizeof(unsigned long long) + 5 * sizeof(char *) + sizeof(unsigned char) + sizeof(bool);
+    const size_t row_size = sizeof(unsigned long long) + 6 * sizeof(char *) + sizeof(unsigned char) + sizeof(bool);
     struct {
         unsigned long long window_ids[32];
-        const char *groups[32], *group_keys[32], *agents[32], *labels[32], *details[32], *collapsed[32];
+        const char *groups[32], *group_keys[32], *agents[32], *labels[32], *details[32], *kinds[32], *collapsed[32];
         unsigned char states[32];
         bool active[32];
     } local;
@@ -3340,15 +3396,16 @@ set_agents_sidebar(PyObject *self UNUSED, PyObject *args) {
     const char **agents = heap_storage ? group_keys + count : local.agents;
     const char **labels = heap_storage ? agents + count : local.labels;
     const char **details = heap_storage ? labels + count : local.details;
-    const char **collapsed = heap_storage ? details + count : local.collapsed;
+    const char **kinds = heap_storage ? details + count : local.kinds;
+    const char **collapsed = heap_storage ? kinds + count : local.collapsed;
     unsigned char *states = heap_storage ? (unsigned char *)(collapsed + collapsed_count) : local.states;
     bool *active = heap_storage ? (bool *)(states + count) : local.active;
     for (Py_ssize_t i = 0; i < count; i++) {
         PyObject *item = PySequence_Fast_GET_ITEM(fast, i);
-        if (!PyTuple_Check(item) || PyTuple_GET_SIZE(item) != 8 || !PyLong_Check(PyTuple_GET_ITEM(item, 0)) || !PyUnicode_Check(PyTuple_GET_ITEM(item, 1)) ||
+        if (!PyTuple_Check(item) || PyTuple_GET_SIZE(item) != 9 || !PyLong_Check(PyTuple_GET_ITEM(item, 0)) || !PyUnicode_Check(PyTuple_GET_ITEM(item, 1)) ||
             !PyUnicode_Check(PyTuple_GET_ITEM(item, 2)) || !PyUnicode_Check(PyTuple_GET_ITEM(item, 3)) || !PyUnicode_Check(PyTuple_GET_ITEM(item, 4)) ||
-            !PyUnicode_Check(PyTuple_GET_ITEM(item, 5))) {
-            PyErr_SetString(PyExc_TypeError, "sidebar rows must contain (window_id, group, group_key, agent, title, detail, state, active) tuples");
+            !PyUnicode_Check(PyTuple_GET_ITEM(item, 5)) || !PyUnicode_Check(PyTuple_GET_ITEM(item, 8))) {
+            PyErr_SetString(PyExc_TypeError, "sidebar rows must contain (window_id, group, group_key, agent, title, detail, state, active, kind) tuples");
             goto cleanup;
         }
         window_ids[i] = PyLong_AsUnsignedLongLong(PyTuple_GET_ITEM(item, 0));
@@ -3357,7 +3414,12 @@ set_agents_sidebar(PyObject *self UNUSED, PyObject *args) {
         agents[i] = PyUnicode_AsUTF8(PyTuple_GET_ITEM(item, 3));
         labels[i] = PyUnicode_AsUTF8(PyTuple_GET_ITEM(item, 4));
         details[i] = PyUnicode_AsUTF8(PyTuple_GET_ITEM(item, 5));
-        if (PyErr_Occurred() || !groups[i] || !group_keys[i] || !agents[i] || !labels[i] || !details[i]) goto cleanup;
+        kinds[i] = PyUnicode_AsUTF8(PyTuple_GET_ITEM(item, 8));
+        if (PyErr_Occurred() || !groups[i] || !group_keys[i] || !agents[i] || !labels[i] || !details[i] || !kinds[i]) goto cleanup;
+        if (strcmp(kinds[i], "agent") && strcmp(kinds[i], "editor")) {
+            PyErr_SetString(PyExc_ValueError, "invalid sidebar row kind");
+            goto cleanup;
+        }
         unsigned long state = PyLong_AsUnsignedLong(PyTuple_GET_ITEM(item, 6));
         if (PyErr_Occurred() || state > 255) {
             if (!PyErr_Occurred()) PyErr_SetString(PyExc_ValueError, "invalid sidebar state code");
@@ -3397,7 +3459,8 @@ set_agents_sidebar(PyObject *self UNUSED, PyObject *args) {
         active,
         collapsed,
         (size_t)collapsed_count,
-        (size_t)count);
+        (size_t)count,
+        kinds);
     wakeup_main_loop();
     ret = Py_NewRef(Py_None);
 cleanup:
@@ -4477,6 +4540,7 @@ static PyMethodDef module_methods[] = {
     METHODB(toggle_macos_tab_overview, METH_O),
     METHODB(set_agents_sidebar, METH_VARARGS),
     METHODB(set_agents_sidebar_focus, METH_VARARGS),
+    {"cocoa_show_pane_switcher", (PyCFunction)py_cocoa_show_pane_switcher, METH_VARARGS, ""},
     METHODB(set_native_tab_title, METH_VARARGS),
     METHODB(get_content_scale_for_window, METH_NOARGS),
     METHODB(ring_bell, METH_VARARGS),

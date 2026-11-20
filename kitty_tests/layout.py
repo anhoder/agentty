@@ -113,6 +113,43 @@ class TestLayout(BaseTest):
         super().setUp()
         self.set_options({'tab_bar_style': 'hidden'})
 
+    def test_stack_pane_switcher_confirmation_preserves_focus_until_commit(self):
+        from unittest.mock import Mock
+
+        from kitty.boss import Boss
+        from kitty.tabs import Tab as RealTab
+
+        layout = create_layout(Stack)
+        windows = create_windows(layout, 3)
+        tab = windows.tab_mem
+        tab.id = 91
+        tab.os_window_id = 17
+        manager = SimpleNamespace(active_tab=tab)
+        tab.tab_manager_ref = lambda: manager
+        tab.set_active_window = lambda w: windows.set_active_window_group_for(w)
+        tab.relayout_borders = Mock()
+        tab.active_window = windows.active_window
+        for window in windows:
+            window.title = str(window.id)
+        boss = SimpleNamespace(tab_for_id=lambda tid: tab if tid == tab.id else None)
+        before = tuple(windows.active_window_history)
+        with patch('kitty.tabs.is_macos', True), patch('kitty.fast_data_types.cocoa_show_pane_switcher', return_value=True):
+            self.assertTrue(RealTab._show_pane_switcher(tab, 1))
+        self.ae(windows.active_window.id, 1)
+        self.ae(tuple(windows.active_window_history), before)
+        Boss.pane_switcher_done(boss, tab.id, 0)
+        Boss.pane_switcher_done(boss, tab.id, 999)
+        self.ae(windows.active_window.id, 1)
+        manager.active_tab = None
+        Boss.pane_switcher_done(boss, tab.id, 2)
+        self.ae(windows.active_window.id, 1)
+        manager.active_tab = tab
+        Boss.pane_switcher_done(boss, tab.id, 2)
+        self.ae(windows.active_window.id, 2)
+        tab.current_layout = create_layout(Splits)
+        Boss.pane_switcher_done(boss, tab.id, 3)
+        self.ae(windows.active_window.id, 2)
+
     def test_border_refresh_during_window_creation(self):
         self.set_options({'draw_minimal_borders': False, 'window_border_radius': (8, 'px')})
         tab_bar = Border(0, 0, 120, 10, BorderColor.tab_bar_bg)
@@ -733,7 +770,7 @@ class TestLayout(BaseTest):
         root = q.pairs_root
         self.assertAlmostEqual(root.bias, 0.5, places=5)
 
-        # Creating a window equalizes the tree even after a manual resize
+        # Creating a window equalizes same-axis siblings even after a manual resize
         root.bias = 0.9
         q.add_window(all_windows, Window(3), location='vsplit')
         inner = root.two
@@ -771,7 +808,7 @@ class TestLayout(BaseTest):
         inner.bias = 0.9
         q.remove_windows(all_windows.group_for_window(w3).id)
 
-        self.assertTrue(q.on_window_removed(all_windows))
+        q.on_window_removed(all_windows)
         self.assertAlmostEqual(root.bias, 0.5, places=5)
         self.assertIsInstance(root.two, int)
 
@@ -794,8 +831,7 @@ class TestLayout(BaseTest):
         g3 = all_windows.group_for_window(w3)
         q.remove_windows(g3.id)
 
-        result = q.on_window_removed(all_windows)
-        self.assertTrue(result)
+        q.on_window_removed(all_windows)
         self.assertAlmostEqual(root.bias, 0.5, places=5)
 
         # equalize_on_close=false (default) must not trigger equalization
@@ -823,7 +859,7 @@ class TestLayout(BaseTest):
             q.remove_windows(all_windows.group_for_window(w2).id)
             all_windows.remove_window(w2)
             if equalize_on_close:
-                self.assertTrue(q.on_window_removed(all_windows))
+                q.on_window_removed(all_windows)
             else:
                 self.assertTrue(q.layout_action('equalize', (), all_windows))
             q.add_window(all_windows, Window(3), location='hsplit')
@@ -1111,6 +1147,120 @@ class BaseSplitGeometryTest(BaseTest):
                     two = p.second_extent.bottom - p.second_extent.top
                     self.ae(one + two + 2 * p.border_width, p.height)
                     self.ae(p.second_extent.bottom, p.top + p.height)
+
+
+class TestSplitAutoEqualize(BaseSplitGeometryTest):
+    def test_splits_equalize_only_siblings_on_split_axis(self):
+        for horizontal in (True, False):
+            for same_axis in (True, False):
+                for proportional in ('n', 'y'):
+                    with self.subTest(horizontal=horizontal, same_axis=same_axis, proportional=proportional):
+                        layout = create_layout(Splits)
+                        layout.layout_opts = SplitsLayoutOpts({'equalize_on_window_change': 'y', 'proportional': proportional})
+                        windows = create_windows(layout, num=0)
+                        for wid in range(1, 7):
+                            layout.add_window(windows, Window(wid))
+                        layout.pairs_root.unserialize(
+                            {
+                                'horizontal': horizontal, 'bias': 0.4,
+                                'one': {'horizontal': not horizontal, 'bias': 0.3, 'one': 1, 'two': 2},
+                                'two': {
+                                    'horizontal': not horizontal, 'bias': 0.35, 'one': 3,
+                                    'two': {
+                                        'horizontal': horizontal, 'bias': 0.2,
+                                        'one': {'horizontal': not horizontal, 'bias': 0.25, 'one': 4, 'two': 5},
+                                        'two': 6,
+                                    },
+                                },
+                            }, lambda x: x,
+                        )
+                        self.stub_dimensions(layout, Region((0, 0, 1799, 1799, 1800, 1800)))
+                        layout(windows)
+                        before = {w.id: w.geometry for w in windows}
+                        split_horizontal = horizontal if same_axis else not horizontal
+                        layout.add_window(windows, Window(7), location='vsplit' if split_horizontal else 'hsplit')
+                        layout(windows)
+
+                        # Neither other top-level regions nor perpendicular splits are reset.
+                        for wid in range(1, 4 if same_axis else 6):
+                            self.ae(windows.id_map[wid].geometry, before[wid])
+                        for wid in range(4 if same_axis else 6, 8):
+                            geom = windows.id_map[wid].geometry
+                            reference = before[wid if wid < 7 else 6]
+                            if split_horizontal:
+                                self.ae((geom.top, geom.bottom), (reference.top, reference.bottom))
+                            else:
+                                self.ae((geom.left, geom.right), (reference.left, reference.right))
+                        state = layout.layout_state()['pairs']
+                        self.assertAlmostEqual(state['bias'], 0.4)
+                        self.assertAlmostEqual(state['one']['bias'], 0.3)
+                        self.assertAlmostEqual(state['two']['bias'], 0.35)
+                        siblings = state['two']['two']
+                        self.assertAlmostEqual(siblings['one']['bias'], 0.25)
+                        self.assertAlmostEqual(siblings.get('bias', 0.5), 1 / 3 if same_axis else 0.2)
+                        self.assertAlmostEqual(siblings['two'].get('bias', 0.5), 0.5)
+                        self.check_extents_fit(layout)
+
+    def test_splits_close_equalizes_only_original_siblings(self):
+        for horizontal in (True, False):
+            for option in ('equalize_on_window_change', 'equalize_on_window_close'):
+                for proportional in ('n', 'y'):
+                    for removed in ((7,), (6, 7), (4, 5)):
+                        with self.subTest(horizontal=horizontal, option=option, proportional=proportional, removed=removed):
+                            layout = create_layout(Splits)
+                            layout.layout_opts = SplitsLayoutOpts({option: 'y', 'proportional': proportional})
+                            windows = create_windows(layout, num=0)
+                            for wid in range(1, 8):
+                                layout.add_window(windows, Window(wid))
+                            layout.pairs_root.unserialize(
+                                {
+                                    'horizontal': horizontal, 'bias': 0.4,
+                                    'one': {'horizontal': not horizontal, 'bias': 0.3, 'one': 1, 'two': 2},
+                                    'two': {
+                                        'horizontal': not horizontal, 'bias': 0.35, 'one': 3,
+                                        'two': {
+                                            'horizontal': horizontal, 'bias': 0.2,
+                                            'one': {'horizontal': not horizontal, 'bias': 0.25, 'one': 4, 'two': 5},
+                                            'two': {'horizontal': horizontal, 'bias': 0.7, 'one': 6, 'two': 7},
+                                        },
+                                    },
+                                }, lambda x: x,
+                            )
+                            self.stub_dimensions(layout, Region((0, 0, 1799, 1799, 1800, 1800)))
+                            layout(windows)
+                            before = {w.id: w.geometry for w in windows}
+                            for wid in removed:
+                                windows.remove_window(windows.id_map[wid])
+                            # Exercise the actual close lifecycle: prune during relayout,
+                            # then run the post-removal hook, including batch removals.
+                            layout(windows)
+                            if layout.on_window_removed(windows):
+                                layout(windows)
+                            for wid in (1, 2, 3):
+                                self.ae(windows.id_map[wid].geometry, before[wid])
+                            state = layout.layout_state()['pairs']
+                            self.assertAlmostEqual(state['bias'], 0.4)
+                            self.assertAlmostEqual(state['one']['bias'], 0.3)
+                            self.assertAlmostEqual(state['two']['bias'], 0.35)
+                            siblings = state['two']['two']
+                            if removed == (7,):
+                                self.assertAlmostEqual(siblings.get('bias', 0.5), 0.5)
+                                self.assertAlmostEqual(siblings['one']['bias'], 0.25)
+                            elif removed == (6, 7):
+                                # The surviving perpendicular subtree fills the region,
+                                # but its internal split must not be equalized.
+                                self.assertAlmostEqual(siblings['bias'], 0.25)
+                            else:
+                                # Removing the last pane of a column affects its parent
+                                # sibling group, not the enclosing row or outer column.
+                                self.assertAlmostEqual(siblings.get('bias', 0.5), 0.5)
+                            for wid in set((4, 5, 6, 7)) - set(removed):
+                                geom = windows.id_map[wid].geometry
+                                if horizontal:
+                                    self.ae((geom.top, geom.bottom), (before[wid].top, before[wid].bottom))
+                                else:
+                                    self.ae((geom.left, geom.right), (before[wid].left, before[wid].right))
+                            self.check_extents_fit(layout)
 
 
 class TestSplitBorderResize(BaseSplitGeometryTest):
@@ -1698,7 +1848,7 @@ class TestProportionalSplits(BaseTest):
         self.assertTrue(options.equalize_on_close)
         windows.remove_window(windows.id_map[1])
         q.remove_windows(1)
-        self.assertTrue(q.on_window_removed(windows))
+        q.on_window_removed(windows)
         self.check_weights(q, {2: 0.5, 3: 0.5})
 
     def test_proportional_close_with_zero_sized_survivor(self):

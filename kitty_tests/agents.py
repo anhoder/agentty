@@ -12,16 +12,20 @@ from kitty.agent_manifest import (
     resolve_region,
     translate_regex,
 )
-from kitty.agents import AgentSidebarRow, AgentState, AgentTracker, detect_agent, group_sidebar_rows, state_code, state_from_signals, state_icon
+from kitty.agents import AgentSidebarRow, AgentSnapshot, AgentState, AgentTracker, detect_agent, group_sidebar_rows, state_code, state_from_signals, state_icon
 
 from .base import BaseTest
-from kitty.agents import AgentSidebarRow, AgentSnapshot, AgentState, AgentTracker, detect_agent, group_sidebar_rows, state_code, state_from_signals, state_icon
+
 
 def screen(*lines: str, title: str = '', progress: str = '') -> Screen:
     return Screen(lines, title, progress)
 
 
 class TestAgents(BaseTest):
+    def test_sidebar_default_kind(self):
+        row = AgentSidebarRow(1, '', '', 'claude', '', '', AgentState.idle, False)
+        self.ae(row.kind, 'agent')
+
     def test_detect_agent_from_foreground_command(self):
         self.ae(detect_agent([{'cmdline': ['/usr/local/bin/claude', '--resume', 'x']}]), 'claude')
         self.ae(detect_agent([{'cmdline': ['node', '/opt/opencode/bin/opencode']}]), 'opencode')
@@ -315,7 +319,6 @@ class TestAgents(BaseTest):
 
 
     def test_mark_idle_agent_as_unseen_done(self):
-        from types import SimpleNamespace
 
         tracker = AgentTracker()
         snapshot = AgentSnapshot(7, 'omp', AgentState.idle, 'task', '/tmp')
@@ -368,7 +371,8 @@ class TestAgents(BaseTest):
         class Tab(list):
             pass
 
-        windows = [SimpleNamespace(id=i) for i in (1, 2)]
+        windows = [SimpleNamespace(id=i, child=SimpleNamespace(foreground_processes=[{'cmdline': [command]}]))
+                   for i, command in ((1, 'opencode'), (2, 'omp'))]
         tabs = [Tab([w]) for w in windows]
         for i, tab in enumerate(tabs, start=1):
             tab.id = i
@@ -404,7 +408,7 @@ class TestAgents(BaseTest):
             def set_agent_sidebar_rows(self, rows):
                 self.agent_sidebar_rows = tuple(rows)
 
-        windows = [SimpleNamespace(id=i) for i in range(1, 12)]
+        windows = [SimpleNamespace(id=i, child=SimpleNamespace(foreground_processes=[{'cmdline': ['omp']}])) for i in range(1, 12)]
         tabs = [Tab([window]) for window in windows[:10]]
         for i, tab in enumerate(tabs, start=1):
             tab.id = i
@@ -416,19 +420,20 @@ class TestAgents(BaseTest):
         boss = SimpleNamespace(active_window=windows[1], agent_tracker=tracker)
         with patch('kitty.boss.get_options', return_value=SimpleNamespace(agents_sidebar_grouping='tab')):
             Boss._refresh_agent_sidebar_scope(boss, scope)
-            rows = scope[0].agent_sidebar_rows
+            rows = tuple(r for r in scope[0].agent_sidebar_rows if r.kind == 'agent')
             self.ae([r.window_id for r in rows], [1, 11, *range(2, 11)])
             self.ae(len({r.group for r in rows}), 10)
             self.ae(rows[0].group, rows[1].group)
             self.assertNotEqual(rows[0].group, rows[2].group)
-            self.ae(scope[1].agent_sidebar_rows, rows)
+            self.ae(scope[1].agent_sidebar_rows, scope[0].agent_sidebar_rows)
+            self.ae([(r.kind, r.title) for r in scope[0].agent_sidebar_rows if r.kind == 'editor'], [('editor', 'No editors')])
             self.ae([r.window_id for r in rows if r.is_active], [2])
 
             # Reordering and closing tabs must update numbering, not membership.
             scope[1].reverse()
             scope[0].clear()
             Boss._refresh_agent_sidebar_scope(boss, scope)
-            rows = scope[1].agent_sidebar_rows
+            rows = tuple(r for r in scope[1].agent_sidebar_rows if r.kind == 'agent')
             self.ae([r.window_id for r in rows], list(range(10, 1, -1)))
             self.ae(len({r.group for r in rows}), 9)
             # A working agent retitles its tab constantly. The label changes
@@ -437,7 +442,7 @@ class TestAgents(BaseTest):
             for tab in scope[1]:
                 tab.effective_title = 'Renamed by agent'
             Boss._refresh_agent_sidebar_scope(boss, scope)
-            rows = scope[1].agent_sidebar_rows
+            rows = tuple(r for r in scope[1].agent_sidebar_rows if r.kind == 'agent')
             self.assertTrue(all('Renamed by agent' in r.group for r in rows))
             self.ae({r.window_id: r.group_key for r in rows}, before)
 
@@ -453,14 +458,15 @@ class TestAgents(BaseTest):
             def set_agent_sidebar_rows(self, rows):
                 self.agent_sidebar_rows = tuple(rows)
 
-        window = SimpleNamespace(id=1)
+        window = SimpleNamespace(id=1, child=SimpleNamespace(foreground_processes=[{'cmdline': ['/bin/zsh']}]))
         scope = (TabManager([[window]]),)
         boss = SimpleNamespace(active_window=window, agent_tracker=AgentTracker())
         with patch('kitty.boss.get_options', return_value=SimpleNamespace(agents_sidebar_grouping='time')):
             Boss._refresh_agent_sidebar_scope(boss, scope)
         rows = scope[0].agent_sidebar_rows
-        self.ae(len(rows), 1)
+        self.ae(len(rows), 2)
         self.ae((rows[0].group, rows[0].group_key, rows[0].agent, rows[0].title), ('', '', '', 'No AI agents'))
+        self.ae((rows[1].group, rows[1].group_key, rows[1].agent, rows[1].title, rows[1].kind), ('', '', '', 'No editors', 'editor'))
 
 
 class TestAgentSidebarActions(BaseTest):
@@ -931,6 +937,7 @@ class TestAgentTracker(BaseTest):
         from unittest.mock import Mock
 
         from kitty.window import Window
+
         from .base import parse_bytes
 
         window = FakeWindow(focused=True)

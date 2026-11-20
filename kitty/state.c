@@ -710,6 +710,13 @@ mark_os_window_dirty(id_type os_window_id) {
 }
 
 static void
+suppress_pane_animation(id_type os_window_id) {
+    WITH_OS_WINDOW(os_window_id)
+    os_window->suppress_pane_animation = true;
+    END_WITH_OS_WINDOW
+}
+
+static void
 set_active_tab(id_type os_window_id, unsigned int idx) {
     WITH_OS_WINDOW(os_window_id)
     os_window->active_tab = idx;
@@ -2216,6 +2223,7 @@ PYWRAP0(current_os_window) {
 TWO_ID(remove_tab)
 KI(set_active_tab)
 K(mark_os_window_dirty)
+K(suppress_pane_animation)
 KKK(set_active_window)
 KII(swap_tabs)
 KKKK(set_redirect_keys_to_overlay)
@@ -2340,6 +2348,7 @@ static PyMethodDef module_methods[] = {
     MW(move_window_to_tab, METH_VARARGS),
     MW(set_active_tab, METH_VARARGS),
     MW(mark_os_window_dirty, METH_VARARGS),
+    MW(suppress_pane_animation, METH_VARARGS),
     MW(set_redirect_keys_to_overlay, METH_VARARGS),
     MW(buffer_keys_in_window, METH_VARARGS),
     MW(set_active_window, METH_VARARGS),

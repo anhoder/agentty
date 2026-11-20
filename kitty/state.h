@@ -912,6 +912,7 @@ void send_prerendered_sprites_for_window(OSWindow *w);
 bool ensure_font_group_sprite_map(FONTS_DATA_HANDLE);
 #ifdef __APPLE__
 #include "cocoa_window.h"
+void render_pane_switcher_preview(OSWindow *, Window *, monotonic_t);
 #endif
 void request_frame_render(OSWindow *w);
 void request_tick_callback(void);

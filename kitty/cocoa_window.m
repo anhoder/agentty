@@ -26,6 +26,7 @@
 #include <crt_externs.h>
 #include <libproc.h>
 #include <objc/runtime.h>
+#include <limits.h>
 
 static inline void
 cleanup_cfrelease(void *__p) {
@@ -653,6 +654,390 @@ cocoa_update_search_overlay(void *ptr) {
     position_search_overlay(ptr);
 }
 
+static const void *kitty_pane_switcher_key = &kitty_pane_switcher_key;
+extern bool cocoa_dispatch_pane_switcher_shortcut(void *, const GLFWkeyevent *);
+
+// Implemented by GLFW's Cocoa content view so keymap remapping and alternate
+// keys exactly match normal shortcut dispatch, without delivering terminal text.
+@interface NSView (KittyPaneSwitcherConfiguredKey)
+- (BOOL)kittyPaneSwitcherHandleConfiguredKeyEvent:(NSEvent *)event;
+@end
+
+@interface KittyPaneSwitcherEntry : NSObject {
+@public
+    id_type pane_id;
+    NSString *title;
+    NSImage *image;
+    BOOL pending;
+}
+@end
+
+@implementation KittyPaneSwitcherEntry
+- (void)dealloc { [title release]; [image release]; [super dealloc]; }
+@end
+
+@class KittyPaneSwitcher;
+@interface KittyPaneSwitcherGrid : NSView {
+@public
+    KittyPaneSwitcher *owner; // Non-owning: the switcher owns its scroll view.
+}
+@end
+
+@interface KittyPaneSwitcher : NSView {
+@public
+    id_type os_window_id, tab_id;
+    NSMutableArray<KittyPaneSwitcherEntry *> *entries;
+    NSUInteger selected, columns;
+    CGFloat tile_width, tile_height;
+    NSRect panel_rect;
+    NSScrollView *scroll_view;
+    KittyPaneSwitcherGrid *grid;
+    NSWindow *hosting_window; // Non-owning; close notification tears us down.
+    id event_monitor;
+    NSEventModifierFlags initiating_modifiers, release_modifiers;
+    unsigned short initiating_key;
+    int initiating_delta;
+    BOOL finished;
+}
+- (BOOL)isValid;
+- (void)finish:(BOOL)confirm;
+- (void)cycle:(NSInteger)delta;
+- (void)revealSelection;
+- (NSRect)tileRect:(NSUInteger)index;
+- (NSEvent *)handleEvent:(NSEvent *)event;
+- (void)windowInvalidated:(NSNotification *)notification;
+@end
+
+@implementation KittyPaneSwitcherGrid
+- (BOOL)isFlipped { return YES; }
+- (void)drawRect:(NSRect)dirtyRect {
+    NSMutableParagraphStyle *style = [[[NSMutableParagraphStyle alloc] init] autorelease];
+    style.lineBreakMode = NSLineBreakByTruncatingTail;
+    NSDictionary *title_attributes = @{NSFontAttributeName: [NSFont systemFontOfSize:13 weight:NSFontWeightMedium],
+        NSForegroundColorAttributeName: NSColor.labelColor, NSParagraphStyleAttributeName: style};
+    style = [[style mutableCopy] autorelease];
+    style.alignment = NSTextAlignmentCenter;
+    NSDictionary *loading_attributes = @{NSFontAttributeName: [NSFont systemFontOfSize:12],
+        NSForegroundColorAttributeName: NSColor.secondaryLabelColor, NSParagraphStyleAttributeName: style};
+    for (NSUInteger i = 0; i < owner->entries.count; i++) {
+        NSRect tile = [owner tileRect:i];
+        if (!NSIntersectsRect(tile, dirtyRect)) continue;
+        KittyPaneSwitcherEntry *entry = owner->entries[i];
+        BOOL selected = i == owner->selected;
+        NSBezierPath *outline = [NSBezierPath bezierPathWithRoundedRect:NSInsetRect(tile, 2, 2) xRadius:8 yRadius:8];
+        [(selected ? [NSColor.selectedControlColor colorWithAlphaComponent:0.16] : NSColor.controlBackgroundColor) setFill];
+        [outline fill];
+        if (selected) { [NSColor.selectedControlColor setStroke]; outline.lineWidth = 2; [outline stroke]; }
+        NSRect preview = NSMakeRect(tile.origin.x + 10, tile.origin.y + 10, MAX(0, tile.size.width - 20), MAX(0, tile.size.height - 44));
+        [NSColor.textBackgroundColor setFill];
+        NSRectFill(preview);
+        if (entry->image && preview.size.width > 0 && preview.size.height > 0) {
+            NSSize size = entry->image.size;
+            CGFloat scale = MAX(preview.size.width / size.width, preview.size.height / size.height);
+            NSRect target = NSMakeRect(NSMidX(preview) - size.width * scale / 2, NSMidY(preview) - size.height * scale / 2,
+                size.width * scale, size.height * scale);
+            [NSGraphicsContext saveGraphicsState];
+            NSRectClip(preview);
+            [entry->image drawInRect:target fromRect:NSZeroRect operation:NSCompositingOperationSourceOver fraction:1
+                respectFlipped:YES hints:@{NSImageHintInterpolation: @(NSImageInterpolationHigh)}];
+            [NSGraphicsContext restoreGraphicsState];
+        } else {
+            [(entry->pending ? @"Loading preview…" : @"Preview unavailable") drawInRect:
+                NSMakeRect(preview.origin.x + 4, NSMidY(preview) - 8, MAX(0, preview.size.width - 8), 18) withAttributes:loading_attributes];
+        }
+        [entry->title drawInRect:NSMakeRect(tile.origin.x + 12, NSMaxY(tile) - 28, MAX(0, tile.size.width - 24), 18)
+            withAttributes:title_attributes];
+    }
+}
+@end
+
+@implementation KittyPaneSwitcher
+- (BOOL)isFlipped { return YES; }
+- (BOOL)acceptsFirstResponder { return NO; }
+// The overlay protects the terminal beneath it without changing first responder.
+- (void)mouseDown:(NSEvent *)event { (void)event; }
+- (void)mouseUp:(NSEvent *)event { (void)event; }
+- (void)mouseDragged:(NSEvent *)event { (void)event; }
+- (void)rightMouseDown:(NSEvent *)event { (void)event; }
+- (void)rightMouseUp:(NSEvent *)event { (void)event; }
+- (void)otherMouseDown:(NSEvent *)event { (void)event; }
+- (void)otherMouseUp:(NSEvent *)event { (void)event; }
+- (void)scrollWheel:(NSEvent *)event { (void)event; }
+- (void)dealloc {
+    if (event_monitor) [NSEvent removeMonitor:event_monitor];
+    [[NSNotificationCenter defaultCenter] removeObserver:self];
+    [entries release]; [scroll_view release]; [grid release];
+    [super dealloc];
+}
+- (BOOL)isValid {
+    OSWindow *osw = os_window_for_id(os_window_id);
+    if (finished || !osw || !osw->handle || !hosting_window.isKeyWindow || osw->active_tab >= osw->num_tabs) return NO;
+    Tab *tab = osw->tabs + osw->active_tab;
+    if (tab->id != tab_id || strcmp(tab->layout_name, "stack")) return NO;
+    for (KittyPaneSwitcherEntry *entry in entries) {
+        BOOL found = NO;
+        for (unsigned i = 0; i < tab->num_windows; i++) if (tab->windows[i].id == entry->pane_id) { found = YES; break; }
+        if (!found) return NO;
+    }
+    return YES;
+}
+- (void)finish:(BOOL)confirm {
+    if (finished) return;
+    id_type result = confirm && [self isValid] ? entries[selected]->pane_id : 0;
+    finished = YES;
+    // Removing the association can drop the last owner, including during a callback.
+    [self retain];
+    if (event_monitor) { [NSEvent removeMonitor:event_monitor]; event_monitor = nil; }
+    [[NSNotificationCenter defaultCenter] removeObserver:self];
+    objc_setAssociatedObject(hosting_window, @selector(kittyPaneSwitcherHandleConfiguredKeyEvent:), nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    objc_setAssociatedObject(hosting_window, NSSelectorFromString(@"kittyPaneSwitcherModifiersChanged:"), nil, OBJC_ASSOCIATION_COPY_NONATOMIC);
+    [self removeFromSuperview];
+    if (objc_getAssociatedObject(hosting_window, kitty_pane_switcher_key) == self)
+        objc_setAssociatedObject(hosting_window, kitty_pane_switcher_key, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    [entries removeAllObjects]; // Release the copied titles and preview images now.
+    PyGILState_STATE gil = PyGILState_Ensure();
+    call_boss(pane_switcher_done, "KK", (unsigned long long)tab_id, (unsigned long long)result);
+    PyGILState_Release(gil);
+    [self release];
+}
+- (void)windowInvalidated:(NSNotification *)notification { (void)notification; [self finish:NO]; }
+- (NSRect)tileRect:(NSUInteger)index {
+    return NSMakeRect((index % columns) * (tile_width + 10), (index / columns) * (tile_height + 10), tile_width, tile_height);
+}
+- (void)revealSelection {
+    [grid scrollRectToVisible:[self tileRect:selected]];
+    grid.needsDisplay = YES;
+}
+- (void)cycle:(NSInteger)delta {
+    if (![self isValid]) { [self finish:NO]; return; }
+    NSInteger count = (NSInteger)entries.count;
+    selected = (NSUInteger)(((NSInteger)selected + delta % count + count) % count);
+    [self revealSelection];
+    self.needsDisplay = YES;
+}
+- (void)layout {
+    if (finished || !entries.count) return;
+    [super layout];
+    CGFloat width = MAX(0, NSWidth(self.bounds) - 32), height = MAX(0, NSHeight(self.bounds) - 32);
+    CGFloat panel_width = MIN(960, width), content_width = MAX(1, panel_width - 40);
+    columns = MIN(entries.count, MAX((NSUInteger)1, (NSUInteger)((content_width + 10) / 210)));
+    tile_width = MAX(1, (content_width - 10 * (columns - 1)) / columns);
+    CGFloat aspect = 1.6;
+    OSWindow *osw = os_window_for_id(os_window_id);
+    if (osw && osw->active_tab < osw->num_tabs) {
+        Tab *tab = osw->tabs + osw->active_tab;
+        for (unsigned i = 0; i < tab->num_windows; i++) {
+            Window *pane = tab->windows + i;
+            if (pane->id != entries[0]->pane_id) continue;
+            const WindowGeometry *g = &pane->render_data.geometry;
+            if (g->right > g->left && g->bottom > g->top)
+                aspect = (CGFloat)(g->right - g->left) / (CGFloat)(g->bottom - g->top);
+            break;
+        }
+    }
+    if (entries[0]->image) aspect = entries[0]->image.size.width / entries[0]->image.size.height;
+    tile_height = MIN(264, MAX(1, tile_width - 20) / aspect + 44);
+    NSUInteger rows = (entries.count + columns - 1) / columns;
+    CGFloat grid_height = rows * (tile_height + 10) - 10;
+    CGFloat panel_height = MIN(height, grid_height + 68);
+    panel_rect = NSMakeRect((NSWidth(self.bounds) - panel_width) / 2, (NSHeight(self.bounds) - panel_height) / 2, panel_width, panel_height);
+    scroll_view.frame = NSMakeRect(panel_rect.origin.x + 20, panel_rect.origin.y + 48, MAX(0, panel_width - 40), MAX(0, panel_height - 68));
+    grid.frame = NSMakeRect(0, 0, content_width, MAX(grid_height, NSHeight(scroll_view.contentView.bounds)));
+    [self revealSelection];
+}
+- (void)drawRect:(NSRect)dirtyRect {
+    (void)dirtyRect;
+    if (finished) return;
+    [[[NSColor blackColor] colorWithAlphaComponent:0.22] setFill]; NSRectFill(self.bounds);
+    [NSColor.windowBackgroundColor setFill];
+    [[NSBezierPath bezierPathWithRoundedRect:panel_rect xRadius:12 yRadius:12] fill];
+    if (panel_rect.size.height < 60) return;
+    NSMutableParagraphStyle *style = [[[NSMutableParagraphStyle alloc] init] autorelease];
+    style.lineBreakMode = NSLineBreakByTruncatingTail;
+    NSString *heading = [NSString stringWithFormat:@"Switch pane  ·  %lu of %lu", (unsigned long)selected + 1, (unsigned long)entries.count];
+    [heading drawInRect:NSMakeRect(panel_rect.origin.x + 22, panel_rect.origin.y + 17, MAX(0, panel_rect.size.width - 44), 22)
+        withAttributes:@{NSFontAttributeName: [NSFont systemFontOfSize:14 weight:NSFontWeightSemibold],
+            NSForegroundColorAttributeName: NSColor.labelColor, NSParagraphStyleAttributeName: style}];
+}
+- (NSEvent *)handleEvent:(NSEvent *)event {
+    if (![self isValid]) { [self finish:NO]; return event; }
+    // Modifier state is application-wide; flagsChanged may have no window or a
+    // different window number even though this switcher still owns keyboard focus.
+    if (event.type == NSEventTypeFlagsChanged) {
+        if (release_modifiers && !(event.modifierFlags & release_modifiers)) [self finish:YES];
+        return nil;
+    }
+    if (event.window && event.window != hosting_window) return event;
+    if (event.type == NSEventTypeKeyUp &&
+        ((release_modifiers && !(event.modifierFlags & release_modifiers)) ||
+         (!release_modifiers && event.keyCode == initiating_key))) {
+        [self finish:YES];
+        return nil;
+    }
+    if (event.type == NSEventTypeKeyUp || event.type == NSEventTypeLeftMouseUp) return nil;
+    if (event.type == NSEventTypeLeftMouseDown) {
+        NSPoint point = [grid convertPoint:event.locationInWindow fromView:nil];
+        if (NSPointInRect([scroll_view convertPoint:event.locationInWindow fromView:nil], scroll_view.bounds)) {
+            for (NSUInteger i = 0; i < entries.count; i++) if (NSPointInRect(point, [self tileRect:i])) {
+                selected = i; [self finish:YES]; return nil;
+            }
+        }
+        if (!NSPointInRect([self convertPoint:event.locationInWindow fromView:nil], panel_rect)) [self finish:YES];
+        return nil;
+    }
+    if (event.type == NSEventTypeKeyDown) {
+        unsigned short key = event.keyCode;
+        BOOL shift = (event.modifierFlags & NSEventModifierFlagShift) != 0;
+        if (key == 53 || key == 36 || key == 76) return nil;
+        if ([hosting_window.contentView respondsToSelector:@selector(kittyPaneSwitcherHandleConfiguredKeyEvent:)] &&
+            [hosting_window.contentView kittyPaneSwitcherHandleConfiguredKeyEvent:event]) return nil;
+        else if (key == initiating_key) {
+            BOOL reversed = shift != ((initiating_modifiers & NSEventModifierFlagShift) != 0);
+            [self cycle:reversed ? -(NSInteger)initiating_delta : initiating_delta];
+        } else if (key == 48) [self cycle:shift ? -1 : 1];
+        else if (key == 123) [self cycle:-1];
+        else if (key == 124) [self cycle:1];
+        else if (key == 125) [self cycle:(NSInteger)columns];
+        else if (key == 126) [self cycle:-(NSInteger)columns];
+        // All other typing is deliberately consumed, never sent to the terminal.
+        return nil;
+    }
+    return event;
+}
+@end
+
+bool
+cocoa_show_pane_switcher(void *ptr, id_type tab_id, PyObject *rows, id_type active_id, int delta) {
+    OSWindow *osw = ptr;
+    if (!osw || !osw->handle || osw->active_tab >= osw->num_tabs) return false;
+    NSWindow *window = glfwGetCocoaWindow(osw->handle);
+    KittyPaneSwitcher *existing = objc_getAssociatedObject(window, kitty_pane_switcher_key);
+    if (existing) {
+        if (existing->tab_id == tab_id && [existing isValid]) { [existing cycle:delta]; return true; }
+        [existing finish:NO];
+    }
+    Tab *tab = osw->tabs + osw->active_tab;
+    if (tab->id != tab_id || strcmp(tab->layout_name, "stack") || !window.isKeyWindow) return false;
+    PyObject *sequence = PySequence_Fast(rows, "Pane switcher rows must be a sequence");
+    if (!sequence) return false;
+    NSMutableArray *entries = [NSMutableArray array];
+    NSMutableSet *seen = [NSMutableSet set];
+    BOOL valid = YES;
+    NSUInteger active_index = NSNotFound;
+    for (Py_ssize_t i = 0; i < PySequence_Fast_GET_SIZE(sequence); i++) {
+        PyObject *row = PySequence_Fast(PySequence_Fast_GET_ITEM(sequence, i), "Pane switcher row must contain an ID and title");
+        if (!row) { valid = NO; break; }
+        if (PySequence_Fast_GET_SIZE(row) != 2) { Py_DECREF(row); valid = NO; break; }
+        unsigned long long value = PyLong_AsUnsignedLongLong(PySequence_Fast_GET_ITEM(row, 0));
+        Py_ssize_t title_size = 0;
+        const char *text = PyUnicode_AsUTF8AndSize(PySequence_Fast_GET_ITEM(row, 1), &title_size);
+        BOOL found = NO;
+        for (unsigned j = 0; j < tab->num_windows; j++) if (tab->windows[j].id == value) { found = YES; break; }
+        if (PyErr_Occurred() || !value || !found || !text || [seen containsObject:@(value)]) {
+            Py_DECREF(row); valid = NO; break;
+        }
+        KittyPaneSwitcherEntry *entry = [[[KittyPaneSwitcherEntry alloc] init] autorelease];
+        entry->pane_id = (id_type)value;
+        entry->title = [[NSString alloc] initWithBytes:text length:(NSUInteger)title_size encoding:NSUTF8StringEncoding];
+        entry->pending = YES;
+        if (value == active_id) active_index = entries.count;
+        [entries addObject:entry]; [seen addObject:@(value)];
+        Py_DECREF(row);
+    }
+    Py_DECREF(sequence);
+    if (!valid || !entries.count || active_index == NSNotFound) return false;
+    KittyPaneSwitcher *switcher = [[[KittyPaneSwitcher alloc] initWithFrame:window.contentView.bounds] autorelease];
+    switcher->os_window_id = osw->id; switcher->tab_id = tab_id; switcher->hosting_window = window;
+    switcher->entries = [entries mutableCopy]; switcher->selected = active_index; switcher->columns = 1;
+    switcher->initiating_delta = delta ? delta : 1;
+    NSEvent *event = objc_getAssociatedObject(window, NSSelectorFromString(@"kittyPaneSwitcherInitiatingEvent"));
+    if (!event) event = NSApp.currentEvent;
+    switcher->initiating_key = event.type == NSEventTypeKeyDown ? event.keyCode : USHRT_MAX;
+    const NSEventModifierFlags shortcut_modifiers = NSEventModifierFlagCommand | NSEventModifierFlagControl |
+        NSEventModifierFlagOption | NSEventModifierFlagShift;
+    switcher->initiating_modifiers = (event.type == NSEventTypeKeyDown ? event.modifierFlags : NSEvent.modifierFlags) & shortcut_modifiers;
+    switcher->release_modifiers = switcher->initiating_modifiers & ~NSEventModifierFlagShift;
+    if (!switcher->release_modifiers) switcher->release_modifiers = switcher->initiating_modifiers & NSEventModifierFlagShift;
+    switcher.autoresizingMask = NSViewWidthSizable | NSViewHeightSizable;
+    bool (*dispatch)(void *, const GLFWkeyevent *) = cocoa_dispatch_pane_switcher_shortcut;
+    objc_setAssociatedObject(window, @selector(kittyPaneSwitcherHandleConfiguredKeyEvent:),
+        [NSValue valueWithBytes:&dispatch objCType:@encode(__typeof__(dispatch))], OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    switcher->scroll_view = [[NSScrollView alloc] initWithFrame:NSZeroRect];
+    switcher->scroll_view.drawsBackground = NO;
+    switcher->scroll_view.hasVerticalScroller = YES;
+    switcher->scroll_view.autohidesScrollers = YES;
+    switcher->scroll_view.scrollerStyle = NSScrollerStyleOverlay;
+    switcher->grid = [[KittyPaneSwitcherGrid alloc] initWithFrame:NSZeroRect];
+    switcher->grid->owner = switcher;
+    switcher->scroll_view.documentView = switcher->grid;
+    [switcher addSubview:switcher->scroll_view];
+    [window.contentView addSubview:switcher positioned:NSWindowAbove relativeTo:nil];
+    objc_setAssociatedObject(window, kitty_pane_switcher_key, switcher, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    [switcher layout]; [switcher cycle:delta];
+    // MRC __block captures do not retain: remove the monitor before dropping owners.
+    __block KittyPaneSwitcher *monitored_switcher = switcher;
+    void (^modifiers_changed)(NSEvent *) = ^(NSEvent *incoming) {
+        KittyPaneSwitcher *current = [[monitored_switcher retain] autorelease];
+        [current handleEvent:incoming];
+    };
+    objc_setAssociatedObject(window, NSSelectorFromString(@"kittyPaneSwitcherModifiersChanged:"), modifiers_changed, OBJC_ASSOCIATION_COPY_NONATOMIC);
+    switcher->event_monitor = [NSEvent addLocalMonitorForEventsMatchingMask:
+        NSEventMaskKeyDown | NSEventMaskKeyUp | NSEventMaskFlagsChanged | NSEventMaskLeftMouseDown | NSEventMaskLeftMouseUp
+        handler:^NSEvent *(NSEvent *incoming) {
+            KittyPaneSwitcher *current = [[monitored_switcher retain] autorelease];
+            return [current handleEvent:incoming];
+        }];
+    NSNotificationCenter *notifications = [NSNotificationCenter defaultCenter];
+    [notifications addObserver:switcher selector:@selector(windowInvalidated:) name:NSWindowDidResignKeyNotification object:window];
+    [notifications addObserver:switcher selector:@selector(windowInvalidated:) name:NSWindowWillCloseNotification object:window];
+    // A fast release can precede monitor installation. Check the live state once
+    // after returning to AppKit, without keeping an idle polling timer alive.
+    if (switcher->release_modifiers) dispatch_async(dispatch_get_main_queue(), ^{
+        if (!switcher->finished && !(NSEvent.modifierFlags & switcher->release_modifiers))
+            [switcher finish:YES];
+    });
+    return true;
+}
+
+id_type
+cocoa_pane_switcher_next_preview(void *ptr) {
+    OSWindow *osw = ptr;
+    if (!osw || !osw->handle) return 0;
+    KittyPaneSwitcher *switcher = objc_getAssociatedObject(glfwGetCocoaWindow(osw->handle), kitty_pane_switcher_key);
+    if (!switcher) return 0;
+    if (![switcher isValid]) { [switcher finish:NO]; return 0; }
+    for (KittyPaneSwitcherEntry *entry in switcher->entries) if (entry->pending) return entry->pane_id;
+    return 0;
+}
+
+void
+cocoa_pane_switcher_set_preview(void *ptr, id_type window_id, const unsigned char *pixels, unsigned width, unsigned height) {
+    OSWindow *osw = ptr;
+    if (!osw || !osw->handle) return;
+    KittyPaneSwitcher *switcher = objc_getAssociatedObject(glfwGetCocoaWindow(osw->handle), kitty_pane_switcher_key);
+    if (!switcher) return;
+    if (![switcher isValid]) { [switcher finish:NO]; return; }
+    for (KittyPaneSwitcherEntry *entry in switcher->entries) if (entry->pane_id == window_id && entry->pending) {
+        entry->pending = NO;
+        if (pixels && width && height && width <= SIZE_MAX / 4 / height) {
+            NSBitmapImageRep *bitmap = [[NSBitmapImageRep alloc] initWithBitmapDataPlanes:NULL pixelsWide:width pixelsHigh:height
+                bitsPerSample:8 samplesPerPixel:4 hasAlpha:YES isPlanar:NO colorSpaceName:NSDeviceRGBColorSpace
+                bitmapFormat:NSBitmapFormatAlphaNonpremultiplied bytesPerRow:(NSInteger)width * 4 bitsPerPixel:32];
+            if (bitmap.bitmapData) {
+                memcpy(bitmap.bitmapData, pixels, (size_t)width * height * 4);
+                entry->image = [[NSImage alloc] initWithSize:NSMakeSize(width, height)];
+                // Tag the renderer's sRGB bytes without converting their values.
+                NSBitmapImageRep *srgb = [bitmap bitmapImageRepByRetaggingWithColorSpace:NSColorSpace.sRGBColorSpace];
+                [entry->image addRepresentation:srgb];
+            }
+            [bitmap release];
+        }
+        [switcher layout];
+        switcher->grid.needsDisplay = YES;
+        return;
+    }
+}
+
 static void
 draw_agents_sidebar_icon(NSRect rect) {
     CGFloat inset = MAX(1.0, MIN(rect.size.width, rect.size.height) * 0.12);
@@ -840,6 +1225,7 @@ agents_sidebar_update_string(NSString **string, const char *value) {
     NSNumber *identity;
     NSString *group, *group_key, *agent, *label, *detail;
     unsigned char state;
+    BOOL editor;
     BOOL active;
     unsigned changes;
 }
@@ -860,6 +1246,7 @@ agents_sidebar_update_string(NSString **string, const char *value) {
 
 @interface KittyAgentsOutlineView : NSOutlineView
 @property BOOL keyboardFocusRequested;
+@property(copy) NSString *emptyStateText;
 @end
 
 @interface KittyAgentsScrollView : NSScrollView
@@ -899,8 +1286,17 @@ agents_sidebar_update_string(NSString **string, const char *value) {
     NSArray<KittyAgentsSidebarEntry *> *entries;
     // NSOutlineView owns selection; IDs survive tracker refreshes and reordering.
     NSDictionary<NSNumber *, KittyAgentsSidebarEntry *> *entries_by_id;
+    NSDictionary<NSNumber *, KittyAgentsSidebarEntry *> *editors_by_id;
     NSArray *root_nodes;
     NSDictionary *group_children;
+    NSArray *editor_entries;
+    NSView *agents_section, *editors_section, *section_divider;
+    NSButton *agents_header, *editors_header;
+    NSScrollView *editor_scroll_view;
+    KittyAgentsOutlineView *editor_outline;
+    CGFloat agents_fraction;
+    BOOL agents_collapsed, editors_collapsed, dragging_divider;
+    CGFloat divider_drag_origin, divider_start_fraction;
     BOOL summary_dirty, row_style_changed;
     NSScrollView *scroll_view;
     KittyAgentsOutlineView *outline;
@@ -925,8 +1321,9 @@ agents_sidebar_update_string(NSString **string, const char *value) {
          labels:(const char **)new_labels
         details:(const char **)new_details
          states:(const unsigned char *)new_states
-         active:(const bool *)active
-          count:(size_t)count;
+          active:(const bool *)active
+           count:(size_t)count
+           kinds:(const char **)new_kinds;
 - (NSVisualEffectView *)backgroundView;
 - (BOOL)kittySidebarHasKeyboardFocus;
 - (void)kittySidebarCancelNavigation;
@@ -945,6 +1342,15 @@ agents_sidebar_update_string(NSString **string, const char *value) {
 
 
 @implementation KittyAgentsOutlineView
+- (void)drawRect:(NSRect)dirtyRect {
+    [super drawRect:dirtyRect];
+    if (self.numberOfRows || !self.emptyStateText.length || self.bounds.size.height <= 20) return;
+    NSMutableParagraphStyle *style = [[[NSMutableParagraphStyle alloc] init] autorelease];
+    style.alignment = NSTextAlignmentCenter;
+    NSDictionary *attributes = @{NSFontAttributeName:[NSFont systemFontOfSize:11],
+        NSForegroundColorAttributeName:[NSColor tertiaryLabelColor], NSParagraphStyleAttributeName:style};
+    [self.emptyStateText drawInRect:NSMakeRect(8, 10, MAX(0, self.bounds.size.width - 24), 16) withAttributes:attributes];
+}
 // Mouse activation returns to the terminal; only explicit keyboard navigation
 // may acquire sidebar focus and show its accent border.
 - (BOOL)acceptsFirstResponder { return self.keyboardFocusRequested; }
@@ -961,6 +1367,8 @@ agents_sidebar_update_string(NSString **string, const char *value) {
 }
 - (NSRect)frameOfCellAtColumn:(NSInteger)column row:(NSInteger)row {
     NSRect rect = [super frameOfCellAtColumn:column row:row];
+    // Keep the cell inset for its text/icon content; row backgrounds are drawn
+    // independently across the full viewport by KittyAgentsSidebarRowView.
     CGFloat left = [[self itemAtRow:row] isKindOfClass:[NSString class]] ? 0 : 6;
     rect.origin.x = left;
     CGFloat right = left == 0 ? 0 : 6;
@@ -990,7 +1398,8 @@ agents_sidebar_update_string(NSString **string, const char *value) {
 - (NSMenu *)menuForEvent:(NSEvent *)event {
     NSInteger row = [self rowAtPoint:[self convertPoint:event.locationInWindow fromView:nil]];
     if (row >= 0) [self selectRowIndexes:[NSIndexSet indexSetWithIndex:(NSUInteger)row] byExtendingSelection:NO];
-    return [(KittyAgentsSidebarView *)self.delegate menuForNode:row >= 0 ? [self itemAtRow:row] : nil];
+    id node = row >= 0 ? [self itemAtRow:row] : nil;
+    return [(KittyAgentsSidebarView *)self.delegate menuForNode:node];
 }
 @end
 
@@ -1002,6 +1411,80 @@ agents_sidebar_update_string(NSString **string, const char *value) {
 - (void)resetCursorRects {
     [super resetCursorRects];
     [self addCursorRect:self.visibleRect cursor:[NSCursor pointingHandCursor]];
+}
+@end
+
+@interface KittySidebarSectionButton : NSButton
+@property(assign) KittyAgentsSidebarView *sidebar;
+@property BOOL agentsSection;
+@property BOOL expanded;
+@property BOOL pointerHovered;
+@property(retain) NSTrackingArea *headerTrackingArea;
+@end
+
+static NSColor *KittySidebarSectionBackgroundColor(BOOL agents_section) {
+    NSColor *base = [NSColor controlBackgroundColor];
+    NSColor *tint = agents_section ? [NSColor controlAccentColor] : [NSColor systemTealColor];
+    return [base blendedColorWithFraction:agents_section ? 0.13 : 0.10 ofColor:tint];
+}
+
+@implementation KittySidebarSectionButton
+- (void)mouseDown:(NSEvent *)event { [super mouseDown:event]; }
+- (void)updateTrackingAreas {
+    [super updateTrackingAreas];
+    if (self.headerTrackingArea) { [self removeTrackingArea:self.headerTrackingArea]; self.headerTrackingArea = nil; }
+    self.headerTrackingArea = [[[NSTrackingArea alloc] initWithRect:NSZeroRect
+        options:NSTrackingMouseEnteredAndExited | NSTrackingMouseMoved | NSTrackingCursorUpdate | NSTrackingActiveAlways | NSTrackingInVisibleRect
+        owner:self userInfo:nil] autorelease];
+    [self addTrackingArea:self.headerTrackingArea];
+}
+- (void)resetCursorRects {
+    [super resetCursorRects];
+    NSRect visible = NSIntersectionRect(self.bounds, self.visibleRect);
+    if (!NSIsEmptyRect(visible)) [self addCursorRect:visible cursor:[NSCursor pointingHandCursor]];
+}
+- (void)cursorUpdate:(NSEvent *)event {
+    (void)event;
+    [[NSCursor pointingHandCursor] set];
+}
+- (void)mouseEntered:(NSEvent *)event { (void)event; self.pointerHovered = YES; [self setNeedsDisplay:YES]; [[NSCursor pointingHandCursor] set]; }
+- (void)mouseMoved:(NSEvent *)event { [self mouseEntered:event]; }
+- (void)mouseExited:(NSEvent *)event { (void)event; self.pointerHovered = NO; [self setNeedsDisplay:YES]; [[NSCursor arrowCursor] set]; }
+- (void)drawRect:(NSRect)dirtyRect {
+    (void)dirtyRect;
+    NSColor *tint = self.agentsSection ? [NSColor controlAccentColor] : [NSColor systemTealColor];
+    NSColor *band = KittySidebarSectionBackgroundColor(self.agentsSection);
+    if (self.pointerHovered) band = [band blendedColorWithFraction:0.12 ofColor:[NSColor controlAccentColor]];
+    [band setFill]; NSRectFill(self.bounds);
+    [[NSColor separatorColor] setFill]; NSRectFill(NSMakeRect(0, NSMaxY(self.bounds) - 1, self.bounds.size.width, 1));
+    [tint setFill]; NSRectFill(NSMakeRect(0, 0, 2, self.bounds.size.height));
+    NSFont *titleFont = self.font ? self.font : [NSFont systemFontOfSize:11];
+    NSColor *titleColor = self.pointerHovered ? [NSColor labelColor] : [NSColor secondaryLabelColor];
+    NSMutableParagraphStyle *titleStyle = [[[NSMutableParagraphStyle alloc] init] autorelease];
+    titleStyle.lineBreakMode = NSLineBreakByTruncatingTail;
+    NSRect titleRect = NSMakeRect(12, 0, MAX(0, NSWidth(self.bounds) - 38), NSHeight(self.bounds));
+    NSSize titleSize = [self.title sizeWithAttributes:@{NSFontAttributeName:titleFont}];
+    titleRect.origin.y = NSMidY(self.bounds) - titleSize.height / 2;
+    titleRect.size.height = titleSize.height;
+    [self.title drawInRect:titleRect withAttributes:@{NSFontAttributeName:titleFont,
+        NSForegroundColorAttributeName:titleColor, NSParagraphStyleAttributeName:titleStyle}];
+    NSBezierPath *chevron = [NSBezierPath bezierPath];
+    chevron.lineWidth = 1.5; chevron.lineCapStyle = NSLineCapStyleRound; chevron.lineJoinStyle = NSLineJoinStyleRound;
+    CGFloat cx = NSWidth(self.bounds) - 15, cy = NSMidY(self.bounds);
+    if (self.expanded) {
+        [chevron moveToPoint:NSMakePoint(cx - 3, cy - 1)]; [chevron lineToPoint:NSMakePoint(cx, cy + 2)];
+        [chevron lineToPoint:NSMakePoint(cx + 3, cy - 1)];
+    } else {
+        [chevron moveToPoint:NSMakePoint(cx - 1, cy - 3)]; [chevron lineToPoint:NSMakePoint(cx + 2, cy)];
+        [chevron lineToPoint:NSMakePoint(cx - 1, cy + 3)];
+    }
+    [titleColor setStroke]; [chevron stroke];
+}
+- (void)viewDidMoveToWindow { [super viewDidMoveToWindow]; [self updateTrackingAreas]; }
+- (void)dealloc {
+    if (self.headerTrackingArea) [self removeTrackingArea:self.headerTrackingArea];
+    [_headerTrackingArea release];
+    [super dealloc];
 }
 @end
 @implementation KittyAgentsSidebarCell
@@ -1140,24 +1623,35 @@ agents_sidebar_update_string(NSString **string, const char *value) {
 - (NSRect)decorationRect {
     NSRect rect = self.bounds;
     rect.size.width = MIN(rect.size.width, self.enclosingScrollView.contentSize.width);
-    return self.groupHeading ? rect : NSInsetRect(rect, 6, 2);
+    // Keep the 24pt group band intact. Agent/editor fills span the row width and
+    // touch the row edges vertically, avoiding the apparent gap below headers.
+    return rect;
 }
 - (void)drawBackgroundInRect:(NSRect)dirtyRect {
     (void)dirtyRect;
     BOOL highlighted = self.pointerHovered || (self.selected && [self.sidebar kittySidebarHasKeyboardFocus]);
-    if (self.activeAgent) {
-        [[NSColor selectedContentBackgroundColor] setFill];
-        [[NSBezierPath bezierPathWithRoundedRect:[self decorationRect] xRadius:6 yRadius:6] fill];
-    } else if (self.groupHeading || highlighted) {
-        CGFloat alpha = highlighted ? (self.groupHeading ? 0.52 : 0.38) : 0.34;
-        [[[NSColor controlBackgroundColor] colorWithAlphaComponent:alpha] setFill];
-        if (self.groupHeading) NSRectFill([self decorationRect]);
-        else [[NSBezierPath bezierPathWithRoundedRect:[self decorationRect] xRadius:6 yRadius:6] fill];
+    NSRect rect = [self decorationRect];
+    if (self.groupHeading) {
+        NSColor *background = [[NSColor windowBackgroundColor] blendedColorWithFraction:highlighted ? 0.14 : 0.08
+            ofColor:[NSColor labelColor]];
+        [background setFill];
+        NSRectFill(rect);
+        [[[NSColor labelColor] colorWithAlphaComponent:0.14] setFill];
+        NSRectFill(NSMakeRect(NSMinX(rect), NSMaxY(rect) - 1, rect.size.width, 1));
+    } else if (self.activeAgent || highlighted) {
+        NSColor *background = self.activeAgent ? [NSColor selectedContentBackgroundColor] :
+            [[NSColor controlBackgroundColor] colorWithAlphaComponent:0.38];
+        [background setFill];
+        NSRectFill(rect);
     }
 }
 - (void)drawSelectionInRect:(NSRect)dirtyRect {
     // Selection shares the background's hover fill; suppress AppKit's default decoration.
     (void)dirtyRect;
+}
+- (void)viewDidChangeEffectiveAppearance {
+    [super viewDidChangeEffectiveAppearance];
+    [self setNeedsDisplay:YES];
 }
 - (void)setSelected:(BOOL)selected {
     [super setSelected:selected];
@@ -1231,12 +1725,40 @@ agents_sidebar_update_string(NSString **string, const char *value) {
         summary.textColor = [NSColor secondaryLabelColor];
         summary.lineBreakMode = NSLineBreakByTruncatingTail;
         [self addSubview:summary];
+        NSUserDefaults *prefs = NSUserDefaults.standardUserDefaults;
+        NSString *scope = @"kitty.agents-sidebar.sections.v1";
+        agents_collapsed = [prefs boolForKey:[scope stringByAppendingString:@".agents-collapsed"]];
+        editors_collapsed = [prefs boolForKey:[scope stringByAppendingString:@".editors-collapsed"]];
+        CGFloat saved_fraction = [prefs doubleForKey:[scope stringByAppendingString:@".agents-fraction"]];
+        agents_fraction = isfinite(saved_fraction) && saved_fraction >= 0.12 && saved_fraction <= 0.88 ? saved_fraction : 0.62;
+        agents_header = [[KittySidebarSectionButton alloc] initWithFrame:NSZeroRect];
+        editors_header = [[KittySidebarSectionButton alloc] initWithFrame:NSZeroRect];
+        ((KittySidebarSectionButton *)agents_header).sidebar = self;
+        ((KittySidebarSectionButton *)editors_header).sidebar = self;
+        ((KittySidebarSectionButton *)agents_header).agentsSection = YES;
+        ((KittySidebarSectionButton *)editors_header).agentsSection = NO;
+        for (NSButton *header in @[agents_header, editors_header]) {
+            header.bordered = NO; header.alignment = NSTextAlignmentLeft; header.font = [NSFont systemFontOfSize:11 weight:NSFontWeightSemibold];
+            header.contentTintColor = NSColor.secondaryLabelColor; header.imagePosition = NSNoImage;
+            header.cell.wraps = NO;
+            header.cell.usesSingleLineMode = YES;
+            header.cell.truncatesLastVisibleLine = YES;
+            header.cell.lineBreakMode = NSLineBreakByTruncatingTail;
+        }
+        agents_header.title = @"Grouping: tab · 0 agents · 0 groups"; agents_header.target = self; agents_header.action = @selector(toggleAgentsSection:);
+        agents_header.allowsExpansionToolTips = NO;
+        agents_header.image = nil;
+        editors_header.title = @"Editors"; editors_header.target = self; editors_header.action = @selector(toggleEditorsSection:);
+        editors_header.image = nil;
+        [self updateSectionHeaders];
+        [self addSubview:agents_header]; [self addSubview:editors_header];
         scroll_view = [[KittyAgentsScrollView alloc] initWithFrame:NSZeroRect];
         scroll_view.drawsBackground = NO;
         scroll_view.hasVerticalScroller = YES;
         scroll_view.autohidesScrollers = YES;
         scroll_view.scrollerStyle = NSScrollerStyleOverlay;
         scroll_view.borderType = NSNoBorder;
+        scroll_view.contentInsets = NSEdgeInsetsZero;
         outline = [[KittyAgentsOutlineView alloc] initWithFrame:NSZeroRect];
         NSTableColumn *column = [[[NSTableColumn alloc] initWithIdentifier:@"agent"] autorelease];
         column.minWidth = 0;
@@ -1245,6 +1767,9 @@ agents_sidebar_update_string(NSString **string, const char *value) {
         outline.outlineTableColumn = column;
         outline.headerView = nil;
         outline.backgroundColor = [NSColor clearColor];
+        // Source-list/automatic tables add platform-dependent row insets. Use a
+        // plain table so the first row starts directly at the scroll content edge.
+        if (@available(macOS 11.0, *)) outline.style = NSTableViewStylePlain;
         outline.indentationPerLevel = 0;
         outline.autoresizingMask = NSViewWidthSizable;
         if (@available(macOS 11.0, *)) outline.style = NSTableViewStylePlain;
@@ -1257,6 +1782,7 @@ agents_sidebar_update_string(NSString **string, const char *value) {
         outline.allowsTypeSelect = NO;
         outline.focusRingType = NSFocusRingTypeNone;
         outline.accessibilityLabel = @"AI agents";
+        outline.emptyStateText = @"No Agents";
         outline.dataSource = self;
         outline.delegate = self;
         outline.target = self;
@@ -1266,6 +1792,26 @@ agents_sidebar_update_string(NSString **string, const char *value) {
         [NSNotificationCenter.defaultCenter addObserver:self selector:@selector(spinnerViewportChanged:)
             name:NSViewBoundsDidChangeNotification object:scroll_view.contentView];
         [self addSubview:scroll_view];
+        editor_scroll_view = [[KittyAgentsScrollView alloc] initWithFrame:NSZeroRect];
+        editor_scroll_view.drawsBackground = NO; editor_scroll_view.hasVerticalScroller = YES;
+        editor_scroll_view.autohidesScrollers = YES; editor_scroll_view.scrollerStyle = NSScrollerStyleOverlay;
+        editor_scroll_view.borderType = NSNoBorder;
+        editor_scroll_view.contentInsets = NSEdgeInsetsZero;
+        editor_outline = [[KittyAgentsOutlineView alloc] initWithFrame:NSZeroRect];
+        NSTableColumn *editor_column = [[[NSTableColumn alloc] initWithIdentifier:@"editor"] autorelease];
+        editor_column.minWidth = 0; editor_column.resizingMask = NSTableColumnAutoresizingMask;
+        [editor_outline addTableColumn:editor_column]; editor_outline.outlineTableColumn = editor_column;
+        editor_outline.headerView = nil; editor_outline.backgroundColor = NSColor.clearColor;
+        if (@available(macOS 11.0, *)) editor_outline.style = NSTableViewStylePlain;
+        editor_outline.rowHeight = 48;
+        editor_outline.usesAutomaticRowHeights = NO; editor_outline.intercellSpacing = NSMakeSize(0, 0);
+        editor_outline.dataSource = self; editor_outline.delegate = self; editor_outline.allowsTypeSelect = NO;
+        editor_outline.target = self; editor_outline.action = @selector(outlineClicked:);
+        editor_outline.accessibilityLabel = @"Editors"; editor_outline.emptyStateText = @"No Editors"; editor_scroll_view.documentView = editor_outline;
+        [self addSubview:editor_scroll_view];
+        section_divider = [[NSView alloc] initWithFrame:NSZeroRect];
+        section_divider.wantsLayer = YES; section_divider.layer.backgroundColor = [NSColor separatorColor].CGColor;
+        [self addSubview:section_divider];
         self.identifier = @"kitty-agents-sidebar";
         self.autoresizingMask = NSViewHeightSizable;
         [self setFrameSize:self.frame.size];
@@ -1284,6 +1830,71 @@ agents_sidebar_update_string(NSString **string, const char *value) {
 }
 
 @synthesize grouping = _grouping, iconsDir = _iconsDir;
+- (void)persistSectionState {
+    NSString *scope = @"kitty.agents-sidebar.sections.v1";
+    [NSUserDefaults.standardUserDefaults setBool:agents_collapsed forKey:[scope stringByAppendingString:@".agents-collapsed"]];
+    [NSUserDefaults.standardUserDefaults setBool:editors_collapsed forKey:[scope stringByAppendingString:@".editors-collapsed"]];
+    [NSUserDefaults.standardUserDefaults setDouble:agents_fraction forKey:[scope stringByAppendingString:@".agents-fraction"]];
+}
+- (void)updateSectionHeaders {
+    agents_header.image = editors_header.image = nil;
+    agents_header.imagePosition = editors_header.imagePosition = NSNoImage;
+    ((KittySidebarSectionButton *)agents_header).expanded = !agents_collapsed;
+    ((KittySidebarSectionButton *)editors_header).expanded = !editors_collapsed;
+    [agents_header setNeedsDisplay:YES]; [editors_header setNeedsDisplay:YES];
+}
+- (void)toggleAgentsSection:(id)sender { (void)sender; agents_collapsed = !agents_collapsed; [self persistSectionState]; [self updateSectionHeaders]; [self setFrameSize:self.frame.size]; }
+- (void)toggleEditorsSection:(id)sender { (void)sender; editors_collapsed = !editors_collapsed; [self persistSectionState]; [self updateSectionHeaders]; [self setFrameSize:self.frame.size]; }
+- (NSRect)dividerHitRect {
+    if (agents_collapsed || editors_collapsed || NSIsEmptyRect(section_divider.frame)) return NSZeroRect;
+    CGFloat top = NSMaxY(agents_header.frame);
+    CGFloat bottom = NSMinY(editors_header.frame);
+    CGFloat center = NSMidY(section_divider.frame);
+    CGFloat hit_height = MIN(8, MAX(0, bottom - top));
+    CGFloat y = MIN(MAX(center - hit_height / 2, top), bottom - hit_height);
+    return NSMakeRect(NSMinX(section_divider.frame), y, section_divider.frame.size.width, hit_height);
+}
+- (CGFloat)dividerDragAvailableHeight {
+    return MAX(1, self.bounds.size.height - 6 - 60 - 1);
+}
+- (void)mouseDown:(NSEvent *)event {
+    NSPoint point = [self convertPoint:event.locationInWindow fromView:nil];
+    if (NSPointInRect(point, [self dividerHitRect])) {
+        dragging_divider = YES; divider_drag_origin = point.y; divider_start_fraction = agents_fraction;
+        [[NSCursor resizeUpDownCursor] set]; return;
+    }
+    if (point.x >= self.bounds.size.width - 8) { resizing = YES; resize_hovered = YES; [self setNeedsDisplay:YES]; return; }
+    [super mouseDown:event];
+}
+- (void)mouseDragged:(NSEvent *)event {
+    if (dragging_divider) {
+        NSPoint point = [self convertPoint:event.locationInWindow fromView:nil];
+        CGFloat available = [self dividerDragAvailableHeight];
+        CGFloat next = divider_start_fraction + (point.y - divider_drag_origin) / available;
+        agents_fraction = MIN(0.88, MAX(0.12, next)); [self setFrameSize:self.frame.size]; return;
+    }
+    if (!resizing || !self.superview) return;
+    CGFloat scale = MAX(1.0, self.window.backingScaleFactor);
+    NSPoint p = [self.superview convertPoint:event.locationInWindow fromView:nil];
+    CGFloat min_width = 16.0 * cell_width_pixels / scale;
+    CGFloat max_width = self.superview.bounds.size.width * 0.75;
+    CGFloat width = MIN(max_width, MAX(min_width, p.x));
+    unsigned cols = MAX(16u, (unsigned)llround(width * scale / (CGFloat)cell_width_pixels));
+    width = cols * cell_width_pixels / scale;
+    [self previewSizeWidth:width];
+    self.resizePending = YES;
+    char data[64];
+    snprintf(data, sizeof(data), "%u:%u", os_window_id, cols);
+    set_cocoa_pending_action(AGENTS_SIDEBAR_RESIZE, data);
+    OSWindow *osw = os_window_for_id(os_window_id);
+    if (osw) osw->suppress_pane_animation = true;
+}
+- (void)mouseUp:(NSEvent *)event {
+    if (dragging_divider) { dragging_divider = NO; [self persistSectionState]; return; }
+    resizing = NO;
+    NSPoint p = [self convertPoint:event.locationInWindow fromView:nil];
+    [self updateHoverAtPoint:p]; [self resetCursorRects];
+}
 - (NSString *)grouping { return _grouping; }
 - (NSString *)iconsDir { return _iconsDir; }
 - (void)setGrouping:(NSString *)value {
@@ -1303,6 +1914,7 @@ agents_sidebar_update_string(NSString **string, const char *value) {
     NSPoint local = [self convertPoint:point fromView:self.superview];
     if (!NSPointInRect(local, self.bounds)) return nil;
     if (local.x >= self.bounds.size.width - 8) return self;
+    if (NSPointInRect(local, [self dividerHitRect])) return self;
     return [super hitTest:point];
 }
 
@@ -1314,10 +1926,30 @@ agents_sidebar_update_string(NSString **string, const char *value) {
 - (void)setFrameSize:(NSSize)size {
     [super setFrameSize:size];
     [background_view setFrame:self.frame];
-    const CGFloat title_height = summary.fittingSize.height;
-    summary.frame = NSMakeRect(12, (39 - title_height) / 2, MAX(0, size.width - 24), title_height);
-    scroll_view.frame = NSMakeRect(0, 40, MAX(0, size.width), MAX(0, size.height - 40));
+    CGFloat width = MAX(0, size.width - 2), height = MAX(0, size.height);
+    CGFloat agents_header_y = MIN(6, height);
+    CGFloat header_height = MIN(30, MAX(0, height - agents_header_y) / 2);
+    CGFloat divider_height = (!agents_collapsed && !editors_collapsed) ? MIN(1, MAX(0, height - agents_header_y - 2 * header_height)) : 0;
+    CGFloat available = MAX(0, height - agents_header_y - 2 * header_height - divider_height);
+    CGFloat agent_height = 0, editor_height = 0;
+    BOOL ac = agents_collapsed, ec = editors_collapsed;
+    if (ac && ec) { agent_height = editor_height = 0; }
+    else if (ac) editor_height = available;
+    else if (ec) agent_height = available;
+    else { agent_height = available * agents_fraction; editor_height = available - agent_height; }
+    agents_header.frame = NSMakeRect(0, agents_header_y, width, header_height);
+    agents_header.toolTip = agents_header.title;
+    summary.frame = NSZeroRect; // Retained for the existing summary/cache path; section titles stay anchored.
+    scroll_view.hidden = ac;
+    editor_scroll_view.hidden = ec;
+    scroll_view.frame = NSMakeRect(0, agents_header_y + header_height, width, agent_height);
+    CGFloat divider_y = NSMaxY(scroll_view.frame);
+    section_divider.frame = NSMakeRect(0, divider_y, width, divider_height);
+    CGFloat editor_header_y = divider_y + divider_height;
+    editors_header.frame = NSMakeRect(0, editor_header_y, width, header_height);
+    editor_scroll_view.frame = NSMakeRect(0, editor_header_y + header_height, width, editor_height);
     outline.tableColumns.firstObject.width = MAX(0, scroll_view.contentSize.width);
+    editor_outline.tableColumns.firstObject.width = MAX(0, editor_scroll_view.contentSize.width);
     [self.window invalidateCursorRectsForView:self];
     [self setNeedsDisplay:YES];
 }
@@ -1347,7 +1979,8 @@ agents_sidebar_update_string(NSString **string, const char *value) {
 }
 - (void)cursorUpdate:(NSEvent *)event {
     NSPoint point = [self convertPoint:event.locationInWindow fromView:nil];
-    if (point.x >= self.bounds.size.width - 8) [[NSCursor resizeLeftRightCursor] set];
+    if (NSPointInRect(point, [self dividerHitRect])) [[NSCursor resizeUpDownCursor] set];
+    else if (point.x >= self.bounds.size.width - 8) [[NSCursor resizeLeftRightCursor] set];
     else [[NSCursor pointingHandCursor] set];
 }
 - (void)resetCursorRects {
@@ -1357,6 +1990,8 @@ agents_sidebar_update_string(NSString **string, const char *value) {
         [self addCursorRect:NSMakeRect(self.bounds.size.width - edge, 0, edge, self.bounds.size.height) cursor:[NSCursor resizeLeftRightCursor]];
         [self addCursorRect:NSMakeRect(0, 0, self.bounds.size.width - edge, self.bounds.size.height) cursor:[NSCursor pointingHandCursor]];
     }
+    NSRect divider_hit_rect = [self dividerHitRect];
+    if (!NSIsEmptyRect(divider_hit_rect)) [self addCursorRect:divider_hit_rect cursor:[NSCursor resizeUpDownCursor]];
 }
 
 
@@ -1400,8 +2035,13 @@ agents_sidebar_update_string(NSString **string, const char *value) {
     syncing_outline = NO;
 }
 
+- (KittyAgentsOutlineView *)navigationOutline {
+    NSResponder *responder = self.window.firstResponder;
+    return [responder isKindOfClass:[NSView class]] && [(NSView *)responder isDescendantOf:editor_outline] ? editor_outline : outline;
+}
 - (id)selectedNode {
-    return outline.selectedRow >= 0 ? [outline itemAtRow:outline.selectedRow] : nil;
+    NSOutlineView *view = [self navigationOutline];
+    return view.selectedRow >= 0 ? [view itemAtRow:view.selectedRow] : nil;
 }
 
 - (void)rebuildOutline {
@@ -1454,22 +2094,31 @@ agents_sidebar_update_string(NSString **string, const char *value) {
 }
 - (NSInteger)outlineView:(NSOutlineView *)view numberOfChildrenOfItem:(id)item {
     (void)view;
+    if (view == editor_outline) return item ? 0 : (NSInteger)editor_entries.count;
     return (NSInteger)(item ? [group_children[item] count] : root_nodes.count);
 }
 - (id)outlineView:(NSOutlineView *)view child:(NSInteger)index ofItem:(id)item {
     (void)view;
+    if (view == editor_outline) return editor_entries[(NSUInteger)index];
     return item ? group_children[item][(NSUInteger)index] : root_nodes[(NSUInteger)index];
 }
 - (BOOL)outlineView:(NSOutlineView *)view isItemExpandable:(id)item {
     (void)view;
+    if (view == editor_outline) return NO;
     return [item isKindOfClass:[NSString class]];
 }
 - (CGFloat)outlineView:(NSOutlineView *)view heightOfRowByItem:(id)item {
     (void)view;
+    if (view == editor_outline) return 48;
     return [item isKindOfClass:[NSString class]] ? 24 : 48;
 }
 - (NSView *)outlineView:(NSOutlineView *)view viewForTableColumn:(NSTableColumn *)column item:(id)item {
     (void)column;
+    if (view == editor_outline) {
+        KittyAgentsSidebarCell *cell = [view makeViewWithIdentifier:@"agent-cell" owner:self];
+        if (!cell) { cell = [[[KittyAgentsSidebarCell alloc] initWithFrame:NSZeroRect] autorelease]; cell.identifier = @"agent-cell"; }
+        cell.sidebar = self; cell.node = item; cell.toolTip = [self labelForNode:item]; [cell updateSpinner]; [cell setNeedsDisplay:YES]; return cell;
+    }
     KittyAgentsSidebarCell *cell = [view makeViewWithIdentifier:@"agent-cell" owner:self];
     if (!cell) {
         cell = [[[KittyAgentsSidebarCell alloc] initWithFrame:NSZeroRect] autorelease];
@@ -1486,8 +2135,8 @@ agents_sidebar_update_string(NSString **string, const char *value) {
     (void)view;
     KittyAgentsSidebarRowView *row = [[[KittyAgentsSidebarRowView alloc] initWithFrame:NSZeroRect] autorelease];
     row.sidebar = self;
-    row.groupHeading = [item isKindOfClass:[NSString class]];
-    KittyAgentsSidebarEntry *entry = entries_by_id[item];
+    row.groupHeading = view != editor_outline && [item isKindOfClass:[NSString class]];
+    KittyAgentsSidebarEntry *entry = view == editor_outline ? (KittyAgentsSidebarEntry *)item : entries_by_id[item];
     row.activeAgent = entry && entry->active;
     return row;
 }
@@ -1501,13 +2150,11 @@ agents_sidebar_update_string(NSString **string, const char *value) {
 }
 - (void)spinnerViewportChanged:(NSNotification *)notification {
     (void)notification;
-    [outline enumerateAvailableRowViewsUsingBlock:^(NSTableRowView *rowView, NSInteger row) {
-        (void)row;
-        [(KittyAgentsSidebarCell *)[rowView viewAtColumn:0] updateSpinner];
-    }];
+    [outline enumerateAvailableRowViewsUsingBlock:^(NSTableRowView *rowView, NSInteger row) { (void)row; [(KittyAgentsSidebarCell *)[rowView viewAtColumn:0] updateSpinner]; }];
 }
 - (void)outlineViewSelectionDidChange:(NSNotification *)notification {
     (void)notification;
+    if (notification.object == editor_outline) return;
     if (syncing_outline) return;
     [remembered_selection release];
     remembered_selection = [[self selectedNode] retain];
@@ -1546,6 +2193,10 @@ agents_sidebar_update_string(NSString **string, const char *value) {
     if (notification.object == self.window) [self kittySidebarCancelNavigation];
 }
 - (void)focusSidebar {
+    if (agents_collapsed && editors_collapsed) {
+        agents_collapsed = NO;
+        [self persistSectionState]; [self updateSectionHeaders]; [self setFrameSize:self.frame.size];
+    }
     if (![self kittySidebarHasKeyboardFocus]) {
         [previous_responders removeAllObjects];
         if (self.window.firstResponder) [previous_responders addObject:self.window.firstResponder];
@@ -1553,7 +2204,7 @@ agents_sidebar_update_string(NSString **string, const char *value) {
     id target = remembered_selection;
     if (!has_entered_navigation || !target) {
         for (KittyAgentsSidebarEntry *entry in entries) {
-            if (entry->active && entry->identity.unsignedLongLongValue) { target = entry->identity; break; }
+            if (!entry->editor && entry->active && entry->identity.unsignedLongLongValue) { target = entry->identity; break; }
         }
     }
     has_entered_navigation = YES;
@@ -1568,8 +2219,26 @@ agents_sidebar_update_string(NSString **string, const char *value) {
         [outline selectRowIndexes:[NSIndexSet indexSetWithIndex:(NSUInteger)row] byExtendingSelection:NO];
         [self revealRow:row];
     }
-    outline.keyboardFocusRequested = YES;
-    [self.window makeFirstResponder:outline];
+    BOOL has_agents = NO, has_editors = NO;
+    KittyAgentsSidebarEntry *active_editor = nil;
+    for (KittyAgentsSidebarEntry *entry in entries) {
+        if (!entry->identity.unsignedLongLongValue) continue;
+        if (entry->editor) {
+            has_editors = YES;
+            if (entry->active) active_editor = entry;
+        } else has_agents = YES;
+    }
+    KittyAgentsOutlineView *view = agents_collapsed || (!has_agents && has_editors && !editors_collapsed) ? editor_outline : outline;
+    if (view == editor_outline && active_editor) {
+        NSInteger editor_row = [editor_outline rowForItem:active_editor];
+        if (editor_row >= 0) {
+            [editor_outline selectRowIndexes:[NSIndexSet indexSetWithIndex:(NSUInteger)editor_row] byExtendingSelection:NO];
+            [editor_outline scrollRowToVisible:editor_row];
+        }
+    }
+    if (view.selectedRow < 0 && view.numberOfRows) [view selectRowIndexes:[NSIndexSet indexSetWithIndex:0] byExtendingSelection:NO];
+    view.keyboardFocusRequested = YES;
+    [self.window makeFirstResponder:view];
     [self setFocusBorderNeedsDisplay];
 }
 - (void)sendCommand:(NSString *)command windowID:(unsigned long long)window_id {
@@ -1578,12 +2247,17 @@ agents_sidebar_update_string(NSString **string, const char *value) {
     set_cocoa_pending_action(AGENTS_SIDEBAR_MENU, payload.UTF8String);
 }
 - (void)activateNode:(id)node {
+    if ([node isKindOfClass:[KittyAgentsSidebarEntry class]]) node = ((KittyAgentsSidebarEntry *)node)->identity;
     if ([node isKindOfClass:[NSString class]]) {
         [self setGroup:node expanded:![outline isItemExpanded:node] animated:YES];
     } else if ([node unsignedLongLongValue]) [self sendCommand:@"focus" windowID:[node unsignedLongLongValue]];
 }
 - (void)outlineClicked:(id)sender {
-    (void)sender;
+    if (sender == editor_outline) {
+        NSInteger row = editor_outline.clickedRow;
+        if (row >= 0) [self activateNode:[editor_outline itemAtRow:row]];
+        return;
+    }
     if (outline.clickedRow >= 0) [self activateNode:[outline itemAtRow:outline.clickedRow]];
 }
 - (BOOL)kittySidebarHandleKeyEvent:(NSEvent *)event {
@@ -1603,48 +2277,46 @@ agents_sidebar_update_string(NSString **string, const char *value) {
     unichar key = [characters characterAtIndex:0];
     if (key == 0x1b) { [self kittySidebarCancelNavigation]; return YES; }
     if (key == '\t' || key == NSBackTabCharacter) {
-        [self kittySidebarCancelNavigation];
+        KittyAgentsOutlineView *next = [self navigationOutline] == outline ? editor_outline : outline;
+        if (!next.enclosingScrollView.hidden) {
+            next.keyboardFocusRequested = YES;
+            [self.window makeFirstResponder:next];
+            if (next.selectedRow < 0 && next.numberOfRows) [next selectRowIndexes:[NSIndexSet indexSetWithIndex:0] byExtendingSelection:NO];
+        } else [self kittySidebarCancelNavigation];
         return YES;
     }
     if (key == NSF10FunctionKey && (modifiers & NSEventModifierFlagShift)) { [self showActions:nil]; return YES; }
-    NSInteger row = outline.selectedRow;
+    KittyAgentsOutlineView *view = [self navigationOutline];
+    NSScrollView *viewport = view.enclosingScrollView;
+    NSInteger row = view.selectedRow;
     id node = [self selectedNode];
     switch (key) {
         case '\r': case NSEnterCharacter: [self activateNode:node]; return YES;
         case NSLeftArrowFunctionKey:
             if ([node isKindOfClass:[NSString class]]) [self setGroup:node expanded:NO animated:YES];
-            else if (node) row = [outline rowForItem:[outline parentForItem:node]];
+            else if (node) row = [view rowForItem:[view parentForItem:node]];
             break;
         case NSRightArrowFunctionKey:
             if ([node isKindOfClass:[NSString class]]) {
-                if (![outline isItemExpanded:node]) [self setGroup:node expanded:YES animated:YES];
+                if (![view isItemExpanded:node]) [self setGroup:node expanded:YES animated:YES];
                 else if ([group_children[node] count]) row++;
             }
             break;
         case NSUpArrowFunctionKey: row = row < 0 ? 0 : row - 1; break;
         case NSDownArrowFunctionKey: row++; break;
         case NSHomeFunctionKey: row = 0; break;
-        case NSEndFunctionKey: row = outline.numberOfRows - 1; break;
-        case NSPageUpFunctionKey: row -= MAX(1, (NSInteger)(scroll_view.contentSize.height / 48)); break;
-        case NSPageDownFunctionKey: row += MAX(1, (NSInteger)(scroll_view.contentSize.height / 48)); break;
+        case NSEndFunctionKey: row = view.numberOfRows - 1; break;
+        case NSPageUpFunctionKey: row -= MAX(1, (NSInteger)(viewport.contentSize.height / 48)); break;
+        case NSPageDownFunctionKey: row += MAX(1, (NSInteger)(viewport.contentSize.height / 48)); break;
         default: return YES;
     }
-    if (outline.numberOfRows) {
-        row = MAX(0, MIN(outline.numberOfRows - 1, row));
-        [outline selectRowIndexes:[NSIndexSet indexSetWithIndex:(NSUInteger)row] byExtendingSelection:NO];
-        [self revealRow:row];
+    if (view.numberOfRows) {
+        row = MAX(0, MIN(view.numberOfRows - 1, row));
+        [view selectRowIndexes:[NSIndexSet indexSetWithIndex:(NSUInteger)row] byExtendingSelection:NO];
+        [view scrollRowToVisible:row];
     }
     return YES;
 }
-- (void)mouseDown:(NSEvent *)event {
-    NSPoint p = [self convertPoint:event.locationInWindow fromView:nil];
-    if (p.x >= self.bounds.size.width - 8) {
-        resizing = YES;
-        resize_hovered = YES;
-        [self setNeedsDisplay:YES];
-    }
-}
-
 - (void)addMenuItemTo:(NSMenu *)menu title:(NSString *)title command:(const char *)command windowID:(unsigned long long)window_id {
     NSMenuItem *item = [[NSMenuItem alloc] initWithTitle:title action:@selector(agentsSidebarMenuAction:) keyEquivalent:@""];
     item.target = self;
@@ -1657,14 +2329,15 @@ agents_sidebar_update_string(NSString **string, const char *value) {
 // Refreshes can arrive while a menu is tracking, so menu actions carry the
 // agent's window id rather than the row index the menu was opened on.
 - (NSMenu *)menuForNode:(id)node {
-    unsigned long long window_id = [node isKindOfClass:[NSNumber class]] ? [node unsignedLongLongValue] : 0;
+    BOOL editor = [node isKindOfClass:[KittyAgentsSidebarEntry class]];
+    unsigned long long window_id = editor ? ((KittyAgentsSidebarEntry *)node)->identity.unsignedLongLongValue : ([node isKindOfClass:[NSNumber class]] ? [node unsignedLongLongValue] : 0);
     NSMenu *menu = [[[NSMenu alloc] initWithTitle:@"Agent and sidebar actions"] autorelease];
-    if (window_id && entries_by_id[node]) {
-        [self addMenuItemTo:menu title:@"Mark as Unread" command:"mark_unread" windowID:window_id];
+    if (window_id && (editor || entries_by_id[node])) {
+        if (!editor) [self addMenuItemTo:menu title:@"Mark as Unread" command:"mark_unread" windowID:window_id];
         [self addMenuItemTo:menu title:@"New Window Here" command:"new_window" windowID:window_id];
         [self addMenuItemTo:menu title:@"Copy Working Directory" command:"copy_cwd" windowID:window_id];
         [menu addItem:[NSMenuItem separatorItem]];
-        [self addMenuItemTo:menu title:@"Close Agent Window…" command:"close" windowID:window_id];
+        [self addMenuItemTo:menu title:editor ? @"Close Editor Window…" : @"Close Agent Window…" command:"close" windowID:window_id];
         [menu addItem:[NSMenuItem separatorItem]];
     }
     [self addMenuItemTo:menu title:@"Increase Sidebar Width" command:"width_increase" windowID:0];
@@ -1677,8 +2350,9 @@ agents_sidebar_update_string(NSString **string, const char *value) {
 - (void)showActions:(id)sender {
     (void)sender;
     NSMenu *menu = [self menuForNode:[self selectedNode]];
-    NSRect anchor = outline.selectedRow >= 0 ? [outline rectOfRow:outline.selectedRow] : outline.visibleRect;
-    [menu popUpMenuPositioningItem:nil atLocation:NSMakePoint(NSMinX(anchor) + 12, NSMinY(anchor)) inView:outline];
+    NSOutlineView *view = [self navigationOutline];
+    NSRect anchor = view.selectedRow >= 0 ? [view rectOfRow:view.selectedRow] : view.visibleRect;
+    [menu popUpMenuPositioningItem:nil atLocation:NSMakePoint(NSMinX(anchor) + 12, NSMinY(anchor)) inView:view];
 }
 
 - (void)agentsSidebarMenuAction:(id)sender {
@@ -1695,7 +2369,8 @@ agents_sidebar_update_string(NSString **string, const char *value) {
 - (void)mouseMoved:(NSEvent *)event {
     NSPoint p = [self convertPoint:event.locationInWindow fromView:nil];
     [self updateHoverAtPoint:p];
-    if (resize_hovered) [[NSCursor resizeLeftRightCursor] set];
+    if (NSPointInRect(p, [self dividerHitRect])) [[NSCursor resizeUpDownCursor] set];
+    else if (resize_hovered) [[NSCursor resizeLeftRightCursor] set];
     else [[NSCursor pointingHandCursor] set];
 }
 
@@ -1709,64 +2384,50 @@ agents_sidebar_update_string(NSString **string, const char *value) {
     if (!resizing) [[NSCursor arrowCursor] set];
 }
 
-- (void)mouseDragged:(NSEvent *)event {
-    if (!resizing || !self.superview) return;
-    CGFloat scale = MAX(1.0, self.window.backingScaleFactor);
-    NSPoint p = [self.superview convertPoint:event.locationInWindow fromView:nil];
-    CGFloat min_width = 16.0 * cell_width_pixels / scale;
-    CGFloat max_width = self.superview.bounds.size.width * 0.75;
-    CGFloat width = MIN(max_width, MAX(min_width, p.x));
-    unsigned cols = MAX(16u, (unsigned)llround(width * scale / (CGFloat)cell_width_pixels));
-    width = cols * cell_width_pixels / scale;
-    [self previewSizeWidth:width];
-    self.resizePending = YES;
-    char data[64];
-    snprintf(data, sizeof(data), "%u:%u", os_window_id, cols);
-    set_cocoa_pending_action(AGENTS_SIDEBAR_RESIZE, data);
-    OSWindow *osw = os_window_for_id(os_window_id);
-    if (osw) osw->suppress_pane_animation = true;
-}
-
-- (void)mouseUp:(NSEvent *)event {
-    resizing = NO;
-    NSPoint p = [self convertPoint:event.locationInWindow fromView:nil];
-    [self updateHoverAtPoint:p];
-    [self resetCursorRects];
-}
 - (void)setRows:(const unsigned long long *)new_window_ids
          groups:(const char **)new_groups
       groupKeys:(const char **)new_group_keys
          agents:(const char **)new_agents
          labels:(const char **)new_labels
         details:(const char **)new_details
-         states:(const unsigned char *)new_states
-         active:(const bool *)active
-          count:(size_t)count {
+          states:(const unsigned char *)new_states
+          active:(const bool *)active
+           count:(size_t)count
+           kinds:(const char **)new_kinds {
     enum { content_changed = 1, tooltip_changed = 2, state_changed = 4, active_changed = 8 };
     BOOL structure_changed = !entries || entries.count != count;
     if (!structure_changed) {
+        BOOL editor_structure_changed = NO;
         for (size_t i = 0; i < count; i++) {
             KittyAgentsSidebarEntry *entry = entries[i];
-            BOOL visible = new_window_ids[i] && new_agents[i] && *new_agents[i];
+            BOOL editor = new_kinds[i] && strcmp(new_kinds[i], "editor") == 0;
+            BOOL visible = new_window_ids[i] && ((editor && new_labels[i] && *new_labels[i]) || (!editor && new_agents[i] && *new_agents[i]));
             if (entry->identity.unsignedLongLongValue != new_window_ids[i] ||
+                entry->editor != editor ||
                 !agents_sidebar_string_matches(entry->group_key, new_group_keys[i]) ||
-                (entry->identity.unsignedLongLongValue && entry->agent.length) != visible) {
+                (entry->identity.unsignedLongLongValue && (entry->editor ? entry->label.length : entry->agent.length)) != visible) {
                 structure_changed = YES;
                 break;
             }
+            if (entry->editor && !agents_sidebar_string_matches(entry->label, new_labels[i])) editor_structure_changed = YES;
         }
+        if (editor_structure_changed) structure_changed = YES;
     }
     NSMutableArray *next_entries = structure_changed ? [NSMutableArray arrayWithCapacity:count] : nil;
     NSMutableDictionary *next_by_id = structure_changed ? [NSMutableDictionary dictionaryWithCapacity:count] : nil;
     NSMutableSet *changed_groups = nil;
     BOOL outline_changed = NO;
     for (size_t i = 0; i < count; i++) {
-        KittyAgentsSidebarEntry *entry = structure_changed ? entries_by_id[@(new_window_ids[i])] : entries[i];
+        BOOL editor = new_kinds[i] && strcmp(new_kinds[i], "editor") == 0;
+        NSDictionary *old_lookup = editor ? editors_by_id : entries_by_id;
+        KittyAgentsSidebarEntry *entry = old_lookup[@(new_window_ids[i])];
         if (!entry) {
             entry = [[[KittyAgentsSidebarEntry alloc] init] autorelease];
             entry->identity = [[NSNumber alloc] initWithUnsignedLongLong:new_window_ids[i]];
         }
         entry->changes = row_style_changed ? content_changed : 0;
+        if (entry->editor != editor) entry->changes |= content_changed;
+        entry->editor = editor;
         if (agents_sidebar_update_string(&entry->group, new_groups[i]) && entry->group_key.length &&
             [[group_children[entry->group_key] firstObject] isEqual:entry->identity]) {
             if (!changed_groups) changed_groups = [NSMutableSet set];
@@ -1776,24 +2437,27 @@ agents_sidebar_update_string(NSString **string, const char *value) {
         if (agents_sidebar_update_string(&entry->agent, new_agents[i])) entry->changes |= content_changed;
         if (agents_sidebar_update_string(&entry->label, new_labels[i])) entry->changes |= content_changed | tooltip_changed;
         if (agents_sidebar_update_string(&entry->detail, new_details[i])) entry->changes |= content_changed | tooltip_changed;
-        if (entry->state != new_states[i]) entry->changes |= content_changed | state_changed;
+        if (!editor && entry->state != new_states[i]) entry->changes |= content_changed | state_changed;
         if (entry->active != (BOOL)active[i]) entry->changes |= content_changed | tooltip_changed | active_changed;
         entry->state = new_states[i];
         entry->active = active[i];
         if (structure_changed) {
             [next_entries addObject:entry];
-            if (entry->identity.unsignedLongLongValue && entry->agent.length) next_by_id[entry->identity] = entry;
+            if (!entry->editor) next_by_id[entry->identity] = entry;
         }
     }
-    if (structure_changed) {
+        if (structure_changed) {
         [entries release];
         entries = [next_entries copy];
+        NSMutableDictionary *next_editors_by_id = [NSMutableDictionary dictionary];
         [entries_by_id release];
+        for (KittyAgentsSidebarEntry *entry in entries) if (entry->editor) next_editors_by_id[entry->identity] = entry;
+        [editors_by_id release]; editors_by_id = [next_editors_by_id copy];
         entries_by_id = [next_by_id copy];
         NSMutableArray *roots = [NSMutableArray array];
         NSMutableDictionary *children = [NSMutableDictionary dictionary];
         for (KittyAgentsSidebarEntry *entry in entries) {
-            if (!entry->identity.unsignedLongLongValue || !entry->agent.length) continue;
+            if (!entry->identity.unsignedLongLongValue || !entry->agent.length || entry->editor) continue;
             NSString *key = entry->group_key;
             if (key.length) {
                 if (!children[key]) { children[key] = [NSMutableArray array]; [roots addObject:key]; }
@@ -1814,11 +2478,21 @@ agents_sidebar_update_string(NSString **string, const char *value) {
             remembered_selection = nil;
         }
     }
+    {
+        [editor_outline enumerateAvailableRowViewsUsingBlock:^(NSTableRowView *rowView, NSInteger row) {
+            KittyAgentsSidebarEntry *entry = editor_entries[(NSUInteger)row];
+            if (!entry->changes) return;
+            ((KittyAgentsSidebarRowView *)rowView).activeAgent = entry->active;
+            [rowView setNeedsDisplay:YES];
+            KittyAgentsSidebarCell *cell = (KittyAgentsSidebarCell *)[rowView viewAtColumn:0];
+            cell.toolTip = [self labelForNode:entry]; [cell setNeedsDisplay:YES];
+        }];
+    }
     if (!outline_changed) {
         [self syncGroupExpansion];
         [outline enumerateAvailableRowViewsUsingBlock:^(NSTableRowView *row_view, NSInteger row) {
             id node = [outline itemAtRow:row];
-            KittyAgentsSidebarEntry *entry = entries_by_id[node];
+        KittyAgentsSidebarEntry *entry = entries_by_id[node];
             unsigned changes = entry ? entry->changes : ([changed_groups containsObject:node] ? content_changed | tooltip_changed : 0);
             if (!changes) return;
             KittyAgentsSidebarCell *cell = (KittyAgentsSidebarCell *)[row_view viewAtColumn:0];
@@ -1832,9 +2506,27 @@ agents_sidebar_update_string(NSString **string, const char *value) {
             [cell setNeedsDisplay:YES];
         }];
     }
-    if (summary_dirty) {
-        summary.stringValue = entries_by_id.count ? [NSString stringWithFormat:@"Grouping: %@ · %lu agents · %lu groups", self.grouping,
-            (unsigned long)entries_by_id.count, (unsigned long)group_children.count] : @"No AI agents";
+    if (summary_dirty || structure_changed) {
+        NSMutableArray *next_editors = [NSMutableArray array];
+        for (KittyAgentsSidebarEntry *entry in entries) if (entry->editor && entry->identity.unsignedLongLongValue && entry->label.length) [next_editors addObject:entry];
+        if (![editor_entries isEqualToArray:next_editors]) {
+            id selected = editor_outline.selectedRow >= 0 ? [[editor_outline itemAtRow:editor_outline.selectedRow] retain] : nil;
+            NSPoint anchor = editor_scroll_view.contentView.bounds.origin;
+            [editor_entries release]; editor_entries = [next_editors copy];
+            [editor_outline reloadData];
+            NSInteger row = selected ? [editor_outline rowForItem:selected] : -1;
+            if (row >= 0) [editor_outline selectRowIndexes:[NSIndexSet indexSetWithIndex:(NSUInteger)row] byExtendingSelection:NO];
+            [editor_scroll_view.contentView scrollToPoint:anchor];
+            [editor_scroll_view reflectScrolledClipView:editor_scroll_view.contentView];
+            [selected release];
+        }
+        NSUInteger agent_count = 0;
+        for (NSNumber *identity in entries_by_id) if (identity.unsignedLongLongValue) agent_count++;
+        agents_header.title = [NSString stringWithFormat:@"Grouping: %@ · %lu agents · %lu groups", self.grouping ? self.grouping : @"tab",
+            (unsigned long)agent_count, (unsigned long)group_children.count];
+        agents_header.toolTip = agents_header.title;
+        [self updateSectionHeaders];
+        [self setFrameSize:self.frame.size];
         summary.toolTip = summary.stringValue;
         summary_dirty = NO;
     }
@@ -1854,6 +2546,7 @@ agents_sidebar_update_string(NSString **string, const char *value) {
 
 - (NSColor *)workingSpinnerColorForNode:(id)node {
     if (!node || [node isKindOfClass:[NSString class]]) return nil;
+    if ([node isKindOfClass:[KittyAgentsSidebarEntry class]]) return nil;
     KittyAgentsSidebarEntry *entry = entries_by_id[node];
     if (!entry || entry->state != 2) return nil;
     return [self stateColor:2 active:entry->active];
@@ -1893,6 +2586,10 @@ agents_sidebar_update_string(NSString **string, const char *value) {
 }
 
 - (NSString *)labelForNode:(id)node {
+    if ([node isKindOfClass:[KittyAgentsSidebarEntry class]]) {
+        KittyAgentsSidebarEntry *entry = node;
+        return [NSString stringWithFormat:@"%@, %@%@", entry->label, entry->detail, entry->active ? @", current terminal" : @""];
+    }
     if ([node isKindOfClass:[NSString class]]) {
         NSNumber *first = [group_children[node] firstObject];
         KittyAgentsSidebarEntry *entry = entries_by_id[first];
@@ -1927,11 +2624,23 @@ agents_sidebar_update_string(NSString **string, const char *value) {
             NSParagraphStyleAttributeName: paragraph}];
         return;
     }
-    KittyAgentsSidebarEntry *entry = entries_by_id[node];
+    KittyAgentsSidebarEntry *entry = [node isKindOfClass:[KittyAgentsSidebarEntry class]] ? node : entries_by_id[node];
     if (!entry) return;
     BOOL active = entry->active;
     NSColor *primary = active ? [NSColor alternateSelectedControlTextColor] : [NSColor controlTextColor];
     NSColor *secondary = active ? [NSColor alternateSelectedControlTextColor] : [NSColor secondaryLabelColor];
+    if (entry->editor) {
+        NSImage *icon = [NSImage imageWithSystemSymbolName:@"terminal" accessibilityDescription:@"Editor"];
+        icon = [icon imageWithSymbolConfiguration:[NSImageSymbolConfiguration configurationWithHierarchicalColor:primary]];
+        [icon drawInRect:NSMakeRect(8, NSMidY(rect) - 9, 18, 18)];
+        NSDictionary *attrs = @{NSFontAttributeName:[NSFont boldSystemFontOfSize:12], NSForegroundColorAttributeName:primary,
+            NSParagraphStyleAttributeName:paragraph};
+        [entry->label drawInRect:NSMakeRect(34, NSMidY(rect) - 16, MAX(0, rect.size.width - 42), 17) withAttributes:attrs];
+        [entry->detail drawInRect:NSMakeRect(34, NSMidY(rect) + 2, MAX(0, rect.size.width - 42), 14) withAttributes:@{
+            NSFontAttributeName:[NSFont systemFontOfSize:10], NSForegroundColorAttributeName:secondary,
+            NSParagraphStyleAttributeName:paragraph}];
+        return;
+    }
     NSColor *state_color = [self stateColor:entry->state active:active];
     CGFloat center = NSMidY(rect), text_left = 20;
     if (entry->state != 2) {
@@ -1963,8 +2672,12 @@ agents_sidebar_update_string(NSString **string, const char *value) {
 }
 - (void)drawRect:(NSRect)dirtyRect {
     (void)dirtyRect;
-    [[NSColor separatorColor] setFill];
-    NSRectFill(NSMakeRect(0, 39, self.bounds.size.width, 1));
+    // The scroll views and outline views are transparent; paint only their section
+    // content bounds so the native sidebar material remains visible elsewhere.
+    [KittySidebarSectionBackgroundColor(YES) setFill];
+    if (!scroll_view.hidden) NSRectFill(scroll_view.frame);
+    [KittySidebarSectionBackgroundColor(NO) setFill];
+    if (!editor_scroll_view.hidden) NSRectFill(editor_scroll_view.frame);
     if ([self kittySidebarHasKeyboardFocus]) {
         [[NSColor controlAccentColor] setStroke];
         NSBezierPath *focus = [NSBezierPath bezierPathWithRect:NSInsetRect(self.bounds, 1, 1)];
@@ -1986,10 +2699,17 @@ agents_sidebar_update_string(NSString **string, const char *value) {
     [resize_tracking_area release];
     outline.delegate = nil;
     outline.dataSource = nil;
+    outline.target = nil;
+    editor_outline.delegate = nil;
+    editor_outline.dataSource = nil;
+    editor_outline.target = nil;
     [entries release];
     [entries_by_id release];
+    [editors_by_id release];
     [root_nodes release];
     [group_children release];
+    [editor_entries release]; [agents_header release]; [editors_header release];
+    [editor_outline release]; [editor_scroll_view release]; [section_divider release];
     [remembered_selection release];
     [previous_responders release];
     [outline release];
@@ -2035,7 +2755,8 @@ cocoa_set_agents_sidebar(
     const bool *active,
     const char **collapsed,
     size_t collapsed_count,
-    size_t count) {
+    size_t count,
+    const char **kinds) {
     NSWindow *window = (NSWindow *)ptr;
     if (!window || !window.contentView) return;
     [KittyAgentsSidebarView setSharedCollapsedGroups:collapsed count:collapsed_count];
@@ -2072,7 +2793,7 @@ cocoa_set_agents_sidebar(
     if (!NSEqualRects([sidebar backgroundView].frame, frame)) [[sidebar backgroundView] setFrame:frame];
     if (!agents_sidebar_string_matches(sidebar.grouping, grouping)) sidebar.grouping = [NSString stringWithUTF8String:grouping];
     if (!agents_sidebar_string_matches(sidebar.iconsDir, icons_dir)) sidebar.iconsDir = icons_dir ? [NSString stringWithUTF8String:icons_dir] : nil;
-    [sidebar setRows:window_ids groups:groups groupKeys:group_keys agents:agents labels:labels details:details states:states active:active count:count];
+    [sidebar setRows:window_ids groups:groups groupKeys:group_keys agents:agents labels:labels details:details states:states active:active count:count kinds:kinds];
 }
 
 static NSMenuItem *secure_input_title_menu = NULL;

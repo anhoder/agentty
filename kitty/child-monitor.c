@@ -1185,7 +1185,8 @@ render_prepared_os_window(
     color_type active_window_bg,
     unsigned int num_visible_windows,
     bool all_windows_have_same_bg,
-    monotonic_t now) {
+    monotonic_t now,
+    id_type preview_window_id) {
     Tab *tab = os_window->tabs + os_window->active_tab;
     Window *active_window = NULL;
     if (!os_window->pane_animation.reuse_content)
@@ -1198,6 +1199,22 @@ render_prepared_os_window(
         thumbnail_callback(os_window);
         global_state.thumbnail_callback.os_window = 0;
     }
+#ifdef __APPLE__
+    if (preview_window_id && cocoa_pane_switcher_next_preview(os_window) == preview_window_id) {
+        Window *preview_window = NULL;
+        for (unsigned i = 0; i < tab->num_windows; i++) {
+            if (tab->windows[i].id == preview_window_id) { preview_window = tab->windows + i; break; }
+        }
+        if (preview_window) render_pane_switcher_preview(os_window, preview_window, now);
+        else cocoa_pane_switcher_set_preview(os_window, preview_window_id, NULL, 0, 0);
+        if (cocoa_pane_switcher_next_preview(os_window)) {
+            os_window->needs_render = true;
+            set_maximum_wait(MAX(OPT(repaint_delay), ms_to_monotonic_t(1ll)));
+        }
+    }
+#else
+    (void)preview_window_id;
+#endif
     swap_window_buffers(os_window);
     os_window->last_active_tab = os_window->active_tab;
     os_window->last_num_tabs = os_window->num_tabs;
@@ -1224,6 +1241,11 @@ no_render_frame_received_recently(OSWindow *w, monotonic_t now, monotonic_t max_
 
 bool
 render_os_window(OSWindow *w, monotonic_t now, bool scan_for_animated_images) {
+    id_type preview_window_id = 0;
+#ifdef __APPLE__
+    // This also cancels stale native choosers before the visibility/frame gates.
+    preview_window_id = cocoa_pane_switcher_next_preview(w);
+#endif
     if (!w->num_tabs) return false;
 #ifdef __APPLE__
     // Run before visibility/frame gates so minimized windows also release idle
@@ -1257,7 +1279,7 @@ render_os_window(OSWindow *w, monotonic_t now, bool scan_for_animated_images) {
     }
     w->render_calls++;
     make_os_window_context_current(w);
-    bool needs_render = w->redraw_count > 0 || w->live_resize.in_progress || global_state.thumbnail_callback.os_window == w->id;
+    bool needs_render = w->redraw_count > 0 || w->live_resize.in_progress || global_state.thumbnail_callback.os_window == w->id || preview_window_id;
     if (w->viewport_size_dirty) {
         set_gpu_viewport(w->viewport_width, w->viewport_height);
         w->viewport_size_dirty = false;
@@ -1277,7 +1299,7 @@ render_os_window(OSWindow *w, monotonic_t now, bool scan_for_animated_images) {
         needs_render = force_content_render = true;
     if (w->render_calls < 3 && background_image_for_os_window(w) != NULL) needs_render = force_content_render = true;
     if (force_content_render) w->pane_animation.reuse_content = false;
-    if (needs_render) render_prepared_os_window(w, active_window_id, active_window_bg, num_visible_windows, all_windows_have_same_bg, now);
+    if (needs_render) render_prepared_os_window(w, active_window_id, active_window_bg, num_visible_windows, all_windows_have_same_bg, now, preview_window_id);
     if (w->is_focused) change_menubar_title(w->window_title);
     return needs_render;
 }

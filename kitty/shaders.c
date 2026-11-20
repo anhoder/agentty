@@ -52,7 +52,7 @@ typedef struct UIRenderData {
     GraphicsRenderData grd;
     WindowLogoRenderData *window_logo;
     float bg_alpha, inactive_text_alpha;
-    bool has_background_image;
+    bool has_background_image, is_preview;
     color_type background_color; // RGB only
     monotonic_t now;
 } UIRenderData;
@@ -2767,6 +2767,7 @@ draw_cells_with_layers(const UIRenderData *ui, ssize_t vao_idx) {
     } else call_cell_program(CELL_PROGRAM, ui, vao_idx, false, ui->has_background_image ? DRAW_NON_DEFAULT_BG : DRAW_BOTH_BG);
 
     if (ui->grd.num_of_positive_refs > 0) draw_image_layer(ui, vao_idx, ui->grd.num_of_below_refs + ui->grd.num_of_negative_refs, ui->grd.num_of_positive_refs);
+    if (ui->is_preview) return;
 
     draw_visual_bell(ui);
     draw_drag_preview_overlay(ui);
@@ -2800,8 +2801,8 @@ send_cell_data_to_gpu(ssize_t vao_idx, Screen *screen, OSWindow *os_window, Wind
     return cell_prepare_to_render(vao_idx, screen, fonts_data);
 }
 
-void
-draw_cells(
+static void
+draw_cells_impl(
     const WindowRenderData *srd,
     OSWindow *os_window,
     bool is_active_window,
@@ -2809,7 +2810,8 @@ draw_cells(
     bool is_single_window,
     Window *window,
     const Window *title_bar_of,
-    monotonic_t now) {
+    monotonic_t now,
+    bool is_preview) {
     if (!srd || !srd->screen || !os_window) return;
     Screen *screen = srd->screen;
     FONTS_DATA_HANDLE fonts_data = fonts_data_for_render(os_window, window);
@@ -2831,10 +2833,15 @@ draw_cells(
             ? (is_tab_bar || is_active_window ? 1.0f : inactive_text_alpha)
             : (is_tab_bar || (!is_single_window && is_active_window) || (is_single_window && screen->cursor_render_info.is_focused) ? 1.0f
                                                                                                                                     : inactive_text_alpha);
-    float bg_alpha = effective_os_window_alpha(os_window);
+    float bg_alpha = is_preview ? 1.f : effective_os_window_alpha(os_window);
+    CursorRenderInfo cursor = screen->cursor_render_info;
+    if (is_preview) {
+        cursor.cursor_opacity = 0;
+        cursor.text_blink_opacity = 1;
+    }
 
     color_type default_bg = cell_update_uniform_block(
-        srd->vao_idx, screen, uniform_buffer, color_table_buffer, &screen->cursor_render_info, os_window, fonts_data, current_inactive_text_alpha, bg_alpha);
+        srd->vao_idx, screen, uniform_buffer, color_table_buffer, &cursor, os_window, fonts_data, current_inactive_text_alpha, bg_alpha);
     set_cell_uniforms(screen->reload_all_gpu_data);
     WindowLogoRenderData *wl;
     if (window && (wl = &window->window_logo) && wl->id && (wl->instance = find_window_logo(global_state.all_window_logos, wl->id)) &&
@@ -2859,17 +2866,23 @@ draw_cells(
         .inactive_text_alpha = current_inactive_text_alpha,
         .has_background_image = has_bgimage(os_window),
         .background_color = default_bg,
-        .bg_alpha = effective_os_window_alpha(os_window),
+        .bg_alpha = bg_alpha,
+        .is_preview = is_preview,
         .now = now,
     };
+    if (is_preview) {
+        ui.screen_left = ui.screen_top = 0;
+        ui.full_framebuffer_width = ui.screen_width;
+        ui.full_framebuffer_height = ui.screen_height;
+    }
     screen->reload_all_gpu_data = false;
     save_viewport_using_top_left_origin(ui.screen_left, ui.screen_top, ui.screen_width, ui.screen_height, ui.full_framebuffer_height);
-    if (ui.os_window->needs_layers) draw_cells_with_layers(&ui, srd->vao_idx);
+    if (is_preview || ui.os_window->needs_layers) draw_cells_with_layers(&ui, srd->vao_idx);
     else draw_cells_without_layers(&ui, srd->vao_idx);
     restore_viewport();
     // The compensatory padding lies outside the per-window cell viewport, so it
     // is drawn after restoring the full framebuffer viewport.
-    if (window) {
+    if (window && !is_preview) {
         draw_window_padding(
             &ui,
             window->size_mismatch_padding.left,
@@ -2885,6 +2898,13 @@ draw_cells(
         draw_window_padding(
             &ui, title_bar_of->size_mismatch_padding.left, 0, title_bar_of->size_mismatch_padding.right, 0, srd->vao_idx, !ui.os_window->needs_layers);
     }
+}
+
+void
+draw_cells(
+    const WindowRenderData *srd, OSWindow *os_window, bool is_active_window, bool is_tab_bar, bool is_single_window,
+    Window *window, const Window *title_bar_of, monotonic_t now) {
+    draw_cells_impl(srd, os_window, is_active_window, is_tab_bar, is_single_window, window, title_bar_of, now, false);
 }
 // }}}
 
@@ -3091,7 +3111,7 @@ draw_cursor_trail(CursorTrail *trail, Window *active_window) {
 
 // OSWindow {{{
 static void
-draw_bg_image(OSWindow *os_window, Tab *tab) {
+draw_bg_image(OSWindow *os_window, Tab *tab, float opacity) {
     BackgroundImage *bg = background_image_for_os_window(os_window);
     if (!bg) return;
     BackgroundImageLayout layout = os_window->background_image.has_layout ? os_window->background_image.layout : OPT(background_image_layout);
@@ -3102,7 +3122,7 @@ draw_bg_image(OSWindow *os_window, Tab *tab) {
         .layout = layout,
         .linear = OPT(background_image_linear),
         .bgcolor = OPT(background),
-        .opacity = effective_os_window_alpha(os_window),
+        .opacity = opacity,
     };
     GLfloat iwidth = bg->width, iheight = bg->height;
     GLfloat vwidth = s.os_window.width, vheight = s.os_window.height;
@@ -3303,7 +3323,7 @@ start_os_window_rendering(OSWindow *os_window, Tab *tab) {
         bind_framebuffer_for_output(0);
         save_viewport_using_bottom_left_origin(0, 0, os_window->viewport_width, os_window->viewport_height);
         clear_current_framebuffer();
-        draw_bg_image(os_window, tab);
+        draw_bg_image(os_window, tab, effective_os_window_alpha(os_window));
     }
 }
 
@@ -3916,6 +3936,110 @@ setup_os_window_for_rendering(OSWindow *os_window, Tab *tab, Window *active_wind
     if (start) start_os_window_rendering(os_window, tab);
     else stop_os_window_rendering(os_window, tab, active_window, now);
 }
+
+#ifdef __APPLE__
+// Render the pane's own Screen, including hidden panes, into private targets.
+// Never use the shared layer textures or the pane-animation content cache:
+// both must continue to contain the real OS-window frame. Custom OS-window
+// postprocessing, transient UI and cursors deliberately do not enter previews.
+void
+render_pane_switcher_preview(OSWindow *os_window, Window *window, monotonic_t now) {
+    Screen *screen = window->render_data.screen;
+    const WindowGeometry *g = &window->render_data.geometry;
+    if (!screen || !screen->columns || !screen->lines || g->right <= g->left || g->bottom <= g->top ||
+        os_window->viewport_width <= 0 || os_window->viewport_height <= 0 || !fonts_data_for_render(os_window, window)) {
+        cocoa_pane_switcher_set_preview(os_window, window->id, NULL, 0, 0);
+        return;
+    }
+    unsigned width = g->right - g->left, height = g->bottom - g->top;
+    GLint texture_limit;
+    glGetIntegerv(GL_MAX_TEXTURE_SIZE, &texture_limit);
+    if (width > (unsigned)texture_limit || height > (unsigned)texture_limit) {
+        cocoa_pane_switcher_set_preview(os_window, window->id, NULL, 0, 0);
+        return;
+    }
+    const double scale = MIN(1., 400. / MAX(width, height));
+    const unsigned thumb_width = MAX(1u, (unsigned)(width * scale + 0.5));
+    const unsigned thumb_height = MAX(1u, (unsigned)(height * scale + 0.5));
+    unsigned char *pixels = malloc((size_t)4 * thumb_width * thumb_height);
+    if (!pixels) {
+        cocoa_pane_switcher_set_preview(os_window, window->id, NULL, 0, 0);
+        return;
+    }
+
+    GLint draw_fbo, read_fbo, program, vao, active_texture, texture, pack_alignment;
+    GLint blend_src_rgb, blend_dst_rgb, blend_src_alpha, blend_dst_alpha;
+    GLfloat clear_color[4];
+    glGetIntegerv(GL_DRAW_FRAMEBUFFER_BINDING, &draw_fbo);
+    glGetIntegerv(GL_READ_FRAMEBUFFER_BINDING, &read_fbo);
+    glGetIntegerv(GL_CURRENT_PROGRAM, &program);
+    glGetIntegerv(GL_VERTEX_ARRAY_BINDING, &vao);
+    glGetIntegerv(GL_ACTIVE_TEXTURE, &active_texture);
+    glActiveTexture(GL_TEXTURE0 + GRAPHICS_UNIT);
+    glGetIntegerv(GL_TEXTURE_BINDING_2D, &texture);
+    glGetIntegerv(GL_PACK_ALIGNMENT, &pack_alignment);
+    glGetIntegerv(GL_BLEND_SRC_RGB, &blend_src_rgb);
+    glGetIntegerv(GL_BLEND_DST_RGB, &blend_dst_rgb);
+    glGetIntegerv(GL_BLEND_SRC_ALPHA, &blend_src_alpha);
+    glGetIntegerv(GL_BLEND_DST_ALPHA, &blend_dst_alpha);
+    glGetFloatv(GL_COLOR_CLEAR_VALUE, clear_color);
+    const GLboolean srgb = glIsEnabled(GL_FRAMEBUFFER_SRGB), scissor = glIsEnabled(GL_SCISSOR_TEST), blend = glIsEnabled(GL_BLEND);
+    save_viewport_using_bottom_left_origin(0, 0, width, height);
+    glDisable(GL_FRAMEBUFFER_SRGB);
+    glDisable(GL_SCISSOR_TEST);
+
+    GLuint source_texture = 0, source_fbo = 0, thumb_texture = 0, thumb_fbo = 0;
+    setup_texture_as_render_target(width, height, &source_texture, &source_fbo);
+    screen_check_pause_rendering(screen, now);
+    send_cell_data_to_gpu(window->render_data.vao_idx, screen, os_window, window);
+    const ColorProfile *cp = screen->paused_rendering.expires_at ? &screen->paused_rendering.color_profile : screen->color_profile;
+    color_type bg = colorprofile_to_color(cp, cp->overridden.default_bg, cp->configured.default_bg).rgb;
+    blank_canvas(1.f, bg, false);
+    if (has_bgimage(os_window)) {
+        // Crop the same OS-window background without changing any pane geometry.
+        glViewport(-(GLint)g->left, (GLint)height + (GLint)g->top - os_window->viewport_height,
+            os_window->viewport_width, os_window->viewport_height);
+        draw_bg_image(os_window, os_window->tabs + os_window->active_tab, 1.f);
+        set_gpu_viewport(width, height);
+    }
+    draw_cells_impl(&window->render_data, os_window, true, false, false, window, NULL, now, true);
+
+    setup_texture_as_render_target(thumb_width, thumb_height, &thumb_texture, &thumb_fbo);
+    set_gpu_viewport(thumb_width, thumb_height);
+    bind_vertex_array(window->render_data.vao_idx);
+    bind_program(BLIT_PROGRAM);
+    glActiveTexture(GL_TEXTURE0 + GRAPHICS_UNIT);
+    glBindTexture(GL_TEXTURE_2D, source_texture);
+    glUniform4f(program_uniform_location(BLIT_PROGRAM, "src_rect"), 0, 1, 1, 0);
+    // Invert the destination so bottom-up GL readback is top-down native RGBA.
+    glUniform4f(program_uniform_location(BLIT_PROGRAM, "dest_rect"), -1, -1, 1, 1);
+    draw_quad(false, 0);
+    glPixelStorei(GL_PACK_ALIGNMENT, 1);
+    glReadPixels(0, 0, thumb_width, thumb_height, GL_RGBA, GL_UNSIGNED_BYTE, pixels);
+
+    // Restore actual GL bindings, not bind_framebuffer_for_output(0), which
+    // aliases the current indirect output target rather than necessarily zero.
+    glBindFramebuffer(GL_DRAW_FRAMEBUFFER, draw_fbo);
+    glBindFramebuffer(GL_READ_FRAMEBUFFER, read_fbo);
+    restore_viewport();
+    glUseProgram(program);
+    glBindVertexArray(vao);
+    glBindTexture(GL_TEXTURE_2D, texture);
+    glActiveTexture(active_texture);
+    glPixelStorei(GL_PACK_ALIGNMENT, pack_alignment);
+    glBlendFuncSeparate(blend_src_rgb, blend_dst_rgb, blend_src_alpha, blend_dst_alpha);
+    if (blend) glEnable(GL_BLEND); else glDisable(GL_BLEND);
+    if (scissor) glEnable(GL_SCISSOR_TEST);
+    if (srgb) glEnable(GL_FRAMEBUFFER_SRGB);
+    glClearColor(clear_color[0], clear_color[1], clear_color[2], clear_color[3]);
+    free_framebuffer(&source_fbo);
+    free_framebuffer(&thumb_fbo);
+    free_texture(&source_texture);
+    free_texture(&thumb_texture);
+    cocoa_pane_switcher_set_preview(os_window, window->id, pixels, thumb_width, thumb_height);
+    free(pixels);
+}
+#endif
 
 // Take a screenshot of the OS Window, must be called immediately after
 // the OSWindow is rendered into the back buffer and before the buffers

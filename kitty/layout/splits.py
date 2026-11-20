@@ -158,6 +158,36 @@ class Pair:
 
         tune(self)
 
+    def equalize_axis(self, removed: Collection[int] = ()) -> int:
+        """Equalize this sibling group without crossing a perpendicular split"""
+        def units(child: Pair | int | None) -> int:
+            if isinstance(child, Pair):
+                if child.horizontal == self.horizontal:
+                    return child.equalize_axis(removed)
+                return int(any(wid not in removed for wid in child.all_window_ids()))
+            return int(child is not None and child not in removed)
+
+        one, two = units(self.one), units(self.two)
+        self.bias = one / (one + two) if one and two else 0.5
+        return one + two
+
+    def equalize_on_removal(self, removed: Collection[int]) -> bool:
+        """Rebalance only sibling groups that lose a member, before collapsing them"""
+        def remaining(child: Pair | int | None) -> tuple[int, bool]:
+            if isinstance(child, Pair):
+                if child.horizontal != self.horizontal:
+                    alive = child.equalize_on_removal(removed)
+                    return int(alive), not alive
+                one, one_lost = remaining(child.one)
+                two, two_lost = remaining(child.two)
+                return one + two, one_lost or two_lost
+            return int(child is not None and child not in removed), child is not None and child in removed
+
+        count, lost = remaining(self)
+        if lost:
+            self.equalize_axis(removed)
+        return count > 0
+
     def preserve_weights_on_removal(self, removed: Collection[int]) -> bool:
         """
         Adjust the biases in this sub-tree so that the windows surviving the removal of
@@ -721,7 +751,8 @@ class Splits(Layout):
         self._pairs_root = root
 
     def remove_windows(self, *windows_to_remove: int) -> None:
-        if self.layout_opts.proportional and len(windows_to_remove) > 1:
+        equalize = self.layout_opts.equalize_on_change or self.layout_opts.equalize_on_close
+        if self.layout_opts.proportional and not equalize and len(windows_to_remove) > 1:
             # Apply the sizing policy one window at a time, so that pruning a
             # batch of windows (which happens when they are closed while a
             # different layout is active) gives the same result as closing them
@@ -732,7 +763,9 @@ class Splits(Layout):
                 self.remove_windows(window_id)
             return
         root = self.pairs_root
-        if self.layout_opts.proportional:
+        if equalize:
+            root.equalize_on_removal(windows_to_remove)
+        elif self.layout_opts.proportional:
             root.preserve_weights_on_removal(frozenset(windows_to_remove))
         for pair in root.self_and_descendants():
             pair.remove_windows(windows_to_remove)
@@ -835,7 +868,7 @@ class Splits(Layout):
                     horizontal = wwidth >= wheight
                 target_group = all_windows.add_window(window, next_to=aw, before=not after)
                 self.split_and_add_window(pair, group_id, target_group.id, horizontal, after, bias)
-                self.equalize_after_window_add(bias)
+                self.equalize_after_window_add(target_group.id, bias)
                 return
         all_windows.add_window(window)
         g = all_windows.group_for_window(window)
@@ -843,12 +876,19 @@ class Splits(Layout):
         p = self.pairs_root.balanced_add(g.id) if bias is not None else self.balanced_add_window(g.id)
         if bias is not None:
             p.bias = bias
-        self.equalize_after_window_add(bias)
+        self.equalize_after_window_add(g.id, bias)
 
-    def equalize_after_window_add(self, bias: float | None = None) -> None:
-        """Restore equal shares after adding a window unless an explicit bias was requested"""
-        if bias is None and self.layout_opts.equalize_on_change:
-            self.equalize_biases()
+    def equalize_after_window_add(self, group_id: int, bias: float | None = None) -> None:
+        """Equalize only siblings along the new split's axis, unless a bias was requested"""
+        if bias is not None or not self.layout_opts.equalize_on_change:
+            return
+        pair = self.pairs_root.pair_for_window(group_id)
+        if pair is None:
+            return
+        container = self.proportional_container(group_id, pair.horizontal)
+        assert container is not None
+
+        container.equalize_axis()
 
     def modify_size_of_window(self, all_windows: WindowList, window_id: int, increment: float, is_horizontal: bool = True) -> bool:
         grp = all_windows.group_for_window(window_id)
@@ -948,11 +988,6 @@ class Splits(Layout):
             if total > 0:
                 pair.bias = left / total
         return True
-
-    def on_window_removed(self, all_windows: WindowList) -> bool:
-        if self.layout_opts.equalize_on_change or self.layout_opts.equalize_on_close:
-            return self.equalize_biases()
-        return False
 
     def minimal_borders(self, windows: WindowList) -> Iterator[BorderLine]:
         groups = tuple(windows.iter_all_layoutable_groups())

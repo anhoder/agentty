@@ -63,6 +63,7 @@ class AgentSidebarRow:
     detail: str
     state: AgentState
     is_active: bool
+    kind: str = 'agent'
 
 
 # Maps a foreground executable name to a manifest id. The value side must match

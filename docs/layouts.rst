@@ -57,6 +57,20 @@ space, other windows are hidden behind it. This layout has no options::
 
     enabled_layouts stack
 
+On macOS, switching panes with :ac:`next_window`, :ac:`previous_window` or
+:ac:`neighboring_window` opens a thumbnail switcher when this layout contains
+multiple panes. This also applies when using :ac:`toggle_layout` to zoom into
+the stack layout. :ac:`focus_visible_window` opens the same overview.
+
+Repeat the switching shortcut, press Tab/Shift-Tab, or use the arrow keys to
+select a pane. Release the shortcut's modifiers or click a preview to switch
+and close the overview. For shortcuts without modifiers, releasing the shortcut
+key completes the switch. Enter and Escape are not used. Previews adapt to pane
+proportions and fill their area without stretching; differing proportions crop
+the edges instead of adding blank bars. They show each pane's content when the
+switcher opens, without continuous refresh, OS-window post-processing shaders
+or cursor trails. Other layouts retain their existing focus behavior.
+
 
 The Tall Layout
 ------------------
@@ -227,14 +241,17 @@ restores the original split sizes. The ``equalize`` action redistributes space
 so that all windows along each split axis receive an equal share.
 
 This layout takes four options. ``equalize_on_window_change`` automatically
-equalizes split sizes whenever a window is created or closed, giving every pane
-an equal share of the available space along each split axis without needing an
-explicit keybinding::
+equalizes siblings along the affected split's axis when a window is created or
+closed. Vertical splits adjust only widths, and horizontal splits adjust only
+heights. Sibling groups end at a split along the other axis, leaving unrelated
+regions and perpendicular split proportions unchanged. Closing the last window
+in a group redistributes its space among that group's siblings. Only the
+explicit ``equalize`` action equalizes the whole layout::
 
     enabled_layouts splits:equalize_on_window_change=true
 
-``equalize_on_window_close`` provides the same behavior only when a window is
-closed::
+``equalize_on_window_close`` provides the same local equalization only when a
+window is closed::
 
     enabled_layouts splits:equalize_on_window_close=true
 
@@ -249,8 +266,8 @@ windows are closed. Splits along the other axis keep their relative sizes::
 
 This option is disabled by default. An explicit :option:`launch --bias` overrides
 proportional sizing for that new window, and also suppresses equalization for
-that one addition. If an ``equalize`` option is also enabled, creating or
-closing a window equalizes the layout instead of preserving its weights. The
+that one addition. If an ``equalize`` option is also enabled, the affected
+siblings are equalized on creation or close instead of preserving weights. The
 options are saved as part of a :doc:`session <sessions>`.
 
 Dragging a divider resizes only the two adjacent regions along its axis. Other

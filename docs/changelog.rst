@@ -9,12 +9,39 @@ To update |kitty|, :doc:`follow the instructions <binary>`.
 Recent major new features
 ---------------------------
 
+- macOS: Match each sidebar section's content background to its heading tint,
+  preserving active-row highlights and independent heading hover feedback.
+
+- macOS: Extend sidebar section heading backgrounds across the sidebar width,
+  distinguish Agent and Editor sections, and show disclosure indicators on the
+  right without changing the existing section navigation or resize behavior.
+
+- macOS: Restore the sidebar's grouping and agent-count heading, unify
+  collapsible section spacing and separators, and use subdued editor empty
+  states rather than editor-like placeholder rows.
+
+- macOS: Add plugin-free foreground Vim and Neovim navigation in a separate
+  Editors sidebar section. Collapse sections or drag their divider to allocate
+  height, with independent scrolling. Reuse the existing process cache and
+  sidebar refresh cycle without editor screen scraping or additional polling.
+
 - Integrate upstream kitty 0.51.0, preserving Agentty's agent management,
   persistent sessions, native macOS tabs and search, and pane appearance.
 
+- macOS: Show pane thumbnails and titles when switching in stack/zoom layout.
+  Cycle candidates without changing terminal focus; releasing shortcut modifiers
+  or clicking a preview switches and closes the overview, without Enter/Escape
+  controls. Handle fast modifier release and application-wide release events.
+  Preserve the originating physical shortcut event and forward modifier releases
+  from GLFW before its global event monitor consumes them.
+  Adapt preview proportions and use unstretched edge-to-edge image filling.
+- Run the pane-switcher modifier regression through the package import system
+  so frozen application checks do not require an unpacked Python probe file.
 - macOS: Composite pane spring animations from live OpenGL textures without
   reading terminal pixels back to the CPU. Keep rapid layout changes continuous
   and preserve transparency, live output and interactive resize behavior.
+- macOS: Skip pane spring animations during keyboard and interactive pane
+  resizing, including edge adjustments and size resets, just as for mouse drags.
 - macOS: Animate working-agent sidebar indicators using Core Animation layers
   instead of a timer that redraws visible rows. Stop motion for hidden indicators
   and respect the system Reduce Motion preference.
@@ -23,6 +50,10 @@ Recent major new features
   Retain watchdog recovery for a running link that stops delivering callbacks.
 - macOS: Update only changed Agents sidebar rows, preserving working-indicator
   rotation and stable selection during title and status refreshes.
+- macOS: Distinguish Agents sidebar group headings with solid section bands and
+  separators in both light and dark mode, preserving existing agent backgrounds.
+- macOS: Keep Agents sidebar group backgrounds clear of the right separator,
+  including its hover and keyboard-focus treatments.
 - macOS: Reuse pane-animation content on geometry-only frames while keeping
   terminal output, cursor changes and palette updates live. Bound cached texture
   retention and precompute spring coefficients when layout targets change.
@@ -140,10 +171,10 @@ Recent major new features
   Migrate readable legacy keys only after validating the complete backup.
   Preserve failed or unreadable backups and their keys across automatic rotation,
   disabled persistence and repeated restoration crashes, with explicit retry.
-- The Splits layout adds ``equalize_on_window_change`` to automatically give all
-  panes an equal share of the available space whenever a window is created or
-  closed. The existing close-only ``equalize_on_window_close`` option remains
-  available.
+- The Splits layout adds ``equalize_on_window_change`` to automatically equalize
+  siblings along the affected split's axis when creating or closing panes,
+  without resetting unrelated regions or perpendicular split sizes. The existing
+  close-only ``equalize_on_window_close`` option uses the same local behavior.
 - macOS: Add gentle native Core Animation spring transitions for pane resizing,
   repositioning, splitting, closing and layout changes. Toggle them with
   :opt:`window_jelly_enabled` (default: yes) and configure the duration with

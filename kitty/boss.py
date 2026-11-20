@@ -2034,14 +2034,19 @@ class Boss:
             self.agent_sidebar_flush_timer = add_timer(self.flush_agent_sidebar_updates, 0, False)
 
     def _refresh_agent_sidebar_scope(self, scope: tuple[TabManager, ...]) -> None:
+        from .editors import editor_row
+
         active_window = self.active_window
         strategy = get_options().agents_sidebar_grouping
         rows: list[AgentSidebarRow] = []
+        editors: list[AgentSidebarRow] = []
         tab_index = 0
         for tm in scope:
             for tab in tm:
                 tab_index += 1
                 for window in tab:
+                    if (row := editor_row(window, window is active_window)) is not None:
+                        editors.append(row)
                     snapshot = self.agent_tracker.snapshot_for(window.id)
                     if snapshot is None:
                         continue
@@ -2068,6 +2073,7 @@ class Boss:
         rows = list(group_sidebar_rows(rows, strategy))
         if not rows:
             rows.append(AgentSidebarRow(0, '', '', '', 'No AI agents', '', AgentState.unknown, False))
+        rows.extend(editors or [AgentSidebarRow(0, '', '', '', 'No editors', '', AgentState.unknown, False, 'editor')])
         for tm in scope:
             if tuple(rows) != tm.agent_sidebar_rows:
                 tm.set_agent_sidebar_rows(rows)
@@ -2237,6 +2243,8 @@ class Boss:
             if (target_os_window_id := self.set_active_window(window, switch_os_window_if_needed=True)) is not None:
                 set_agents_sidebar_focus(target_os_window_id, False)
         elif command == 'mark_unread':
+            if any(row.window_id == window_id and row.kind == 'editor' for row in source.agent_sidebar_rows):
+                return
             if self.agent_tracker.mark_unseen_done(window_id):
                 self.flush_agent_sidebar_updates()
         elif command == 'new_window':
@@ -2376,6 +2384,43 @@ class Boss:
         if window is not None:
             window.finish_scroll_animation()
         return False
+
+    def dispatch_pane_switcher_shortcut(self, ev: KeyEvent) -> bool:
+        from .keys import get_shortcut
+
+        mappings = self.mappings
+        mode = mappings.keyboard_mode_stack[-1] if mappings.keyboard_mode_stack else mappings.keyboard_modes['']
+        candidates = get_shortcut(mode.keymap, ev)
+        if candidates is None:
+            candidates = get_shortcut(mappings.global_shortcuts_map, ev)
+        matches = mappings.matching_key_actions(candidates or ())
+        if not matches or matches[0].is_sequence:
+            return False
+        actions = get_options().alias_map.resolve_aliases(matches[0].definition, MapType.MAP)
+        if len(actions) != 1:
+            return False
+        action = actions[0]
+        if action.func not in ('next_window', 'previous_window', 'prev_window', 'neighboring_window'):
+            return False
+        tab = self.active_tab
+        if tab is None or tab.current_layout.name != 'stack':
+            return False
+        getattr(tab, action.func)(*action.args)
+        return True
+
+    def pane_switcher_done(self, tab_id: int, window_id: int) -> None:
+        if not window_id:
+            return
+        tab = self.tab_for_id(tab_id)
+        if tab is None or tab.current_layout.name != 'stack':
+            return
+        manager = tab.tab_manager_ref()
+        if manager is None or manager.active_tab is not tab:
+            return
+        window = tab.windows.window_for_id(window_id)
+        if window is not None:
+            tab.set_active_window(window)
+            tab.relayout_borders()
 
     def cancel_current_visual_select(self) -> None:
         if self.current_visual_select:

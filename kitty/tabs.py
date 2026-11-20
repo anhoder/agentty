@@ -60,6 +60,7 @@ from .fast_data_types import (
     set_tab_layout_name,
     set_window_being_dragged,
     start_drag_with_data,
+    suppress_pane_animation,
     swap_tabs,
     sync_os_window_title,
 )
@@ -837,6 +838,7 @@ class Tab:  # {{{
         else:
             changed = self.current_layout.modify_size_of_window(self.windows, window_id, increment_as_percent, is_horizontal)
         if changed:
+            suppress_pane_animation(self.current_layout.os_window_id)
             self.relayout()
             return None
         return 'Could not resize'
@@ -853,6 +855,7 @@ class Tab:  # {{{
             max_room = min((t.current_layout.room_for_os_window_docks(t.windows, is_horizontal) for t in tm if t is not self), default=None)
         applied = self.current_layout.resize_dock(self.windows, dock, cells, fraction, max_room)
         if applied:
+            suppress_pane_animation(self.current_layout.os_window_id)
             self.relayout()
             if is_os_window_dock and relayout_other_tabs:
                 self.os_window_docks_changed()
@@ -947,6 +950,7 @@ class Tab:  # {{{
                 if layout.pair_for_window_edge(self.windows, w.id, edge) is not None:
                     moved = layout.modify_size_of_window_edge(self.windows, w.id, edge, sign * increment)
                     if moved:
+                        suppress_pane_animation(layout.os_window_id)
                         self.relayout()
                     break
         if not moved and get_options().enable_audio_bell:
@@ -955,6 +959,7 @@ class Tab:  # {{{
     @ac('win', 'Reset window sizes undoing any dynamic resizing of windows')
     def reset_window_sizes(self) -> None:
         if self.current_layout.remove_all_biases():
+            suppress_pane_animation(self.current_layout.os_window_id)
             self.relayout()
 
     @ac('lay', 'Perform a layout specific action. See :doc:`layouts` for details')
@@ -1264,7 +1269,6 @@ class Tab:  # {{{
     def post_window_removal_update(self) -> None:
         self.mark_tab_bar_dirty()
         self.relayout()  # prunes the closed window from the layout's internal tree
-        # equalize_on_close rebalances the pruned tree, requiring a second relayout
         if self.current_layout.on_window_removed(self.windows):
             self.relayout()
         active_window = self.active_window
@@ -1403,8 +1407,24 @@ class Tab:  # {{{
     def tenth_window(self) -> None:
         self.nth_window(9)
 
+    def _show_pane_switcher(self, delta: int = 0) -> bool:
+        if not is_macos or self.current_layout.name != 'stack':
+            return False
+        rows = []
+        for group in self.windows.iter_all_layoutable_groups():
+            if window := self.windows.window_for_id(group.active_window_id):
+                rows.append((window.id, window.title))
+        if len(rows) < 2:
+            return False
+        from .fast_data_types import cocoa_show_pane_switcher
+
+        active_id = self.active_window.id if self.active_window else 0
+        return cocoa_show_pane_switcher(self.os_window_id, self.id, rows, active_id, delta)
+
     def _next_window(self, delta: int = 1) -> None:
         if len(self.windows) > 1:
+            if self._show_pane_switcher(delta):
+                return
             self.current_layout.next_window(self.windows, delta)
             self.relayout_borders()
 
@@ -1455,6 +1475,8 @@ class Tab:  # {{{
         """,
     )
     def neighboring_window(self, which: EdgeLiteral) -> None:
+        if self._show_pane_switcher(-1 if which in ('left', 'top') else 1):
+            return
         neighbor = self.neighboring_group_id(which)
         if neighbor:
             self.windows.set_active_group(neighbor)
@@ -1504,6 +1526,8 @@ class Tab:  # {{{
         """,
     )
     def focus_visible_window(self) -> None:
+        if self._show_pane_switcher():
+            return
         def callback(tab: Tab | None, window: Window | None) -> None:
             if tab and window:
                 tab.set_active_window(window)
@@ -1934,7 +1958,7 @@ class TabManager:  # {{{
             get_options().agents_sidebar_grouping,
             agent_icons_dir,
             tuple(
-                (row.window_id, row.group, row.group_key, row.agent, row.title, row.detail, state_code(row.state), row.is_active)
+                (row.window_id, row.group, row.group_key, row.agent, row.title, row.detail, state_code(row.state), row.is_active, row.kind)
                 for row in self.agent_sidebar_rows
             ),
             tuple(sorted(getattr(boss, 'agent_sidebar_collapsed_groups', ()))),

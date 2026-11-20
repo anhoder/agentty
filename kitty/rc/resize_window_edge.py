@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING
 from weakref import WeakKeyDictionary
 
+from kitty.fast_data_types import suppress_pane_animation
 from kitty.layout.splits import Pair, Splits
 
 from .base import MATCH_WINDOW_OPTION, ArgsType, Boss, PayloadGetType, PayloadType, RCOptions, RemoteCommand, ResponseType, Window
@@ -128,6 +129,7 @@ Use the window this command is run in, rather than the active window.
             return 'Split structure changed; original sizes cannot be restored'
         for pair, bias in session.biases:
             pair.bias = bias
+        suppress_pane_animation(session.layout.os_window_id)
         tab.relayout()
         return ''
 
@@ -176,6 +178,7 @@ Use the window this command is run in, rather than the active window.
                 session.selected, session.divider = edge, pair
                 session.horizontal = pair.horizontal
                 if layout.modify_size_of_window_edge(tab.windows, window.id, edge, payload_get('increment'), fraction):
+                    suppress_pane_animation(layout.os_window_id)
                     tab.relayout()
                 else:
                     status = 'At size limit; move the other way'

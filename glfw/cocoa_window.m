@@ -1315,7 +1315,23 @@ is_ascii_control_char(char x) {
     return dispatch ? dispatch(window, &key_event) : NO;
 }
 
+- (BOOL)kittyPaneSwitcherHandleConfiguredKeyEvent:(NSEvent *)event {
+    if (!window) return NO;
+    const NSUInteger flags = remap_cocoa_flags(event.modifierFlags);
+    event = event_with_remapped_flags(event, flags);
+    GLFWkeyevent key_event = {
+        .key = translateKey(event.keyCode, true), .native_key = event.keyCode, .native_key_id = event.keyCode,
+        .action = event.ARepeat ? GLFW_REPEAT : GLFW_PRESS, .mods = translateFlags(flags)
+    };
+    add_alternate_keys(&key_event, event);
+    NSValue *callback = objc_getAssociatedObject(self.window, @selector(kittyPaneSwitcherHandleConfiguredKeyEvent:));
+    bool (*dispatch)(void *, const GLFWkeyevent *) = NULL;
+    if (callback) [callback getValue:&dispatch size:sizeof(dispatch)];
+    return dispatch ? dispatch(window, &key_event) : NO;
+}
+
 - (void)keyDown:(NSEvent *)event {
+    NSEvent *physical_event = event;
     if (!window || self.window.firstResponder != self) return;
     // Only a new terminal key event re-enables input after focus loss. Late
     // callbacks from the discarded input context must not commit on return.
@@ -1434,7 +1450,14 @@ is_ascii_control_char(char x) {
     glfw_keyevent.text = _glfw.ns.text;
     glfw_keyevent.ime_state = GLFW_IME_NONE;
     add_alternate_keys(&glfw_keyevent, event);
+    // NSApp.currentEvent can already refer to a later event when input methods
+    // dispatch a shortcut. Keep the physical event scoped to this key dispatch.
+    const void *event_key = NSSelectorFromString(@"kittyPaneSwitcherInitiatingEvent");
+    id previous_event = [objc_getAssociatedObject(self.window, event_key) retain];
+    objc_setAssociatedObject(self.window, event_key, physical_event, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     _glfwInputKeyboard(window, &glfw_keyevent);
+    objc_setAssociatedObject(self.window, event_key, previous_event, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    [previous_event release];
     if (bracketed_ime) {
         // insertText followed by setMarkedText
         UPDATE_PRE_EDIT_TEXT;
@@ -1452,6 +1475,13 @@ is_modifier_pressed(NSUInteger flags, NSUInteger target_mask, NSUInteger other_m
 
 - (void)flagsChanged:(NSEvent *)event {
     if (!window) return;
+    // The global GLFW flags monitor consumes this event. Notify native pane
+    // switching here before remapping, independent of local monitor ordering.
+    void (^pane_modifiers_changed)(NSEvent *) = objc_getAssociatedObject(self.window, NSSelectorFromString(@"kittyPaneSwitcherModifiersChanged:"));
+    if (pane_modifiers_changed) {
+        [[pane_modifiers_changed retain] autorelease];
+        pane_modifiers_changed(event);
+    }
     bool terminal_focused = self.window.firstResponder == self;
     int action = GLFW_RELEASE;
     const char old_first_char = _glfw.ns.text[0];

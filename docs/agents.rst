@@ -82,10 +82,10 @@ height. The sidebar toggle is a native titlebar accessory after the traffic-ligh
 controls; AppKit reserves its width so the window title starts to its right.
 Its expanded and collapsed states use different background and chevron styles.
 
-The centered sidebar header displays the active grouping, agent count, and group count.
-For example, ``Grouping: tab · 3 agents · 2 groups`` means that three agent
-rows are arranged into two tab groups. The grouping strategy is configurable
-with :opt:`agents_sidebar_grouping`:
+The Agents section heading displays the active grouping, agent count, and group
+count, for example ``Grouping: tab · 3 agents · 2 groups``. Click the heading to
+collapse or expand the section. The grouping strategy is configurable with
+:opt:`agents_sidebar_grouping`:
 
 * ``time`` (default): group by Today, Yesterday, and Earlier;
 * ``agent``: group rows by agent name;
@@ -109,6 +109,37 @@ width. Transient keyboard focus and selection are not restored at startup.
 Visible sidebars refresh agent state every second, including after session
 restoration and for unfocused panes. Lifecycle reports and other agent events
 can trigger an earlier update; switching focus is not required.
+
+Terminal editors
+~~~~~~~~~~~~~~~~
+
+On macOS, the sidebar has separate **AI Agents** and **Editors** sections.
+Full-width section headings distinguish the two areas, with a disclosure
+indicator on the right showing whether each section is expanded or collapsed.
+Each section's content shares its heading's background tint; hover emphasis
+applies only to the heading, while active rows retain their selection highlight.
+Click a section heading to collapse or expand it, and drag the horizontal
+divider to change their height allocation. Each section scrolls independently;
+collapsing one gives the other its available space.
+Section collapse states and the preferred height ratio are saved as native
+application preferences, independently of the session's agent-group collapse
+state. Available window space constrains the displayed heights without
+discarding the preferred ratio.
+
+The Editors section automatically recognizes local foreground ``nvim``, ``vim``,
+``vi``, ``view`` and their supported diff entry points. No editor plugin,
+configuration change or RPC server is required. Click an editor to focus its
+kitty pane and the containing tab or window. Entries show the terminal title and
+working directory, not an authoritative current buffer or unsaved-file status.
+Editors do not participate in agent lifecycle states or completion notifications.
+
+Editor discovery shares the visible sidebar's existing refresh cycle and process
+cache; it does not scan terminal screen contents or create a separate polling
+timer. An editor disappears when it exits or leaves the foreground, including
+when suspended with :kbd:`Ctrl+Z`. Headless, embedded and common noninteractive
+invocations are excluded. Editors inside tmux, SSH or nested terminals are not
+guaranteed to be discoverable; this is pane-level navigation, not tmux pane or
+editor buffer navigation.
 
 The sidebar is opened and closed manually with the persistent floating
 sidebar button at the upper-left of the window or the
