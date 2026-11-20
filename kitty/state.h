@@ -7,6 +7,7 @@
 #pragma once
 #include "data-types.h"
 #include "animation.h"
+#include "pane-animation.h"
 #include "screen.h"
 #include "monotonic.h"
 #include "window_logo.h"
@@ -676,6 +677,7 @@ typedef struct OSWindow {
     bool focused_at_last_render, needs_render, needs_layers, input_held;
     // Consumed by the next pane animation update, including a final render after mouse-up.
     bool suppress_pane_animation;
+    PaneAnimation pane_animation;
     unsigned keep_rendering_till_swap;
     WindowRenderData tab_bar_render_data;
     struct {

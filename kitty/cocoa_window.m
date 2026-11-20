@@ -64,13 +64,6 @@ static const void *kitty_agents_sidebar_key = &kitty_agents_sidebar_key;
 static const void *kitty_agents_sidebar_toggle_key = &kitty_agents_sidebar_toggle_key;
 extern bool cocoa_dispatch_agents_sidebar_shortcut(void *, const GLFWkeyevent *);
 
-// A transient native overlay leaves the OpenGL view and its input handling intact.
-typedef struct {
-    id_type id;
-    CGRect rect;
-} PaneFrame;
-
-static CGRect pane_animation_rect(const Window *w);
 static const void *kitty_search_overlay_key = &kitty_search_overlay_key;
 
 @interface KittySearchButton : NSButton {
@@ -552,303 +545,112 @@ set_scrollback_search(id_type os_window_id, id_type window_id, const char *query
     position_search_overlay(osw);
 }
 
-@interface KittyPaneAnimationView : NSView {
-    PaneFrame *frames;
-    size_t count, capacity;
-    id_type tab_id;
-    unsigned pixel_width, pixel_height;
-    NSUInteger generation;
-    NSMutableDictionary<NSNumber *, CALayer *> *panes;
-    CALayer *backdrop;
-}
-- (void)updateForWindow:(OSWindow *)osw;
-@end
 
-static CGRect
+static PaneAnimationRect
 pane_animation_rect(const Window *w) {
     const WindowGeometry *g = &w->render_data.geometry;
     const WindowRenderData *title = &w->window_title_render_data;
-    CGFloat top = g->top, bottom = g->bottom;
+    double top = g->top, bottom = g->bottom;
     if (title->screen && title->geometry.bottom > title->geometry.top) {
         top = MIN(top, title->geometry.top);
         bottom = MAX(bottom, title->geometry.bottom);
     }
-    CGFloat left = (CGFloat)g->left - g->spaces.left;
+    double left = (double)g->left - g->spaces.left;
     top -= g->spaces.top;
-    return CGRectMake(left, top, g->right + g->spaces.right - left, bottom + g->spaces.bottom - top);
+    return (PaneAnimationRect){left, top, g->right + g->spaces.right - left, bottom + g->spaces.bottom - top};
 }
 
-static void
-release_pane_snapshot(void *info UNUSED, const void *data, size_t size UNUSED) {
-    free((void *)data);
-}
-
-static CGImageRef
-pane_snapshot(OSWindow *osw) {
-    size_t width = osw->viewport_width, height = osw->viewport_height;
-    if (!width || !height || width > SIZE_MAX / 4 / height) return NULL;
-    uint8_t *pixels = malloc(width * height * 4);
-    if (!pixels) return NULL;
-    GLint alignment, row_length, pack_buffer;
-    glGetIntegerv(GL_PACK_ALIGNMENT, &alignment);
-    glGetIntegerv(GL_PACK_ROW_LENGTH, &row_length);
-    glGetIntegerv(GL_PIXEL_PACK_BUFFER_BINDING, &pack_buffer);
-    glBindBuffer(GL_PIXEL_PACK_BUFFER, 0);
-    glPixelStorei(GL_PACK_ALIGNMENT, 1);
-    glPixelStorei(GL_PACK_ROW_LENGTH, 0);
-    glReadPixels(0, 0, (GLsizei)width, (GLsizei)height, GL_RGBA, GL_UNSIGNED_BYTE, pixels);
-    glPixelStorei(GL_PACK_ALIGNMENT, alignment);
-    glPixelStorei(GL_PACK_ROW_LENGTH, row_length);
-    glBindBuffer(GL_PIXEL_PACK_BUFFER, (GLuint)pack_buffer);
-    CGDataProviderRef provider = CGDataProviderCreateWithData(NULL, pixels, width * height * 4, release_pane_snapshot);
-    if (!provider) {
-        free(pixels);
-        return NULL;
-    }
-    CGColorSpaceRef colors = CGColorSpaceCreateWithName(kCGColorSpaceSRGB);
-    CGImageRef image =
-        CGImageCreate(width, height, 8, 32, width * 4, colors, (CGBitmapInfo)kCGImageAlphaPremultipliedLast, provider, NULL, false, kCGRenderingIntentDefault);
-    CGColorSpaceRelease(colors);
-    CGDataProviderRelease(provider);
-    return image;
-}
-
-// Peak overshoot of an underdamped spring, as a fraction of the distance it
-// travels, is exp(-z*pi / sqrt(1 - z*z)) for damping ratio z. For mass 1,
-// stiffness f*f and critical damping 2*f, so damping is 2*z*f. Invert the
-// overshoot formula to express the configured amplitude as a damping ratio.
-static double
-jelly_damping(double overshoot_fraction) {
-    if (!(overshoot_fraction > 0)) return 2.0;
-    if (overshoot_fraction > 0.999) overshoot_fraction = 0.999;
-    double l = log(overshoot_fraction);
-    return -2.0 * l / sqrt(M_PI * M_PI + l * l);
-}
-
-static double
-jelly_overshoot_fraction(double travel, double percentage, double max_overshoot) {
-    double fraction = percentage / 100.0;
-    if (!(travel > 0) || !(max_overshoot > 0)) return fraction;
-    return MIN(fraction, max_overshoot / travel);
-}
-
-static CASpringAnimation *
-pane_spring(NSString *key, id from, id to, double duration, double overshoot_fraction) {
-    CASpringAnimation *animation = [CASpringAnimation animationWithKeyPath:key];
-    animation.mass = 1;
-    double frequency = 12.0 / duration;
-    animation.stiffness = frequency * frequency;
-    animation.damping = jelly_damping(overshoot_fraction) * frequency;
-    animation.fromValue = from;
-    animation.toValue = to;
-    animation.duration = duration;
-    return animation;
-}
-
-@implementation KittyPaneAnimationView
-- (instancetype)initWithFrame:(NSRect)frame {
-    self = [super initWithFrame:frame];
-    if (self)
-        [NSWorkspace.sharedWorkspace.notificationCenter addObserver:self
-                                                           selector:@selector(motionPreferenceChanged:)
-                                                               name:NSWorkspaceAccessibilityDisplayOptionsDidChangeNotification
-                                                             object:nil];
-    return self;
-}
-- (void)motionPreferenceChanged:(NSNotification *)notification {
-    (void)notification;
-    if (NSWorkspace.sharedWorkspace.accessibilityDisplayShouldReduceMotion) [self stopAnimation];
-}
-- (BOOL)isFlipped {
-    return YES;
-}
-- (NSView *)hitTest:(NSPoint)point {
-    (void)point;
-    return nil;
-}
-- (void)dealloc {
-    [NSWorkspace.sharedWorkspace.notificationCenter removeObserver:self];
-    free(frames);
-    [panes release];
-    [super dealloc];
-}
-- (void)stopAnimation {
-    generation++;
-    [self removeFromSuperview];
-    [backdrop removeFromSuperlayer];
-    backdrop = nil;
-    for (CALayer *layer in panes.allValues) [layer removeFromSuperlayer];
-    [panes removeAllObjects];
-}
-- (void)updateContentsFromImage:(CGImageRef)image forWindow:(OSWindow *)osw {
-    // Replacing contents must not implicitly cross-fade or restart the springs.
-    [CATransaction begin];
-    [CATransaction setDisableActions:YES];
+bool
+cocoa_prepare_pane_animation(void *ptr, monotonic_t now) {
+    OSWindow *osw = ptr;
+    PaneAnimation *a = &osw->pane_animation;
     Tab *tab = osw->tabs + osw->active_tab;
-    for (unsigned i = 0; i < tab->num_windows; i++) {
-        Window *w = tab->windows + i;
-        CALayer *layer = panes[@(w->id)];
-        if (!layer) continue;
-        CGRect crop = CGRectIntersection(pane_animation_rect(w), CGRectMake(0, 0, osw->viewport_width, osw->viewport_height));
-        if (CGRectIsEmpty(crop)) continue;
-        // OpenGL rows are bottom-up; the image layer already flips them.
-        crop.origin.y = osw->viewport_height - CGRectGetMaxY(crop);
-        CGImageRef part = CGImageCreateWithImageInRect(image, crop);
-        if (!part) continue;
-        layer.contents = (id)part;
-        CGImageRelease(part);
-    }
-    [CATransaction commit];
-}
-- (void)updateForWindow:(OSWindow *)osw {
-    Tab *tab = osw->tabs + osw->active_tab;
-    NSWindow *window = glfwGetCocoaWindow(osw->handle);
-    NSView *content = window.contentView;
-    double duration = OPT(window_jelly_duration);
-    double bounce = OPT(window_jelly_bounce), max_bounce = OPT(window_jelly_bounce_max);
-    BOOL dragging = global_state.active_drag_resize && os_window_for_kitty_window(global_state.active_drag_resize) == osw;
-    BOOL enabled = OPT(window_jelly_enabled) && duration > 0 && !dragging && !osw->suppress_pane_animation &&
-                   !NSWorkspace.sharedWorkspace.accessibilityDisplayShouldReduceMotion;
+    double at = monotonic_t_to_s_double(now);
+    bool dragging = global_state.active_drag_resize && os_window_for_kitty_window(global_state.active_drag_resize) == osw;
+    bool enabled = OPT(window_jelly_enabled) && OPT(window_jelly_duration) > 0 && !dragging && !osw->suppress_pane_animation &&
+                   !osw->live_resize.in_progress && !NSWorkspace.sharedWorkspace.accessibilityDisplayShouldReduceMotion;
     osw->suppress_pane_animation = false;
-    BOOL compatible = tab_id == tab->id && pixel_width == (unsigned)osw->viewport_width && pixel_height == (unsigned)osw->viewport_height;
-    BOOL changed = NO;
+    bool compatible = a->tab_id == tab->id && a->width == osw->viewport_width && a->height == osw->viewport_height;
+    bool was_active = a->active;
+    if (!enabled || !compatible || at - a->started_at >= a->duration) a->active = false;
+    if (!a->active) a->content_valid = false;
     size_t visible = 0;
+    bool changed = false;
     for (unsigned i = 0; i < tab->num_windows; i++) {
         Window *w = tab->windows + i;
         if (!w->visible || !w->render_data.screen) continue;
-        CGRect rect = pane_animation_rect(w);
-        if (visible >= count || frames[visible].id != w->id || !CGRectEqualToRect(frames[visible].rect, rect)) changed = YES;
+        PaneAnimationRect rect = pane_animation_rect(w);
+        if (visible >= a->count || a->frames[visible].id != w->id || !pane_animation_rect_equal(a->frames[visible].target, rect)) changed = true;
         visible++;
     }
-    changed |= visible != count;
-    if ((!enabled || !compatible || osw->live_resize.in_progress) && self.superview) [self stopAnimation];
-    if (!changed && compatible) {
-        // This hook runs after each actual terminal render, including cursor
-        // trails/custom shaders. Keep the overlay live without extending its life.
-        if (self.superview) {
-            CGImageRef image = pane_snapshot(osw);
-            if (image) {
-                [self updateContentsFromImage:image forWindow:osw];
-                CGImageRelease(image);
-            } else [self stopAnimation];
+    changed |= visible != a->count;
+    if (changed || !compatible) {
+        a->content_valid = false;
+        // Reuse two geometry arrays so retargeting never overwrites an old frame
+        // before another pane has sampled its current presentation position.
+        if (visible > a->capacity) {
+            a->capacity = MAX(visible, a->capacity * 2);
+            a->next_frames = realloc(a->next_frames, a->capacity * sizeof(*a->next_frames));
+            a->frames = realloc(a->frames, a->capacity * sizeof(*a->frames));
+            if (!a->frames || !a->next_frames) fatal("Out of memory storing pane animation geometry");
         }
-        return;
-    }
-
-    CGImageRef image = enabled && compatible && count && !osw->live_resize.in_progress ? pane_snapshot(osw) : NULL;
-    if (image) {
-        if (!panes) panes = [[NSMutableDictionary alloc] init];
-        self.frame = content.bounds;
-        self.autoresizingMask = NSViewWidthSizable | NSViewHeightSizable;
-        self.wantsLayer = YES;
-        self.layer.geometryFlipped = YES;
-        self.layer.masksToBounds = YES;
-        if (!self.superview) [content addSubview:self positioned:NSWindowAbove relativeTo:nil];
-        CGFloat scale = window.backingScaleFactor;
-        NSMutableDictionary<NSNumber *, CALayer *> *next = [NSMutableDictionary dictionary];
-        [CATransaction begin];
-        [CATransaction setDisableActions:YES];
-        NSUInteger current_generation = ++generation;
-        [CATransaction setCompletionBlock:^{
-          if (generation == current_generation) [self stopAnimation];
-        }];
-        if (!backdrop) {
-            backdrop = [CALayer layer];
-            [self.layer insertSublayer:backdrop atIndex:0];
-        }
-        Region central = {0}, tab_bar = {0};
-        os_window_regions(osw, &central, &tab_bar);
-        backdrop.frame = CGRectMake(central.left / scale, central.top / scale, (central.right - central.left) / scale, (central.bottom - central.top) / scale);
-        color_type bg = OPT(background);
-        backdrop.backgroundColor = [NSColor colorWithSRGBRed:((bg >> 16) & 255) / 255.0
-                                                       green:((bg >> 8) & 255) / 255.0
-                                                        blue:(bg & 255) / 255.0
-                                                       alpha:effective_os_window_alpha(osw)]
-                                       .CGColor;
+        size_t n = 0;
+        bool animate = enabled && compatible && a->count && visible;
+        double scale = MAX(1., [(NSWindow *)glfwGetCocoaWindow(osw->handle) backingScaleFactor]);
         for (unsigned i = 0; i < tab->num_windows; i++) {
             Window *w = tab->windows + i;
             if (!w->visible || !w->render_data.screen) continue;
-            CGRect rect = pane_animation_rect(w);
-            NSNumber *key = @(w->id);
-            CALayer *layer = panes[key];
-            CGRect previous = rect;
-            BOOL existed = NO;
-            for (size_t j = 0; j < count; j++)
-                if (frames[j].id == w->id) {
-                    previous = frames[j].rect;
-                    existed = YES;
-                    break;
+            PaneAnimationRect rect = pane_animation_rect(w), start = rect;
+            bool existed = false;
+            if (animate) {
+                for (size_t j = 0; j < a->count; j++) {
+                    if (a->frames[j].id == w->id) {
+                        start = a->active ? pane_animation_sample(a->frames + j, at - a->started_at, a->duration) : a->frames[j].target;
+                        existed = true;
+                        break;
+                    }
                 }
-            CGRect target = CGRectMake(rect.origin.x / scale, rect.origin.y / scale, rect.size.width / scale, rect.size.height / scale);
-            CGRect start = CGRectMake(previous.origin.x / scale, previous.origin.y / scale, previous.size.width / scale, previous.size.height / scale);
-            if (layer.presentationLayer) start = layer.presentationLayer.frame;
-            if (!layer) {
-                layer = [CALayer layer];
-                layer.affineTransform = CGAffineTransformMakeScale(1, -1);
-                [self.layer addSublayer:layer];
-                if (!existed) start = CGRectInset(target, target.size.width * 0.04, target.size.height * 0.04);
+                if (!existed) {
+                    start.x += rect.width * 0.04;
+                    start.y += rect.height * 0.04;
+                    start.width *= 0.92;
+                    start.height *= 0.92;
+                }
             }
-            layer.contentsScale = scale;
-            layer.frame = target;
-            double position_bounce =
-                MIN(jelly_overshoot_fraction(fabs(CGRectGetMidX(target) - CGRectGetMidX(start)), bounce, max_bounce),
-                    jelly_overshoot_fraction(fabs(CGRectGetMidY(target) - CGRectGetMidY(start)), bounce, max_bounce));
-            double bounds_bounce =
-                MIN(jelly_overshoot_fraction(fabs(target.size.width - start.size.width), bounce, max_bounce),
-                    jelly_overshoot_fraction(fabs(target.size.height - start.size.height), bounce, max_bounce));
-            [layer addAnimation:pane_spring(
-                                    @"position",
-                                    [NSValue valueWithPoint:NSMakePoint(CGRectGetMidX(start), CGRectGetMidY(start))],
-                                    [NSValue valueWithPoint:NSMakePoint(CGRectGetMidX(target), CGRectGetMidY(target))],
-                                    duration,
-                                    position_bounce)
-                         forKey:@"pane-position"];
-            [layer addAnimation:pane_spring(
-                                    @"bounds",
-                                    [NSValue valueWithRect:NSMakeRect(0, 0, start.size.width, start.size.height)],
-                                    [NSValue valueWithRect:NSMakeRect(0, 0, target.size.width, target.size.height)],
-                                    duration,
-                                    bounds_bounce)
-                         forKey:@"pane-bounds"];
-            next[key] = layer;
+            double bounce = OPT(window_jelly_bounce), maximum = OPT(window_jelly_bounce_max) * scale;
+            double dx = fabs(rect.x + rect.width / 2. - start.x - start.width / 2.);
+            double dy = fabs(rect.y + rect.height / 2. - start.y - start.height / 2.);
+            a->next_frames[n++] = (PaneAnimationFrame){
+                .id = w->id, .from = start, .target = rect,
+                .position_spring = pane_animation_spring(MAX(pane_animation_damping(dx, bounce, maximum), pane_animation_damping(dy, bounce, maximum))),
+                .size_spring = pane_animation_spring(MAX(pane_animation_damping(fabs(rect.width - start.width), bounce, maximum),
+                                                       pane_animation_damping(fabs(rect.height - start.height), bounce, maximum))),
+            };
         }
-        for (NSNumber *key in panes)
-            if (!next[key]) [panes[key] removeFromSuperlayer];
-        [panes setDictionary:next];
-        [self updateContentsFromImage:image forWindow:osw];
-        [CATransaction commit];
-        CGImageRelease(image);
+        PaneAnimationFrame *previous = a->frames;
+        a->frames = a->next_frames;
+        a->next_frames = previous;
+        a->count = visible;
+        a->active = animate;
+        a->started_at = at;
+        a->duration = OPT(window_jelly_duration);
+        a->tab_id = tab->id;
+        a->width = osw->viewport_width;
+        a->height = osw->viewport_height;
     }
-    if (visible > capacity) {
-        capacity = MAX(visible, capacity * 2);
-        frames = realloc(frames, capacity * sizeof(*frames));
-        if (!frames) fatal("Out of memory storing pane animation geometry");
+    // Shrink only after all old presentation frames have been sampled.
+    if (a->capacity > MAX((size_t)64, visible * 4)) {
+        a->capacity = MAX((size_t)1, visible * 2);
+        a->next_frames = realloc(a->next_frames, a->capacity * sizeof(*a->next_frames));
+        a->frames = realloc(a->frames, a->capacity * sizeof(*a->frames));
+        if (!a->frames || !a->next_frames) fatal("Out of memory storing pane animation geometry");
     }
-    count = 0;
-    for (unsigned i = 0; i < tab->num_windows; i++) {
-        Window *w = tab->windows + i;
-        if (w->visible && w->render_data.screen) frames[count++] = (PaneFrame){w->id, pane_animation_rect(w)};
-    }
-    tab_id = tab->id;
-    pixel_width = osw->viewport_width;
-    pixel_height = osw->viewport_height;
+    return was_active || a->active;
 }
-@end
 
 void
-cocoa_animate_pane_layout(void *ptr) {
-    OSWindow *osw = ptr;
-    NSWindow *window = glfwGetCocoaWindow(osw->handle);
-    if (!window.contentView) return;
-    static const void *key = &key;
-    KittyPaneAnimationView *view = objc_getAssociatedObject(window, key);
-    if (!view) {
-        view = [[KittyPaneAnimationView alloc] initWithFrame:window.contentView.bounds];
-        objc_setAssociatedObject(window, key, view, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-        [view release];
-    }
-    [view updateForWindow:osw];
-    position_search_overlay(osw);
+cocoa_update_search_overlay(void *ptr) {
+    position_search_overlay(ptr);
 }
 
 static void

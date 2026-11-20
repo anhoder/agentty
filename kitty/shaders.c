@@ -1451,7 +1451,10 @@ cell_prepare_to_render(ssize_t vao_idx, Screen *screen, FONTS_DATA_HANDLE fonts_
     size_t sz;
     CELL_BUFFERS;
     void *address;
-    bool changed = false;
+    // Palette-only OSC changes do not dirty cells. Keep the rendered profile's
+    // uniforms live, including the frozen profile during synchronized output.
+    ColorProfile *cp = screen->paused_rendering.expires_at ? &screen->paused_rendering.color_profile : screen->color_profile;
+    bool changed = cp->dirty;
 
     if (!ensure_sprite_map(fonts_data)) return false;
     const Cursor *cursor = screen->paused_rendering.expires_at ? &screen->paused_rendering.cursor : screen->cursor;
@@ -3778,8 +3781,94 @@ run_custom_end_shader(OSWindow *os_window, float sx, float sy, monotonic_t now) 
     }
 }
 
+#ifdef __APPLE__
 static void
-stop_os_window_rendering(OSWindow *os_window, Tab *tab, Window *active_window, monotonic_t now) {
+draw_pane_animation(OSWindow *w, Tab *tab, monotonic_t now) {
+    PaneAnimation *a = &w->pane_animation;
+    if (!a->active) {
+        a->content_valid = false;
+        if (a->texture_id && (uint64_t)a->texture_width * (uint64_t)a->texture_height * 4 > PANE_ANIMATION_TEXTURE_CACHE_BYTES)
+            free_texture(&a->texture_id);
+        return;
+    }
+    const int width = w->viewport_width, height = w->viewport_height;
+    if (a->texture_id && (a->texture_width != width || a->texture_height != height)) {
+        free_texture(&a->texture_id);
+        a->content_valid = false;
+    }
+    glActiveTexture(GL_TEXTURE0 + GRAPHICS_UNIT);
+    if (!a->texture_id) {
+        glGenTextures(1, &a->texture_id);
+        glBindTexture(GL_TEXTURE_2D, a->texture_id);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, width, height, 0, GL_RGBA, GL_UNSIGNED_BYTE, NULL);
+        a->texture_width = width;
+        a->texture_height = height;
+    } else glBindTexture(GL_TEXTURE_2D, a->texture_id);
+    // Capture only a freshly rendered final framebuffer, including live cursor,
+    // borders, images and custom shaders. Geometry-only frames never copy their
+    // own composited output back into the source texture.
+    if (!a->reuse_content) {
+        glCopyTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, 0, 0, width, height);
+        a->content_valid = true;
+    }
+    a->texture_used_at = monotonic_t_to_s_double(now);
+    GLboolean srgb = glIsEnabled(GL_FRAMEBUFFER_SRGB);
+    glDisable(GL_FRAMEBUFFER_SRGB);
+    bind_vertex_array(tab->border_rects.vao_idx);
+    bind_program(GRAPHICS_PREMULT_PROGRAM);
+    glUniform1f(program_uniform_location(GRAPHICS_PREMULT_PROGRAM, "extra_alpha"), 1.f);
+    GLint source = program_uniform_location(GRAPHICS_PREMULT_PROGRAM, "src_rect");
+    GLint destination = program_uniform_location(GRAPHICS_PREMULT_PROGRAM, "dest_rect");
+    if (a->reuse_content) {
+        // Back buffers are not preserved across swaps. Restore the whole source
+        // so the tab bar and pixels outside the animated region remain intact.
+        set_framebuffer_to_use_for_output(0);
+        bind_framebuffer_for_output(0);
+        set_gpu_viewport(width, height);
+        glUniform4f(source, 0, 1, 1, 0);
+        glUniform4f(destination, -1, 1, 1, -1);
+        draw_quad(false, 0);
+    }
+    Region central = {0}, tab_bar = {0};
+    os_window_regions(w, &central, &tab_bar);
+    Viewport clip = {central.left, central.top, central.right - central.left, central.bottom - central.top};
+    enable_scissor_using_top_left_origin(clip, height);
+    color_type bg = OPT(background);
+    float alpha = effective_os_window_alpha(w);
+    glClearColor(((bg >> 16) & 255) / 255.f * alpha, ((bg >> 8) & 255) / 255.f * alpha, (bg & 255) / 255.f * alpha, alpha);
+    glClear(GL_COLOR_BUFFER_BIT);
+    double elapsed = monotonic_t_to_s_double(now) - a->started_at;
+    for (size_t i = 0; i < a->count; i++) {
+        const PaneAnimationFrame *frame = a->frames + i;
+        PaneAnimationRect rect = frame->target;
+        if (!(rect.width > 0 && rect.height > 0)) continue;
+        PaneAnimationRect target = pane_animation_sample(frame, elapsed, a->duration);
+        double left = MAX(0., rect.x), top = MAX(0., rect.y);
+        double right = MIN((double)width, rect.x + rect.width), bottom = MIN((double)height, rect.y + rect.height);
+        if (right <= left || bottom <= top) continue;
+        double x = target.x + (left - rect.x) / rect.width * target.width;
+        double y = target.y + (top - rect.y) / rect.height * target.height;
+        double r = target.x + (right - rect.x) / rect.width * target.width;
+        double b = target.y + (bottom - rect.y) / rect.height * target.height;
+        glUniform4f(source, left / width, 1. - top / height, right / width, 1. - bottom / height);
+        glUniform4f(destination, 2. * x / width - 1., 1. - 2. * y / height, 2. * r / width - 1., 1. - 2. * b / height);
+        // Replace pixels, including their alpha, rather than darkening a
+        // translucent pane by blending it over a second background layer.
+        draw_quad(false, 0);
+    }
+    unbind_program();
+    unbind_vertex_array();
+    disable_scissor();
+    if (srgb) glEnable(GL_FRAMEBUFFER_SRGB);
+}
+#endif
+
+static void
+stop_os_window_content_rendering(OSWindow *os_window, Tab *tab, Window *active_window, monotonic_t now) {
     if (OPT(cursor_trail) && tab->cursor_trail.needs_render && !(custom_shaders.end.active && custom_shaders.end.bypass_builtin_trail))
         draw_cursor_trail(&tab->cursor_trail, active_window);
     if (os_window->needs_layers) {
@@ -3810,6 +3899,14 @@ stop_os_window_rendering(OSWindow *os_window, Tab *tab, Window *active_window, m
             draw_resizing_text(os_window);
         }
     }
+}
+
+static void
+stop_os_window_rendering(OSWindow *os_window, Tab *tab, Window *active_window, monotonic_t now) {
+    if (!os_window->pane_animation.reuse_content) stop_os_window_content_rendering(os_window, tab, active_window, now);
+#ifdef __APPLE__
+    draw_pane_animation(os_window, tab, now);
+#endif
     os_window->last_rendered_at = now;
     os_window->frame_counter++;
 }

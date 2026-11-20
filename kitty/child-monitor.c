@@ -913,7 +913,7 @@ prepare_to_render_os_window(
     bool *all_windows_have_same_bg,
     bool scan_for_animated_images) {
 #define TD os_window->tab_bar_render_data
-    bool needs_render = os_window->needs_render;
+    bool needs_render = os_window->needs_render || os_window->tabs[os_window->active_tab].border_rects.is_dirty;
     os_window->needs_render = false;
     bool was_previously_rendered_with_layers = os_window->needs_layers;
     os_window->needs_layers =
@@ -1087,6 +1087,16 @@ prepare_to_render_os_window(
         if (min_step < MONOTONIC_T_MAX) set_maximum_wait(min_step);
         if (os_window->shader_anim.next_end_at < MONOTONIC_T_MAX) set_maximum_wait(os_window->shader_anim.next_end_at - now);
     }
+#ifdef __APPLE__
+    bool animation_needs_render = cocoa_prepare_pane_animation(os_window, now);
+    // All content producers above still run on every animation tick. Only the
+    // geometry wakeup is excluded from the ordinary content-dirty signal.
+    PaneAnimation *a = &os_window->pane_animation;
+    a->reuse_content = a->active && a->content_valid && !needs_render &&
+        was_previously_rendered_with_layers == os_window->needs_layers;
+    if (a->active) set_maximum_wait(MAX(OPT(repaint_delay), ms_to_monotonic_t(1ll)));
+    if (animation_needs_render) return true;
+#endif
     return needs_render || was_previously_rendered_with_layers != os_window->needs_layers;
 }
 
@@ -1133,22 +1143,21 @@ thumbnail_callback(OSWindow *os_window) {
 #undef tc
 }
 
-static void
-render_prepared_os_window(
+static Window *
+render_prepared_os_window_content(
     OSWindow *os_window,
-    unsigned int active_window_id,
     color_type active_window_bg,
     unsigned int num_visible_windows,
     bool all_windows_have_same_bg,
     monotonic_t now) {
     Tab *tab = os_window->tabs + os_window->active_tab;
+    Window *active_window = NULL;
     setup_os_window_for_rendering(os_window, tab, NULL, true, now);
     BorderRects *br = &tab->border_rects;
     draw_borders(br->vao_idx, br->num_border_rects, br->rect_buf, br->is_dirty, active_window_bg, num_visible_windows, all_windows_have_same_bg, os_window);
     br->is_dirty = false;
     if (TD.screen && os_window->num_tabs && !os_window->has_too_few_tabs) draw_cells(&TD, os_window, true, true, false, NULL, NULL, now);
     unsigned int num_of_visible_windows = 0;
-    Window *active_window = NULL;
     for (unsigned int i = 0; i < tab->num_windows; i++) {
         if (tab->windows[i].visible) num_of_visible_windows++;
     }
@@ -1166,9 +1175,24 @@ render_prepared_os_window(
         }
     }
     draw_rounded_borders(br, active_window_bg, num_visible_windows, all_windows_have_same_bg, os_window);
+    return active_window;
+}
+
+static void
+render_prepared_os_window(
+    OSWindow *os_window,
+    unsigned int active_window_id,
+    color_type active_window_bg,
+    unsigned int num_visible_windows,
+    bool all_windows_have_same_bg,
+    monotonic_t now) {
+    Tab *tab = os_window->tabs + os_window->active_tab;
+    Window *active_window = NULL;
+    if (!os_window->pane_animation.reuse_content)
+        active_window = render_prepared_os_window_content(os_window, active_window_bg, num_visible_windows, all_windows_have_same_bg, now);
     setup_os_window_for_rendering(os_window, tab, active_window, false, now);
 #ifdef __APPLE__
-    cocoa_animate_pane_layout(os_window);
+    cocoa_update_search_overlay(os_window);
 #endif
     if (global_state.thumbnail_callback.os_window == os_window->id) {
         thumbnail_callback(os_window);
@@ -1201,6 +1225,23 @@ no_render_frame_received_recently(OSWindow *w, monotonic_t now, monotonic_t max_
 bool
 render_os_window(OSWindow *w, monotonic_t now, bool scan_for_animated_images) {
     if (!w->num_tabs) return false;
+#ifdef __APPLE__
+    // Run before visibility/frame gates so minimized windows also release idle
+    // textures. The context belongs to this window, never a shared layer FBO.
+    PaneAnimation *a = &w->pane_animation;
+    double at = monotonic_t_to_s_double(now);
+    bool wrong_size = a->texture_width != w->viewport_width || a->texture_height != w->viewport_height;
+    double idle = at - a->texture_used_at;
+    bool expired = idle >= PANE_ANIMATION_TEXTURE_IDLE_SECONDS;
+    uint64_t bytes = (uint64_t)a->texture_width * (uint64_t)a->texture_height * 4;
+    if (a->texture_id && (wrong_size || expired || (!a->active && bytes > PANE_ANIMATION_TEXTURE_CACHE_BYTES))) {
+        make_os_window_context_current(w);
+        free_texture(&a->texture_id);
+        a->content_valid = false;
+    }
+    if (a->texture_id)
+        set_maximum_wait(s_double_to_monotonic_t(MAX(0., PANE_ANIMATION_TEXTURE_IDLE_SECONDS - idle)));
+#endif
     if (!should_os_window_be_rendered(w) && global_state.thumbnail_callback.os_window != w->id) {
         update_os_window_title(w);
         if (w->is_focused) change_menubar_title(w->window_title);
@@ -1229,10 +1270,13 @@ render_os_window(OSWindow *w, monotonic_t now, bool scan_for_animated_images) {
         log_error("No fonts data found for window id: %llu", w->id);
         return false;
     }
+    bool force_content_render = needs_render;
     if (prepare_to_render_os_window(w, now, &active_window_id, &active_window_bg, &num_visible_windows, &all_windows_have_same_bg, scan_for_animated_images))
         needs_render = true;
-    if (w->last_active_window_id != active_window_id || w->last_active_tab != w->active_tab || w->focused_at_last_render != w->is_focused) needs_render = true;
-    if (w->render_calls < 3 && background_image_for_os_window(w) != NULL) needs_render = true;
+    if (w->last_active_window_id != active_window_id || w->last_active_tab != w->active_tab || w->focused_at_last_render != w->is_focused)
+        needs_render = force_content_render = true;
+    if (w->render_calls < 3 && background_image_for_os_window(w) != NULL) needs_render = force_content_render = true;
+    if (force_content_render) w->pane_animation.reuse_content = false;
     if (needs_render) render_prepared_os_window(w, active_window_id, active_window_bg, num_visible_windows, all_windows_have_same_bg, now);
     if (w->is_focused) change_menubar_title(w->window_title);
     return needs_render;
@@ -1261,7 +1305,7 @@ render(monotonic_t now, bool input_read) {
 #endif
         // Held bytes are not on this window yet. Painting it draws the old frame, and the
         // turn that parses them paints again because it ignores repaint_delay.
-        if (w->input_held && w->id != global_state.thumbnail_callback.os_window) {
+        if (w->input_held && !w->pane_animation.active && w->id != global_state.thumbnail_callback.os_window) {
             if (scan_for_animated_images) global_state.check_for_active_animated_images = true;
             continue;
         }
