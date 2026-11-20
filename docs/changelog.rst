@@ -86,6 +86,10 @@ Recent major new features
 - Bound the rounded-corner extension of pane gap shadows by the perpendicular
   gap, so a wide divider shadow no longer bleeds over a narrow top margin as a
   T-shaped ghost above the horizontal border.
+- macOS: Stop and remove the main-loop state-check timer before the monitor and
+  Python global state are destroyed, preventing a queued Cocoa tick from calling
+  into freed monitor data during shutdown.
+
 - Fix agent status remaining ``working`` in a restored sidebar until its pane
   is focused. Restored sidebars now start the same periodic status refresh as
   manually opened sidebars, including for unfocused panes.

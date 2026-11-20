@@ -1778,6 +1778,10 @@ main_loop(ChildMonitor *self, PyObject *a UNUSED) {
 #define main_loop_doc "The main thread loop"
     state_check_timer = add_main_loop_timer(1000, true, do_state_check, self, NULL);
     run_main_loop(process_global_state, self);
+    if (state_check_timer) {
+        remove_main_loop_timer(state_check_timer);
+        state_check_timer = 0;
+    }
 #ifdef __APPLE__
     cocoa_free_actions_data();
 #endif
