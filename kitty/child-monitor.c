@@ -1304,12 +1304,30 @@ render_os_window(OSWindow *w, monotonic_t now, bool scan_for_animated_images) {
     return needs_render;
 }
 
+// Pane spring animations are sampled from the render loop, so they must advance
+// once per display refresh. repaint_delay throttles ordinary content updates and
+// would otherwise drop or unevenly space animation frames on high refresh displays.
+static bool
+pane_animation_needs_render(monotonic_t now) {
+#ifdef __APPLE__
+    double at = monotonic_t_to_s_double(now);
+    for (size_t i = 0; i < global_state.num_os_windows; i++) {
+        const PaneAnimation *a = &global_state.os_windows[i].pane_animation;
+        if (a->active && at - a->started_at < a->duration) return true;
+    }
+#else
+    (void)now;
+#endif
+    return false;
+}
+
 static void
 render(monotonic_t now, bool input_read) {
     EVDBG("input_read: %d, check_for_active_animated_images: %d\n", input_read, global_state.check_for_active_animated_images);
     static monotonic_t last_render_at = MONOTONIC_T_MIN;
     monotonic_t time_since_last_render = last_render_at == MONOTONIC_T_MIN ? OPT(repaint_delay) : now - last_render_at;
-    if (!input_read && time_since_last_render < OPT(repaint_delay) && !global_state.thumbnail_callback.os_window) {
+    if (!input_read && !pane_animation_needs_render(now) && time_since_last_render < OPT(repaint_delay) &&
+        !global_state.thumbnail_callback.os_window) {
         set_maximum_wait(OPT(repaint_delay) - time_since_last_render);
         return;
     }
