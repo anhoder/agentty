@@ -1453,10 +1453,21 @@ static NSColor *KittySidebarSectionTint(BOOL agents_section) {
     return agents_section ? [NSColor systemPurpleColor] : [NSColor systemTealColor];
 }
 
-static NSColor *KittySidebarSectionBackgroundColor(BOOL agents_section) {
+static NSColor *KittySidebarSectionColor(BOOL agents_section, BOOL header) {
+    // Purple is darker than teal at the same blend fraction. Use per-hue
+    // fractions so both sections have matching content/header lightness.
+    CGFloat fraction = agents_section ? (header ? 0.07 : 0.04) : (header ? 0.12 : 0.07);
     NSColor *base = [NSColor controlBackgroundColor];
     NSColor *tint = KittySidebarSectionTint(agents_section);
-    return [base blendedColorWithFraction:agents_section ? 0.08 : 0.06 ofColor:tint];
+    return [base blendedColorWithFraction:fraction ofColor:tint];
+}
+
+static NSColor *KittySidebarSectionBackgroundColor(BOOL agents_section) {
+    return KittySidebarSectionColor(agents_section, NO);
+}
+
+static NSColor *KittySidebarSectionHeaderColor(BOOL agents_section) {
+    return KittySidebarSectionColor(agents_section, YES);
 }
 
 @implementation KittySidebarSectionButton
@@ -1484,7 +1495,7 @@ static NSColor *KittySidebarSectionBackgroundColor(BOOL agents_section) {
 - (void)drawRect:(NSRect)dirtyRect {
     (void)dirtyRect;
     NSColor *tint = KittySidebarSectionTint(self.agentsSection);
-    NSColor *band = KittySidebarSectionBackgroundColor(self.agentsSection);
+    NSColor *band = KittySidebarSectionHeaderColor(self.agentsSection);
     if (self.pointerHovered) {
         NSColor *hover_tint = self.agentsSection ? tint : [NSColor controlAccentColor];
         band = [band blendedColorWithFraction:0.12 ofColor:hover_tint];
