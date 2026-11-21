@@ -9,8 +9,8 @@ To update |kitty|, :doc:`follow the instructions <binary>`.
 Recent major new features
 ---------------------------
 
-- macOS: Show per-editor icons in the Editors sidebar section and align them
-  with the Agent row icon treatment.
+- macOS: Show colored per-editor brand icons in the Editors sidebar section
+  and align them with the Agent row icon treatment.
 
 - macOS: Remove the top inset above the Agents sidebar section so its heading
   starts at the window edge.
