@@ -73,6 +73,9 @@ Recent major new features
   display link running while an animation is live instead of restarting it
   after every swap, and do not throttle the animation with
   :opt:`repaint_delay`. Ordinary content updates stay throttled.
+- macOS: Cross-fade the previous layout while pane spring animations run, so
+  changing to or from the stack layout no longer flashes an empty region or
+  pops hidden panes into place.
 - macOS: Skip pane spring animations during keyboard and interactive pane
   resizing, including edge adjustments and size resets, just as for mouse drags.
 - macOS: Animate working-agent sidebar indicators using Core Animation layers

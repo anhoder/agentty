@@ -1253,11 +1253,18 @@ render_os_window(OSWindow *w, monotonic_t now, bool scan_for_animated_images) {
     PaneAnimation *a = &w->pane_animation;
     double at = monotonic_t_to_s_double(now);
     bool wrong_size = a->texture_width != w->viewport_width || a->texture_height != w->viewport_height;
+    bool backdrop_wrong_size = a->backdrop_width != w->viewport_width || a->backdrop_height != w->viewport_height;
     double idle = at - a->texture_used_at;
     bool expired = idle >= PANE_ANIMATION_TEXTURE_IDLE_SECONDS;
     uint64_t bytes = (uint64_t)a->texture_width * (uint64_t)a->texture_height * 4;
-    if (a->texture_id && (wrong_size || expired || (!a->active && bytes > PANE_ANIMATION_TEXTURE_CACHE_BYTES))) {
-        make_os_window_context_current(w);
+    bool free_backdrop = a->backdrop_texture_id && (backdrop_wrong_size || !a->active);
+    bool free_texture_id = a->texture_id && (wrong_size || expired || (!a->active && bytes > PANE_ANIMATION_TEXTURE_CACHE_BYTES));
+    if (free_backdrop || free_texture_id) make_os_window_context_current(w);
+    if (free_backdrop) {
+        free_texture(&a->backdrop_texture_id);
+        a->backdrop_valid = false;
+    }
+    if (free_texture_id) {
         free_texture(&a->texture_id);
         a->content_valid = false;
     }

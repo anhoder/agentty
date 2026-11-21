@@ -32,6 +32,11 @@ typedef struct {
     double started_at, duration, texture_used_at;
     uint32_t texture_id;
     int texture_width, texture_height;
+    // The last content frame from before a layout change, faded out while the
+    // new layout animates so the transition does not start from a blank region.
+    uint32_t backdrop_texture_id;
+    int backdrop_width, backdrop_height;
+    bool backdrop_valid;
 } PaneAnimation;
 
 static inline bool

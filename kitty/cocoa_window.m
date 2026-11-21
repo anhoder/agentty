@@ -585,7 +585,36 @@ cocoa_prepare_pane_animation(void *ptr, monotonic_t now) {
         visible++;
     }
     changed |= visible != a->count;
+    bool animate = enabled && compatible && a->count && visible;
     if (changed || !compatible) {
+        // Capture the frame currently displayed as an outgoing backdrop so the
+        // new layout can cross-fade instead of revealing the window background.
+        if (a->backdrop_texture_id) {
+            free_texture(&a->backdrop_texture_id);
+            a->backdrop_valid = false;
+        }
+        const int width = osw->viewport_width, height = osw->viewport_height;
+        if (animate && width > 0 && height > 0 && (uint64_t)width * (uint64_t)height * 4 <= PANE_ANIMATION_TEXTURE_CACHE_BYTES) {
+            // Capture the frame currently in the default back buffer. It is the
+            // layout last displayed before this transition, so the fade always
+            // uses current content rather than a stale cached animation frame.
+            glActiveTexture(GL_TEXTURE0);
+            glGenTextures(1, &a->backdrop_texture_id);
+            glBindTexture(GL_TEXTURE_2D, a->backdrop_texture_id);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+            glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, width, height, 0, GL_RGBA, GL_UNSIGNED_BYTE, NULL);
+            GLint previous_read_fbo = 0;
+            glGetIntegerv(GL_READ_FRAMEBUFFER_BINDING, &previous_read_fbo);
+            glBindFramebuffer(GL_READ_FRAMEBUFFER, 0);
+            glCopyTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, 0, 0, width, height);
+            glBindFramebuffer(GL_READ_FRAMEBUFFER, (GLuint)previous_read_fbo);
+            a->backdrop_width = width;
+            a->backdrop_height = height;
+            a->backdrop_valid = true;
+        }
         a->content_valid = false;
         // Reuse two geometry arrays so retargeting never overwrites an old frame
         // before another pane has sampled its current presentation position.
@@ -596,7 +625,6 @@ cocoa_prepare_pane_animation(void *ptr, monotonic_t now) {
             if (!a->frames || !a->next_frames) fatal("Out of memory storing pane animation geometry");
         }
         size_t n = 0;
-        bool animate = enabled && compatible && a->count && visible;
         double scale = MAX(1., [(NSWindow *)glfwGetCocoaWindow(osw->handle) backingScaleFactor]);
         for (unsigned i = 0; i < tab->num_windows; i++) {
             Window *w = tab->windows + i;
