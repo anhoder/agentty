@@ -100,7 +100,7 @@ def editor_row(window: Any, is_active: bool) -> AgentSidebarRow | None:
     editor = detect_editor(window.child.foreground_processes)
     if editor is None:
         return None
-    cwd = window.cwd_of_child or ''
+    cwd = window.cwd_of_child or getattr(window.child, 'cwd', '') or ''
     title = f'{editor} · {window.title}' if window.title else editor
     return AgentSidebarRow(window.id, editor, f'editor:{editor}', editor, title, os.path.basename(cwd) or cwd,
                            AgentState.unknown, is_active, 'editor', project_key_for_cwd(cwd))

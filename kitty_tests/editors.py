@@ -150,6 +150,11 @@ class TestEditors(BaseTest):
             with self.subTest(cwd=cwd):
                 window.cwd_of_child = cwd
                 self.ae(editor_row(window, True).detail, expected)
+        window.cwd_of_child = None
+        window.child.cwd = '/tmp/child-project'
+        row = editor_row(window, True)
+        self.ae(row.detail, 'child-project')
+        self.ae(row.project_key, project_key_for_cwd('/tmp/child-project'))
 
     def test_project_key_groups_subdirectories(self):
         project_key_for_cwd.cache_clear()

@@ -2036,6 +2036,9 @@ class Boss:
     def _refresh_agent_sidebar_scope(self, scope: tuple[TabManager, ...]) -> None:
         from .editors import editor_row
 
+        # Keep cached project roots fresh if a directory becomes a Git worktree
+        # while the sidebar is open; reuse them within this refresh only.
+        project_key_for_cwd.cache_clear()
         active_window = self.active_window
         strategy = get_options().agents_sidebar_grouping
         rows: list[AgentSidebarRow] = []

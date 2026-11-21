@@ -2132,7 +2132,10 @@ static NSColor *KittySidebarSectionHeaderColor(BOOL agents_section) {
 }
 
 - (KittyAgentsSidebarEntry *)linkEntryForWindowID:(unsigned long long)window_id editor:(BOOL)editor {
-    return (editor ? editors_by_id : entries_by_id)[@(window_id)];
+    NSNumber *key = @(window_id);
+    KittyAgentsSidebarEntry *entry = (editor ? editors_by_id : entries_by_id)[key];
+    if (!entry) entry = (editor ? entries_by_id : editors_by_id)[key];
+    return entry;
 }
 
 - (void)clearRelatedLinkState {
@@ -2177,11 +2180,29 @@ static NSColor *KittySidebarSectionHeaderColor(BOOL agents_section) {
     return found;
 }
 
+- (BOOL)linkSourceIsSelected {
+    if (!link_source_window_id) return NO;
+    if (link_source_is_editor) {
+        if (editor_outline.selectedRow < 0) return NO;
+        id node = [editor_outline itemAtRow:editor_outline.selectedRow];
+        return [node isKindOfClass:[KittyAgentsSidebarEntry class]] &&
+            ((KittyAgentsSidebarEntry *)node)->identity.unsignedLongLongValue == link_source_window_id;
+    }
+    if (outline.selectedRow < 0) return NO;
+    id node = [outline itemAtRow:outline.selectedRow];
+    return [node isKindOfClass:[NSNumber class]] && [node unsignedLongLongValue] == link_source_window_id;
+}
+
 - (void)updateRelatedLinkState {
     KittyAgentsSidebarEntry *source = nil;
-    if (link_source_window_id) source = [self linkEntryForWindowID:link_source_window_id editor:link_source_is_editor];
-    if (source) [self applyLinkStateFromEntry:source];
-    else {
+    if (link_source_window_id && [self linkSourceIsSelected])
+        source = [self linkEntryForWindowID:link_source_window_id editor:link_source_is_editor];
+    if (source) {
+        link_source_is_editor = source->editor;
+        [self applyLinkStateFromEntry:source];
+    } else {
+        link_source_window_id = 0;
+        link_source_is_editor = NO;
         [self clearRelatedLinkState];
         [self refreshRelatedLinkRowViews];
     }
@@ -2189,6 +2210,10 @@ static NSColor *KittySidebarSectionHeaderColor(BOOL agents_section) {
 
 - (void)clearOtherOutlineSelection:(NSOutlineView *)view {
     NSOutlineView *other = view == outline ? editor_outline : outline;
+    if (other == outline) {
+        [remembered_selection release];
+        remembered_selection = nil;
+    }
     if (other.selectedRow < 0) return;
     BOOL was_syncing = syncing_outline;
     syncing_outline = YES;
@@ -2413,6 +2438,13 @@ static NSColor *KittySidebarSectionHeaderColor(BOOL agents_section) {
     if (view.selectedRow < 0 && view.numberOfRows) [view selectRowIndexes:[NSIndexSet indexSetWithIndex:0] byExtendingSelection:NO];
     view.keyboardFocusRequested = YES;
     [self.window makeFirstResponder:view];
+    if (view == outline) {
+        id selected = view.selectedRow >= 0 ? [view itemAtRow:view.selectedRow] : nil;
+        [remembered_selection release];
+        remembered_selection = [selected retain];
+    }
+    [self clearOtherOutlineSelection:view];
+    [self setLinkSourceFromOutline:view];
     [self setFocusBorderNeedsDisplay];
 }
 - (void)sendCommand:(NSString *)command windowID:(unsigned long long)window_id {
@@ -2431,8 +2463,13 @@ static NSColor *KittySidebarSectionHeaderColor(BOOL agents_section) {
     if (row < 0) return nil;
     [view selectRowIndexes:[NSIndexSet indexSetWithIndex:(NSUInteger)row] byExtendingSelection:NO];
     [self clearOtherOutlineSelection:view];
+    id item = [view itemAtRow:row];
+    if (view == outline) {
+        [remembered_selection release];
+        remembered_selection = [item retain];
+    }
     [self setLinkSourceFromOutline:view];
-    return [view itemAtRow:row];
+    return item;
 }
 
 - (void)outlineClicked:(id)sender {
@@ -2462,6 +2499,13 @@ static NSColor *KittySidebarSectionHeaderColor(BOOL agents_section) {
             next.keyboardFocusRequested = YES;
             [self.window makeFirstResponder:next];
             if (next.selectedRow < 0 && next.numberOfRows) [next selectRowIndexes:[NSIndexSet indexSetWithIndex:0] byExtendingSelection:NO];
+            if (next == outline) {
+                id selected = next.selectedRow >= 0 ? [next itemAtRow:next.selectedRow] : nil;
+                [remembered_selection release];
+                remembered_selection = [selected retain];
+            }
+            [self clearOtherOutlineSelection:next];
+            [self setLinkSourceFromOutline:next];
         } else [self kittySidebarCancelNavigation];
         return YES;
     }
@@ -2692,18 +2736,32 @@ static NSColor *KittySidebarSectionHeaderColor(BOOL agents_section) {
         NSMutableArray *next_editors = [NSMutableArray array];
         for (KittyAgentsSidebarEntry *entry in entries) if (entry->editor && entry->identity.unsignedLongLongValue && entry->label.length) [next_editors addObject:entry];
         if (![editor_entries isEqualToArray:next_editors]) {
-            id selected = editor_outline.selectedRow >= 0 ? [[editor_outline itemAtRow:editor_outline.selectedRow] retain] : nil;
+            unsigned long long selected_editor_id = 0;
+            if (editor_outline.selectedRow >= 0) {
+                id selected = [editor_outline itemAtRow:editor_outline.selectedRow];
+                if ([selected isKindOfClass:[KittyAgentsSidebarEntry class]])
+                    selected_editor_id = ((KittyAgentsSidebarEntry *)selected)->identity.unsignedLongLongValue;
+            }
+            if (selected_editor_id) {
+                [remembered_selection release];
+                remembered_selection = nil;
+            }
             NSPoint anchor = editor_scroll_view.contentView.bounds.origin;
             BOOL was_syncing = syncing_outline;
             syncing_outline = YES;
             [editor_entries release]; editor_entries = [next_editors copy];
             [editor_outline reloadData];
-            NSInteger row = selected ? [editor_outline rowForItem:selected] : -1;
+            NSInteger row = -1;
+            if (selected_editor_id) {
+                for (NSUInteger i = 0; i < editor_entries.count; i++) {
+                    KittyAgentsSidebarEntry *entry = editor_entries[i];
+                    if (entry->identity.unsignedLongLongValue == selected_editor_id) { row = (NSInteger)i; break; }
+                }
+            }
             if (row >= 0) [editor_outline selectRowIndexes:[NSIndexSet indexSetWithIndex:(NSUInteger)row] byExtendingSelection:NO];
             [editor_scroll_view.contentView scrollToPoint:anchor];
             [editor_scroll_view reflectScrolledClipView:editor_scroll_view.contentView];
             syncing_outline = was_syncing;
-            [selected release];
         }
         NSUInteger agent_count = 0;
         for (NSNumber *identity in entries_by_id) if (identity.unsignedLongLongValue) agent_count++;

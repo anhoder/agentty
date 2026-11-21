@@ -160,6 +160,12 @@ class TestSidebarSections(BaseTest):
         self.assertFalse(link_state(agent, 'linked'))
         self.assertGreaterEqual(send(editor_outline, 'selectedRow', C.c_long), 0)
         self.ae(send(outline, 'selectedRow', C.c_long), -1)
+        # Rebuilding the agent outline must not restore a stale agent selection.
+        send(view, 'rebuildOutline', None, ())
+        self.ae(send(outline, 'selectedRow', C.c_long), -1)
+        self.assertGreaterEqual(send(editor_outline, 'selectedRow', C.c_long), 0)
+        self.assertTrue(link_state(editor, 'linked'))
+        self.assertTrue(link_state(agent, 'related'))
 
         # Different project keys must not link.
         rows(agent_project_key=b'/tmp/a', editor_project_key=b'/tmp/b')
@@ -168,6 +174,14 @@ class TestSidebarSections(BaseTest):
         self.assertFalse(link_state(editor, 'related'))
         self.assertFalse(link_state(editor, 'linked'))
         rows()
+        select_entry(editor_outline, editor)
+        rows(agent_id=8, editor_id=7)
+        self.assertGreaterEqual(send(editor_outline, 'selectedRow', C.c_long), 0)
+        self.assertTrue(link_state(entry('editors_by_id', 7), 'linked'))
+        self.assertTrue(link_state(entry('entries_by_id', 8), 'related'))
+        rows()
+        agent, editor = entry('entries_by_id', 7), entry('editors_by_id', 7)
+        agent_identity = get(agent, 'identity')
 
         cell = send(outline, 'viewAtColumn:row:makeIfNecessary:', types=(C.c_long, C.c_long, C.c_bool), args=(0, 0, True))
         rows(label=b'Updated editor')
