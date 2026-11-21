@@ -2,10 +2,11 @@
 # License: GPLv3 Copyright: 2026, Kovid Goyal <kovid at kovidgoyal.net>
 
 import ctypes as C
+import os
 import platform
 import unittest
 
-from kitty.constants import is_macos
+from kitty.constants import is_macos, kitty_base_dir
 
 from .base import BaseTest
 
@@ -85,11 +86,17 @@ class TestSidebarSections(BaseTest):
                     types=(C.c_uint, C.c_double, C.c_uint), args=(0, 260, 8))
         self.assertTrue(view)
         self.addCleanup(lambda: send(view, 'release', None))
+        icons_dir = os.path.join(kitty_base_dir, 'kitty', 'agent_icons')
+        send(view, 'setValue:forKey:', None, (ptr, ptr), (string(icons_dir), string('iconsDir')))
+        for editor in ('nvim', 'vim', 'vi', 'view'):
+            icon = send(view, 'iconForEditor:textColor:', types=(ptr, ptr),
+                        args=(string(editor), send(cls('NSColor'), 'labelColor')))
+            self.assertTrue(icon, editor)
 
         def rows(agent_id=7, editor_id=7, label=b'nvim'):
             ids = (C.c_ulonglong * 2)(agent_id, editor_id)
             strings = [(C.c_char_p * 2)(*values) for values in (
-                (b'', b''), (b'', b''), (b'claude', b''), (b'Agent', label), (b'', b''))]
+                (b'', b''), (b'', b''), (b'claude', b'vim'), (b'Agent', label), (b'', b''))]
             states = (C.c_ubyte * 2)(2, 0)
             active = (C.c_bool * 2)(False, False)
             kinds = (C.c_char_p * 2)(b'agent', b'editor')
@@ -172,6 +179,7 @@ class TestSidebarSections(BaseTest):
             self.assertTrue(send(get(view, key), 'expanded', C.c_bool))
         self.assertTrue(send(get(view, 'agents_header'), 'agentsSection', C.c_bool))
         self.assertFalse(send(get(view, 'editors_header'), 'agentsSection', C.c_bool))
+        self.assertAlmostEqual(frame('agents_header').origin.y, 0)
         divider_hit_view = get(view, 'divider_hit_view')
         self.assertFalse(send(divider_hit_view, 'isHidden', C.c_bool))
         self.assertAlmostEqual(frame('divider_hit_view').size.height, 8)

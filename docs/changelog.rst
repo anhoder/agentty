@@ -9,6 +9,15 @@ To update |kitty|, :doc:`follow the instructions <binary>`.
 Recent major new features
 ---------------------------
 
+- macOS: Show per-editor icons in the Editors sidebar section and align them
+  with the Agent row icon treatment.
+
+- macOS: Remove the top inset above the Agents sidebar section so its heading
+  starts at the window edge.
+
+- macOS: Mark the current pane in the pane switcher and draw preview images
+  with a rounded shadowed border.
+
 - macOS: Show the vertical-resize cursor across the full divider hit area
   between the Agents and Editors sections, matching its drag behavior.
 

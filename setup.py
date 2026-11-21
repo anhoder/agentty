@@ -2189,7 +2189,7 @@ def package(args: Options, bundle_type: str, do_build_all: bool = True) -> None:
     shutil.copytree('shell-integration', os.path.join(libdir, 'shell-integration'), dirs_exist_ok=True)
     shutil.copytree('fonts', os.path.join(libdir, 'fonts'), dirs_exist_ok=True)
     # toml: the agent detection manifests in kitty/agent_manifests/
-    # svg/png: agent brand icons in kitty/agent_icons/
+    # svg/png: agent and editor brand icons in kitty/agent_icons/
     allowed_extensions = frozenset('py slang pipeline glsl so toml svg png'.split())
 
     def src_ignore(parent: str, entries: Iterable[str]) -> List[str]:

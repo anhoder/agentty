@@ -687,7 +687,7 @@ extern bool cocoa_dispatch_pane_switcher_shortcut(void *, const GLFWkeyevent *);
 @public
     id_type os_window_id, tab_id;
     NSMutableArray<KittyPaneSwitcherEntry *> *entries;
-    NSUInteger selected, columns;
+    NSUInteger selected, current_index, columns;
     CGFloat tile_width, tile_height;
     NSRect panel_rect;
     NSScrollView *scroll_view;
@@ -724,20 +724,29 @@ extern bool cocoa_dispatch_pane_switcher_shortcut(void *, const GLFWkeyevent *);
         if (!NSIntersectsRect(tile, dirtyRect)) continue;
         KittyPaneSwitcherEntry *entry = owner->entries[i];
         BOOL selected = i == owner->selected;
+        BOOL current = i == owner->current_index;
         NSBezierPath *outline = [NSBezierPath bezierPathWithRoundedRect:NSInsetRect(tile, 2, 2) xRadius:8 yRadius:8];
         [(selected ? [NSColor.selectedControlColor colorWithAlphaComponent:0.16] : NSColor.controlBackgroundColor) setFill];
         [outline fill];
         if (selected) { [NSColor.selectedControlColor setStroke]; outline.lineWidth = 2; [outline stroke]; }
         NSRect preview = NSMakeRect(tile.origin.x + 10, tile.origin.y + 10, MAX(0, tile.size.width - 20), MAX(0, tile.size.height - 44));
+        NSBezierPath *preview_path = [NSBezierPath bezierPathWithRoundedRect:preview xRadius:5 yRadius:5];
+        NSShadow *preview_shadow = [[[NSShadow alloc] init] autorelease];
+        preview_shadow.shadowColor = [[NSColor blackColor] colorWithAlphaComponent:0.36];
+        preview_shadow.shadowBlurRadius = 7;
+        preview_shadow.shadowOffset = NSMakeSize(0, 2);
+        [NSGraphicsContext saveGraphicsState];
+        [preview_shadow set];
         [NSColor.textBackgroundColor setFill];
-        NSRectFill(preview);
+        [preview_path fill];
+        [NSGraphicsContext restoreGraphicsState];
         if (entry->image && preview.size.width > 0 && preview.size.height > 0) {
             NSSize size = entry->image.size;
             CGFloat scale = MAX(preview.size.width / size.width, preview.size.height / size.height);
             NSRect target = NSMakeRect(NSMidX(preview) - size.width * scale / 2, NSMidY(preview) - size.height * scale / 2,
                 size.width * scale, size.height * scale);
             [NSGraphicsContext saveGraphicsState];
-            NSRectClip(preview);
+            [preview_path addClip];
             [entry->image drawInRect:target fromRect:NSZeroRect operation:NSCompositingOperationSourceOver fraction:1
                 respectFlipped:YES hints:@{NSImageHintInterpolation: @(NSImageInterpolationHigh)}];
             [NSGraphicsContext restoreGraphicsState];
@@ -745,7 +754,26 @@ extern bool cocoa_dispatch_pane_switcher_shortcut(void *, const GLFWkeyevent *);
             [(entry->pending ? @"Loading preview…" : @"Preview unavailable") drawInRect:
                 NSMakeRect(preview.origin.x + 4, NSMidY(preview) - 8, MAX(0, preview.size.width - 8), 18) withAttributes:loading_attributes];
         }
-        [entry->title drawInRect:NSMakeRect(tile.origin.x + 12, NSMaxY(tile) - 28, MAX(0, tile.size.width - 24), 18)
+        [[NSColor.separatorColor colorWithAlphaComponent:0.9] setStroke];
+        preview_path.lineWidth = 1;
+        [preview_path stroke];
+        CGFloat title_right = NSMaxX(tile) - 12;
+        if (current) {
+            NSString *badge_text = @"CURRENT";
+            NSDictionary *badge_attributes = @{NSFontAttributeName: [NSFont systemFontOfSize:9 weight:NSFontWeightBold],
+                NSForegroundColorAttributeName: [NSColor alternateSelectedControlTextColor]};
+            NSSize badge_text_size = [badge_text sizeWithAttributes:badge_attributes];
+            CGFloat badge_height = 16;
+            CGFloat badge_width = badge_text_size.width + 10;
+            NSRect badge = NSMakeRect(title_right - badge_width, NSMaxY(tile) - 29, badge_width, badge_height);
+            NSBezierPath *badge_path = [NSBezierPath bezierPathWithRoundedRect:badge xRadius:badge_height / 2 yRadius:badge_height / 2];
+            [[NSColor controlAccentColor] setFill];
+            [badge_path fill];
+            [badge_text drawInRect:NSMakeRect(NSMinX(badge) + 5, NSMidY(badge) - badge_text_size.height / 2,
+                badge_text_size.width, badge_text_size.height) withAttributes:badge_attributes];
+            title_right = NSMinX(badge) - 8;
+        }
+        [entry->title drawInRect:NSMakeRect(tile.origin.x + 12, NSMaxY(tile) - 28, MAX(0, title_right - tile.origin.x - 12), 18)
             withAttributes:title_attributes];
     }
 }
@@ -948,7 +976,7 @@ cocoa_show_pane_switcher(void *ptr, id_type tab_id, PyObject *rows, id_type acti
     if (!valid || !entries.count || active_index == NSNotFound) return false;
     KittyPaneSwitcher *switcher = [[[KittyPaneSwitcher alloc] initWithFrame:window.contentView.bounds] autorelease];
     switcher->os_window_id = osw->id; switcher->tab_id = tab_id; switcher->hosting_window = window;
-    switcher->entries = [entries mutableCopy]; switcher->selected = active_index; switcher->columns = 1;
+    switcher->entries = [entries mutableCopy]; switcher->selected = active_index; switcher->current_index = active_index; switcher->columns = 1;
     switcher->initiating_delta = delta ? delta : 1;
     NSEvent *event = objc_getAssociatedObject(window, NSSelectorFromString(@"kittyPaneSwitcherInitiatingEvent"));
     if (!event) event = NSApp.currentEvent;
@@ -1883,7 +1911,7 @@ static NSColor *KittySidebarSectionBackgroundColor(BOOL agents_section) {
     return NSMakeRect(NSMinX(section_divider.frame), y, section_divider.frame.size.width, hit_height);
 }
 - (CGFloat)dividerDragAvailableHeight {
-    return MAX(1, self.bounds.size.height - 6 - 60 - 1);
+    return MAX(1, self.bounds.size.height - 60 - 1);
 }
 - (void)mouseDown:(NSEvent *)event {
     NSPoint point = [self convertPoint:event.locationInWindow fromView:nil];
@@ -1955,8 +1983,8 @@ static NSColor *KittySidebarSectionBackgroundColor(BOOL agents_section) {
     [super setFrameSize:size];
     [background_view setFrame:self.frame];
     CGFloat width = MAX(0, size.width - 2), height = MAX(0, size.height);
-    CGFloat agents_header_y = MIN(6, height);
-    CGFloat header_height = MIN(30, MAX(0, height - agents_header_y) / 2);
+    CGFloat agents_header_y = 0;
+    CGFloat header_height = MIN(30, MAX(0, height) / 2);
     CGFloat divider_height = (!agents_collapsed && !editors_collapsed) ? MIN(1, MAX(0, height - agents_header_y - 2 * header_height)) : 0;
     CGFloat available = MAX(0, height - agents_header_y - 2 * header_height - divider_height);
     CGFloat agent_height = 0, editor_height = 0;
@@ -2617,6 +2645,13 @@ static NSColor *KittySidebarSectionBackgroundColor(BOOL agents_section) {
     return icon;
 }
 
+- (NSImage *)iconForEditor:(NSString *)editor textColor:(NSColor *)textColor {
+    NSImage *icon = [self iconForAgent:editor textColor:textColor];
+    if (!icon && ([editor isEqualToString:@"vi"] || [editor isEqualToString:@"view"]))
+        icon = [self iconForAgent:@"vim" textColor:textColor];
+    return icon;
+}
+
 - (NSString *)labelForNode:(id)node {
     if ([node isKindOfClass:[KittyAgentsSidebarEntry class]]) {
         KittyAgentsSidebarEntry *entry = node;
@@ -2662,9 +2697,17 @@ static NSColor *KittySidebarSectionBackgroundColor(BOOL agents_section) {
     NSColor *primary = active ? [NSColor alternateSelectedControlTextColor] : [NSColor controlTextColor];
     NSColor *secondary = active ? [NSColor alternateSelectedControlTextColor] : [NSColor secondaryLabelColor];
     if (entry->editor) {
-        NSImage *icon = [NSImage imageWithSystemSymbolName:@"terminal" accessibilityDescription:@"Editor"];
-        icon = [icon imageWithSymbolConfiguration:[NSImageSymbolConfiguration configurationWithHierarchicalColor:primary]];
-        [icon drawInRect:NSMakeRect(8, NSMidY(rect) - 9, 18, 18)];
+        NSImage *icon = [self iconForEditor:entry->agent textColor:primary];
+        if (!icon) {
+            icon = [NSImage imageWithSystemSymbolName:@"terminal" accessibilityDescription:@"Editor"];
+            icon = [icon imageWithSymbolConfiguration:[NSImageSymbolConfiguration configurationWithHierarchicalColor:primary]];
+        }
+        if (icon && icon.size.width > 0 && icon.size.height > 0) {
+            CGFloat scale = MIN(16 / icon.size.width, 16 / icon.size.height);
+            NSSize size = NSMakeSize(icon.size.width * scale, icon.size.height * scale);
+            [icon drawInRect:NSMakeRect(8 + (18 - size.width) / 2, NSMidY(rect) - size.height / 2, size.width, size.height)
+                   fromRect:NSZeroRect operation:NSCompositingOperationSourceOver fraction:1 respectFlipped:YES hints:nil];
+        }
         NSDictionary *attrs = @{NSFontAttributeName:[NSFont boldSystemFontOfSize:12], NSForegroundColorAttributeName:primary,
             NSParagraphStyleAttributeName:paragraph};
         [entry->label drawInRect:NSMakeRect(34, NSMidY(rect) - 16, MAX(0, rect.size.width - 42), 17) withAttributes:attrs];
