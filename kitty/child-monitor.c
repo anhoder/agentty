@@ -1311,10 +1311,8 @@ static bool
 pane_animation_needs_render(monotonic_t now) {
 #ifdef __APPLE__
     double at = monotonic_t_to_s_double(now);
-    for (size_t i = 0; i < global_state.num_os_windows; i++) {
-        const PaneAnimation *a = &global_state.os_windows[i].pane_animation;
-        if (a->active && at - a->started_at < a->duration) return true;
-    }
+    for (size_t i = 0; i < global_state.num_os_windows; i++)
+        if (pane_animation_active_at(&global_state.os_windows[i].pane_animation, at)) return true;
 #else
     (void)now;
 #endif

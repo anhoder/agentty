@@ -35,6 +35,11 @@ typedef struct {
 } PaneAnimation;
 
 static inline bool
+pane_animation_active_at(const PaneAnimation *a, double at) {
+    return a->active && at - a->started_at < a->duration;
+}
+
+static inline bool
 pane_animation_rect_equal(PaneAnimationRect a, PaneAnimationRect b) {
     return a.x == b.x && a.y == b.y && a.width == b.width && a.height == b.height;
 }

@@ -67,9 +67,10 @@ Recent major new features
 - macOS: Composite pane spring animations from live OpenGL textures without
   reading terminal pixels back to the CPU. Keep rapid layout changes continuous
   and preserve transparency, live output and interactive resize behavior.
-- macOS: Advance pane spring animations at the display refresh rate instead of
-  throttling them with :opt:`repaint_delay`, removing judder on high refresh
-  displays while keeping ordinary content updates throttled.
+- macOS: Keep pane spring animations at the display refresh rate: keep the
+  display link running while an animation is live instead of restarting it
+  after every swap, and do not throttle the animation with
+  :opt:`repaint_delay`. Ordinary content updates stay throttled.
 - macOS: Skip pane spring animations during keyboard and interactive pane
   resizing, including edge adjustments and size resets, just as for mouse drags.
 - macOS: Animate working-agent sidebar indicators using Core Animation layers
