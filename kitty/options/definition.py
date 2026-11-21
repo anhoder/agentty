@@ -3775,8 +3775,8 @@ opt(
     option_type='to_bool',
     ctype='bool',
     long_text="""
-macOS: Animate the content backgrounds of the Agents and Editors sidebar
-sections with a slow tinted shimmer, using the purple Agents tint and the teal
+macOS: Give the content backgrounds of the Agents and Editors sidebar sections
+a gentle, slow breathing tint, using the purple Agents tint and the teal
 Editors tint. Disabled by default. The macOS Reduce Motion setting also
 disables the animation. This option has no effect on other platforms.
 """,

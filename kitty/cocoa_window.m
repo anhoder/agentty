@@ -1593,9 +1593,8 @@ static NSColor *KittySidebarSectionHeaderColor(BOOL agents_section) {
         host.masksToBounds = YES;
         glow = [[CAGradientLayer layer] retain];
         glow.type = kCAGradientLayerAxial;
-        glow.startPoint = CGPointMake(0.0, 0.25);
-        glow.endPoint = CGPointMake(1.0, 0.75);
-        glow.locations = @[@(0.0), @(0.12), @(0.24)];
+        glow.startPoint = CGPointMake(0.0, 0.0);
+        glow.endPoint = CGPointMake(1.0, 1.0);
         glow.opacity = 0.0f;
         [host addSublayer:glow];
         [self updateGlowColors];
@@ -1607,11 +1606,11 @@ static NSColor *KittySidebarSectionHeaderColor(BOOL agents_section) {
 - (void)updateGlowColors {
     NSColor *tint = KittySidebarSectionTint(agents_section);
     void (^apply)(void) = ^{
-        CGColorRef transparent = [tint colorWithAlphaComponent:0.0].CGColor;
-        CGColorRef highlight = [tint colorWithAlphaComponent:0.16].CGColor;
+        CGColorRef start = [tint colorWithAlphaComponent:agents_section ? 0.05 : 0.06].CGColor;
+        CGColorRef end = [tint colorWithAlphaComponent:0.015].CGColor;
         [CATransaction begin];
         [CATransaction setDisableActions:YES];
-        glow.colors = @[(id)transparent, (id)highlight, (id)transparent];
+        glow.colors = @[(id)start, (id)end];
         [CATransaction commit];
     };
     if (@available(macOS 11.0, *)) [self.effectiveAppearance performAsCurrentDrawingAppearance:apply];
@@ -1630,17 +1629,17 @@ static NSColor *KittySidebarSectionHeaderColor(BOOL agents_section) {
     [CATransaction begin];
     [CATransaction setDisableActions:YES];
     if (animate) {
-        CABasicAnimation *drift = [CABasicAnimation animationWithKeyPath:@"locations"];
-        drift.fromValue = @[@(0.0), @(0.12), @(0.24)];
-        drift.toValue = @[@(0.76), @(0.88), @(1.0)];
-        drift.duration = agents_section ? 7.5 : 9.5;
-        drift.autoreverses = YES;
-        drift.repeatCount = HUGE_VALF;
-        drift.timingFunction = [CAMediaTimingFunction functionWithName:kCAMediaTimingFunctionEaseInEaseOut];
-        [glow addAnimation:drift forKey:@"sidebar-glow-drift"];
+        CABasicAnimation *breathe = [CABasicAnimation animationWithKeyPath:@"opacity"];
+        breathe.fromValue = @(0.65);
+        breathe.toValue = @(1.0);
+        breathe.duration = agents_section ? 9.0 : 11.0;
+        breathe.autoreverses = YES;
+        breathe.repeatCount = HUGE_VALF;
+        breathe.timingFunction = [CAMediaTimingFunction functionWithName:kCAMediaTimingFunctionEaseInEaseOut];
+        [glow addAnimation:breathe forKey:@"sidebar-glow-breathe"];
         glow.opacity = 1.0f;
     } else {
-        [glow removeAnimationForKey:@"sidebar-glow-drift"];
+        [glow removeAnimationForKey:@"sidebar-glow-breathe"];
         glow.opacity = 0.0f;
     }
     [CATransaction commit];
