@@ -1290,7 +1290,7 @@ agents_sidebar_update_string(NSString **string, const char *value) {
     NSArray *root_nodes;
     NSDictionary *group_children;
     NSArray *editor_entries;
-    NSView *agents_section, *editors_section, *section_divider;
+    NSView *agents_section, *editors_section, *section_divider, *divider_hit_view;
     NSButton *agents_header, *editors_header;
     NSScrollView *editor_scroll_view;
     KittyAgentsOutlineView *editor_outline;
@@ -1708,6 +1708,23 @@ static NSColor *KittySidebarSectionBackgroundColor(BOOL agents_section) {
 @end
 
 
+@interface KittySidebarDividerHitView : NSView
+@property(assign) KittyAgentsSidebarView *sidebar;
+@end
+
+@implementation KittySidebarDividerHitView
+- (BOOL)acceptsFirstMouse:(NSEvent *)event { (void)event; return YES; }
+- (void)resetCursorRects {
+    [super resetCursorRects];
+    NSRect visible = NSIntersectionRect(self.bounds, self.visibleRect);
+    if (!NSIsEmptyRect(visible)) [self addCursorRect:visible cursor:[NSCursor resizeUpDownCursor]];
+}
+- (void)cursorUpdate:(NSEvent *)event { (void)event; [[NSCursor resizeUpDownCursor] set]; }
+- (void)mouseDown:(NSEvent *)event { [self.sidebar mouseDown:event]; }
+- (void)mouseDragged:(NSEvent *)event { [self.sidebar mouseDragged:event]; }
+- (void)mouseUp:(NSEvent *)event { [self.sidebar mouseUp:event]; }
+@end
+
 @implementation KittyAgentsSidebarView
 - (instancetype)initWithOSWindowID:(unsigned)window_id width:(CGFloat)width cellWidth:(unsigned)cell_width {
     self = [super initWithFrame:NSMakeRect(0, 0, width, 100)];
@@ -1819,6 +1836,10 @@ static NSColor *KittySidebarSectionBackgroundColor(BOOL agents_section) {
         section_divider = [[NSView alloc] initWithFrame:NSZeroRect];
         section_divider.wantsLayer = YES; section_divider.layer.backgroundColor = [NSColor separatorColor].CGColor;
         [self addSubview:section_divider];
+        divider_hit_view = [[KittySidebarDividerHitView alloc] initWithFrame:NSZeroRect];
+        ((KittySidebarDividerHitView *)divider_hit_view).sidebar = self;
+        divider_hit_view.hidden = YES;
+        [self addSubview:divider_hit_view];
         self.identifier = @"kitty-agents-sidebar";
         self.autoresizingMask = NSViewHeightSizable;
         [self setFrameSize:self.frame.size];
@@ -1921,7 +1942,7 @@ static NSColor *KittySidebarSectionBackgroundColor(BOOL agents_section) {
     NSPoint local = [self convertPoint:point fromView:self.superview];
     if (!NSPointInRect(local, self.bounds)) return nil;
     if (local.x >= self.bounds.size.width - 8) return self;
-    if (NSPointInRect(local, [self dividerHitRect])) return self;
+    if (NSPointInRect(local, [self dividerHitRect])) return divider_hit_view;
     return [super hitTest:point];
 }
 
@@ -1957,6 +1978,10 @@ static NSColor *KittySidebarSectionBackgroundColor(BOOL agents_section) {
     editor_scroll_view.frame = NSMakeRect(0, editor_header_y + header_height, width, editor_height);
     outline.tableColumns.firstObject.width = MAX(0, scroll_view.contentSize.width);
     editor_outline.tableColumns.firstObject.width = MAX(0, editor_scroll_view.contentSize.width);
+    NSRect divider_hit_rect = [self dividerHitRect];
+    divider_hit_view.frame = divider_hit_rect;
+    divider_hit_view.hidden = NSIsEmptyRect(divider_hit_rect);
+    [self.window invalidateCursorRectsForView:divider_hit_view];
     [self.window invalidateCursorRectsForView:self];
     [self setNeedsDisplay:YES];
 }
@@ -2716,7 +2741,7 @@ static NSColor *KittySidebarSectionBackgroundColor(BOOL agents_section) {
     [root_nodes release];
     [group_children release];
     [editor_entries release]; [agents_header release]; [editors_header release];
-    [editor_outline release]; [editor_scroll_view release]; [section_divider release];
+    [editor_outline release]; [editor_scroll_view release]; [section_divider release]; [divider_hit_view release];
     [remembered_selection release];
     [previous_responders release];
     [outline release];

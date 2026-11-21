@@ -172,6 +172,11 @@ class TestSidebarSections(BaseTest):
             self.assertTrue(send(get(view, key), 'expanded', C.c_bool))
         self.assertTrue(send(get(view, 'agents_header'), 'agentsSection', C.c_bool))
         self.assertFalse(send(get(view, 'editors_header'), 'agentsSection', C.c_bool))
+        divider_hit_view = get(view, 'divider_hit_view')
+        self.assertFalse(send(divider_hit_view, 'isHidden', C.c_bool))
+        self.assertAlmostEqual(frame('divider_hit_view').size.height, 8)
+        send(divider_hit_view, 'cursorUpdate:', None, (ptr,), (None,))
+        self.ae(send(cls('NSCursor'), 'currentCursor'), send(cls('NSCursor'), 'resizeUpDownCursor'))
         before = frame('editor_scroll_view').size.height
         send(view, 'toggleAgentsSection:', None, (ptr,), (None,))
         self.assertFalse(send(get(view, 'agents_header'), 'expanded', C.c_bool))
@@ -223,6 +228,11 @@ class TestSidebarSections(BaseTest):
 
         self.addCleanup(release_window)
         send(window, 'setContentView:', None, (ptr,), (view,))
+        divider_rect = frame('divider_hit_view')
+        divider_point = send(view, 'convertPoint:toView:', Point, (Point, ptr),
+                              (Point(20, divider_rect.origin.y + divider_rect.size.height / 2), send(view, 'superview')))
+        hit = send(view, 'hitTest:', types=(Point,), args=(divider_point,))
+        self.ae(hit, divider_hit_view)
         send(view, 'focusSidebar', None)
         editor_outline = get(view, 'editor_outline')
         self.ae(send(window, 'firstResponder'), editor_outline)

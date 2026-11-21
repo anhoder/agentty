@@ -9,6 +9,9 @@ To update |kitty|, :doc:`follow the instructions <binary>`.
 Recent major new features
 ---------------------------
 
+- macOS: Show the vertical-resize cursor across the full divider hit area
+  between the Agents and Editors sections, matching its drag behavior.
+
 - macOS: Use a light purple tint for the Agents sidebar section's background
   and heading, with matching hover feedback.
 
