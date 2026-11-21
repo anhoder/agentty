@@ -1254,7 +1254,7 @@ agents_sidebar_update_string(NSString **string, const char *value) {
     unsigned char state;
     BOOL editor;
     BOOL active;
-    CGFloat related_strength, linked_strength;
+    BOOL related, linked;
     unsigned changes;
 }
 @end
@@ -1304,11 +1304,10 @@ agents_sidebar_update_string(NSString **string, const char *value) {
     NSTrackingArea *hover_tracking_area;
 }
 @property(assign) KittyAgentsSidebarView *sidebar;
-@property(assign) KittyAgentsSidebarEntry *entry;
 @property BOOL activeAgent;
 @property BOOL groupHeading;
 @property BOOL pointerHovered;
-@property CGFloat relatedStrength;
+@property BOOL related;
 @end
 
 
@@ -1340,10 +1339,8 @@ agents_sidebar_update_string(NSString **string, const char *value) {
     unsigned cell_width_pixels;
     NSMutableSet<NSString *> *collapsed_groups;
     NSTrackingArea *resize_tracking_area;
-    NSTimer *hover_link_timer;
-    unsigned long long link_source_window_id, hover_link_window_id;
-    BOOL link_source_is_editor, selection_link_active;
-    BOOL hover_link_is_editor, hover_link_active, hover_link_applied;
+    unsigned long long link_source_window_id;
+    BOOL link_source_is_editor;
 }
 @property(copy) NSString *grouping;
 @property BOOL resizePending;
@@ -1366,7 +1363,6 @@ agents_sidebar_update_string(NSString **string, const char *value) {
 - (BOOL)kittySidebarHandleKeyEvent:(NSEvent *)event;
 - (void)focusSidebar;
 - (void)drawNode:(id)node inRect:(NSRect)rect;
-- (void)rowViewHoverChanged:(KittyAgentsSidebarEntry *)entry hovered:(BOOL)hovered;
 - (void)updateRelatedLinkState;
 - (NSColor *)workingSpinnerColorForNode:(id)node;
 - (NSString *)labelForNode:(id)node;
@@ -1700,10 +1696,10 @@ static NSColor *KittySidebarSectionHeaderColor(BOOL agents_section) {
         [background setFill];
         NSRectFill(rect);
     }
-    if (!self.groupHeading && self.relatedStrength > 0) {
-        [[[NSColor controlAccentColor] colorWithAlphaComponent:0.10 * self.relatedStrength] setFill];
+    if (!self.groupHeading && self.related) {
+        [[[NSColor controlAccentColor] colorWithAlphaComponent:0.10] setFill];
         NSRectFill(rect);
-        [[[NSColor controlAccentColor] colorWithAlphaComponent:0.78 * self.relatedStrength] setFill];
+        [[[NSColor controlAccentColor] colorWithAlphaComponent:0.78] setFill];
         NSRectFill(NSMakeRect(NSMinX(rect), NSMinY(rect), 2, rect.size.height));
     }
 }
@@ -1746,7 +1742,6 @@ static NSColor *KittySidebarSectionHeaderColor(BOOL agents_section) {
     self.pointerHovered = YES;
     [self setNeedsDisplay:YES];
     [[NSCursor pointingHandCursor] set];
-    [self.sidebar rowViewHoverChanged:self.entry hovered:YES];
 }
 - (void)mouseMoved:(NSEvent *)event { [self mouseEntered:event]; }
 - (void)cursorUpdate:(NSEvent *)event { [self mouseEntered:event]; }
@@ -1755,7 +1750,6 @@ static NSColor *KittySidebarSectionHeaderColor(BOOL agents_section) {
     self.pointerHovered = NO;
     [self setNeedsDisplay:YES];
     [[NSCursor arrowCursor] set];
-    [self.sidebar rowViewHoverChanged:self.entry hovered:NO];
 }
 - (void)dealloc {
     if (hover_tracking_area) [self removeTrackingArea:hover_tracking_area];
@@ -2139,8 +2133,8 @@ static NSColor *KittySidebarSectionHeaderColor(BOOL agents_section) {
 
 - (void)clearRelatedLinkState {
     for (KittyAgentsSidebarEntry *entry in entries) {
-        entry->related_strength = 0;
-        entry->linked_strength = 0;
+        entry->related = NO;
+        entry->linked = NO;
     }
 }
 
@@ -2148,7 +2142,7 @@ static NSColor *KittySidebarSectionHeaderColor(BOOL agents_section) {
     [view enumerateAvailableRowViewsUsingBlock:^(NSTableRowView *rowView, NSInteger row) {
         id node = [view itemAtRow:row];
         KittyAgentsSidebarEntry *entry = [node isKindOfClass:[KittyAgentsSidebarEntry class]] ? (KittyAgentsSidebarEntry *)node : entries_by_id[node];
-        ((KittyAgentsSidebarRowView *)rowView).relatedStrength = entry ? entry->related_strength : 0;
+        ((KittyAgentsSidebarRowView *)rowView).related = entry && entry->related;
         [rowView setNeedsDisplay:YES];
         KittyAgentsSidebarCell *cell = (KittyAgentsSidebarCell *)[rowView viewAtColumn:0];
         if (entry) cell.toolTip = [self labelForNode:entry];
@@ -2161,7 +2155,7 @@ static NSColor *KittySidebarSectionHeaderColor(BOOL agents_section) {
     [self refreshRelatedLinkStateForOutline:editor_outline];
 }
 
-- (BOOL)applyLinkStateFromEntry:(KittyAgentsSidebarEntry *)source strength:(CGFloat)strength {
+- (BOOL)applyLinkStateFromEntry:(KittyAgentsSidebarEntry *)source {
     [self clearRelatedLinkState];
     if (!source || !source->identity.unsignedLongLongValue || !source->project_key.length) {
         [self refreshRelatedLinkRowViews];
@@ -2171,45 +2165,25 @@ static NSColor *KittySidebarSectionHeaderColor(BOOL agents_section) {
     for (KittyAgentsSidebarEntry *entry in entries) {
         if (entry == source || !entry->identity.unsignedLongLongValue || entry->editor == source->editor) continue;
         if (!entry->project_key.length || ![entry->project_key isEqualToString:source->project_key]) continue;
-        entry->related_strength = strength;
+        entry->related = YES;
         found = YES;
     }
-    if (found) source->linked_strength = strength;
+    if (found) source->linked = YES;
     [self refreshRelatedLinkRowViews];
     return found;
 }
 
-- (void)cancelHoverLinkPreview {
-    if (hover_link_timer) {
-        [hover_link_timer invalidate];
-        hover_link_timer = nil;
-    }
-    hover_link_active = NO;
-    hover_link_applied = NO;
-    hover_link_window_id = 0;
-    hover_link_is_editor = NO;
-}
-
 - (void)updateRelatedLinkState {
-    selection_link_active = NO;
     KittyAgentsSidebarEntry *source = nil;
     if (link_source_window_id) source = [self linkEntryForWindowID:link_source_window_id editor:link_source_is_editor];
-    if (source) selection_link_active = [self applyLinkStateFromEntry:source strength:1.0];
-    if (selection_link_active) return;
-    if (hover_link_applied && hover_link_active) {
-        KittyAgentsSidebarEntry *hovered = [self linkEntryForWindowID:hover_link_window_id editor:hover_link_is_editor];
-        if (hovered && [self applyLinkStateFromEntry:hovered strength:0.5]) {
-            hover_link_applied = YES;
-            return;
-        }
-        hover_link_applied = NO;
+    if (source) [self applyLinkStateFromEntry:source];
+    else {
+        [self clearRelatedLinkState];
+        [self refreshRelatedLinkRowViews];
     }
-    [self clearRelatedLinkState];
-    [self refreshRelatedLinkRowViews];
 }
 
 - (void)setLinkSourceFromOutline:(NSOutlineView *)view {
-    [self cancelHoverLinkPreview];
     id node = view.selectedRow >= 0 ? [view itemAtRow:view.selectedRow] : nil;
     KittyAgentsSidebarEntry *entry = nil;
     if ([node isKindOfClass:[KittyAgentsSidebarEntry class]]) entry = node;
@@ -2222,40 +2196,6 @@ static NSColor *KittySidebarSectionHeaderColor(BOOL agents_section) {
         link_source_is_editor = NO;
     }
     [self updateRelatedLinkState];
-}
-
-- (void)hoverLinkTimerFired:(NSTimer *)timer {
-    (void)timer;
-    hover_link_timer = nil;
-    if (!hover_link_active || selection_link_active) return;
-    KittyAgentsSidebarEntry *source = [self linkEntryForWindowID:hover_link_window_id editor:hover_link_is_editor];
-    if (!source) {
-        [self cancelHoverLinkPreview];
-        [self updateRelatedLinkState];
-        return;
-    }
-    hover_link_applied = [self applyLinkStateFromEntry:source strength:0.5];
-    if (!hover_link_applied) [self updateRelatedLinkState];
-}
-
-- (void)rowViewHoverChanged:(KittyAgentsSidebarEntry *)entry hovered:(BOOL)hovered {
-    if (!entry || !entry->identity.unsignedLongLongValue) return;
-    if (!hovered) {
-        if (hover_link_window_id == entry->identity.unsignedLongLongValue && hover_link_is_editor == entry->editor) {
-            [self cancelHoverLinkPreview];
-            [self updateRelatedLinkState];
-        }
-        return;
-    }
-    if (selection_link_active) return;
-    if (hover_link_active && hover_link_window_id == entry->identity.unsignedLongLongValue && hover_link_is_editor == entry->editor) return;
-    [self cancelHoverLinkPreview];
-    if (!entry->project_key.length) return;
-    hover_link_window_id = entry->identity.unsignedLongLongValue;
-    hover_link_is_editor = entry->editor;
-    hover_link_active = YES;
-    hover_link_timer = [NSTimer timerWithTimeInterval:0.12 target:self selector:@selector(hoverLinkTimerFired:) userInfo:nil repeats:NO];
-    [[NSRunLoop mainRunLoop] addTimer:hover_link_timer forMode:NSRunLoopCommonModes];
 }
 
 - (void)rebuildOutline {
@@ -2351,9 +2291,8 @@ static NSColor *KittySidebarSectionHeaderColor(BOOL agents_section) {
     row.sidebar = self;
     row.groupHeading = view != editor_outline && [item isKindOfClass:[NSString class]];
     KittyAgentsSidebarEntry *entry = view == editor_outline ? (KittyAgentsSidebarEntry *)item : entries_by_id[item];
-    row.entry = entry;
     row.activeAgent = entry && entry->active;
-    row.relatedStrength = entry ? entry->related_strength : 0;
+    row.related = entry && entry->related;
     return row;
 }
 - (void)outlineView:(NSOutlineView *)view didAddRowView:(NSTableRowView *)rowView forRow:(NSInteger)row {
@@ -2754,7 +2693,6 @@ static NSColor *KittySidebarSectionHeaderColor(BOOL agents_section) {
         summary.toolTip = summary.stringValue;
         summary_dirty = NO;
     }
-    if (structure_changed) [self cancelHoverLinkPreview];
     [self updateRelatedLinkState];
     row_style_changed = NO;
 }
@@ -2822,8 +2760,8 @@ static NSColor *KittySidebarSectionHeaderColor(BOOL agents_section) {
     if ([node isKindOfClass:[KittyAgentsSidebarEntry class]]) {
         KittyAgentsSidebarEntry *entry = node;
         NSString *ans = [NSString stringWithFormat:@"%@, %@%@", entry->label, entry->detail, entry->active ? @", current terminal" : @""];
-        if (entry->related_strength > 0) return [ans stringByAppendingString:@", related to the selected row in the same project"];
-        if (entry->linked_strength > 0) return [ans stringByAppendingString:@", has related rows in the same project"];
+        if (entry->related) return [ans stringByAppendingString:@", related to the selected row in the same project"];
+        if (entry->linked) return [ans stringByAppendingString:@", has related rows in the same project"];
         return ans;
     }
     if ([node isKindOfClass:[NSString class]]) {
@@ -2834,8 +2772,8 @@ static NSColor *KittySidebarSectionHeaderColor(BOOL agents_section) {
     KittyAgentsSidebarEntry *entry = entries_by_id[node];
     if (!entry) return @"";
     NSString *ans = [NSString stringWithFormat:@"%@, %@%@", entry->label, entry->detail, entry->active ? @", current terminal" : @""];
-    if (entry->related_strength > 0) return [ans stringByAppendingString:@", related to the selected row in the same project"];
-    if (entry->linked_strength > 0) return [ans stringByAppendingString:@", has related rows in the same project"];
+    if (entry->related) return [ans stringByAppendingString:@", related to the selected row in the same project"];
+    if (entry->linked) return [ans stringByAppendingString:@", has related rows in the same project"];
     return ans;
 }
 - (void)drawNode:(id)node inRect:(NSRect)rect {
@@ -2868,19 +2806,18 @@ static NSColor *KittySidebarSectionHeaderColor(BOOL agents_section) {
     BOOL active = entry->active;
     NSColor *primary = active ? [NSColor alternateSelectedControlTextColor] : [NSColor controlTextColor];
     NSColor *secondary = active ? [NSColor alternateSelectedControlTextColor] : [NSColor secondaryLabelColor];
-    CGFloat link_strength = MAX(entry->related_strength, entry->linked_strength);
+    BOOL linked = entry->related || entry->linked;
     CGFloat text_right = rect.size.width - 6;
-    if (link_strength > 0) {
+    if (linked) {
         CGFloat badge_width = 28, badge_height = 16;
         NSRect badge = NSMakeRect(rect.size.width - 6 - badge_width, NSMidY(rect) - badge_height / 2, badge_width, badge_height);
         NSBezierPath *badge_path = [NSBezierPath bezierPathWithRoundedRect:badge xRadius:badge_height / 2 yRadius:badge_height / 2];
-        [[[NSColor controlAccentColor] colorWithAlphaComponent:0.85 * link_strength] setFill];
+        [[[NSColor controlAccentColor] colorWithAlphaComponent:0.85] setFill];
         [badge_path fill];
         NSMutableParagraphStyle *badge_style = [[[NSMutableParagraphStyle alloc] init] autorelease];
         badge_style.alignment = NSTextAlignmentCenter;
         NSDictionary *badge_attrs = @{NSFontAttributeName: [NSFont boldSystemFontOfSize:11],
-            NSForegroundColorAttributeName: link_strength >= 1.0 ? [NSColor alternateSelectedControlTextColor] : [NSColor labelColor],
-            NSParagraphStyleAttributeName: badge_style};
+            NSForegroundColorAttributeName: [NSColor alternateSelectedControlTextColor], NSParagraphStyleAttributeName: badge_style};
         [@"↔" drawInRect:NSMakeRect(NSMinX(badge) + 2, NSMidY(badge) - 7, badge_width - 4, 16) withAttributes:badge_attrs];
         text_right = NSMinX(badge) - 8;
     }
@@ -2958,7 +2895,6 @@ static NSColor *KittySidebarSectionHeaderColor(BOOL agents_section) {
 }
 - (void)dealloc {
     [[NSNotificationCenter defaultCenter] removeObserver:self];
-    if (hover_link_timer) [hover_link_timer invalidate];
     if (resize_tracking_area) [self removeTrackingArea:resize_tracking_area];
     [resize_tracking_area release];
     outline.delegate = nil;

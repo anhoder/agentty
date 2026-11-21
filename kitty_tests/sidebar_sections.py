@@ -132,8 +132,8 @@ class TestSidebarSections(BaseTest):
         outline = get(view, 'outline')
         editor_outline = get(view, 'editor_outline')
 
-        def link_strength(entry, key):
-            return send(get(entry, key), 'doubleValue', C.c_double)
+        def link_state(entry, key):
+            return send(get(entry, key), 'boolValue', C.c_bool)
 
         def selection_note(outline_view):
             return send(cls('NSNotification'), 'notificationWithName:object:', types=(ptr, ptr),
@@ -145,34 +145,21 @@ class TestSidebarSections(BaseTest):
             send(outline_view, 'selectRowIndexes:byExtendingSelection:', None, (ptr, C.c_bool), (indexes, False))
             send(view, 'outlineViewSelectionDidChange:', None, (ptr,), (selection_note(outline_view),))
 
-        # Hover previews at half strength after the delay, then clears on exit.
-        send(view, 'rowViewHoverChanged:hovered:', None, (ptr, C.c_bool), (agent, True))
-        send(view, 'hoverLinkTimerFired:', None, (ptr,), (None,))
-        self.assertAlmostEqual(link_strength(agent, 'linked_strength'), 0.5)
-        self.assertAlmostEqual(link_strength(editor, 'related_strength'), 0.5)
-        send(view, 'rowViewHoverChanged:hovered:', None, (ptr, C.c_bool), (agent, False))
-        self.assertAlmostEqual(link_strength(agent, 'linked_strength'), 0)
-        self.assertAlmostEqual(link_strength(editor, 'related_strength'), 0)
-
         # Selecting a row links the same-project row in the other section.
         agent_identity = get(agent, 'identity')
         select_entry(outline, agent_identity)
-        self.assertAlmostEqual(link_strength(agent, 'linked_strength'), 1)
-        self.assertAlmostEqual(link_strength(editor, 'related_strength'), 1)
-        # Selection takes priority over a hover preview.
-        send(view, 'rowViewHoverChanged:hovered:', None, (ptr, C.c_bool), (editor, True))
-        self.assertAlmostEqual(link_strength(editor, 'linked_strength'), 0)
-        send(view, 'rowViewHoverChanged:hovered:', None, (ptr, C.c_bool), (editor, False))
+        self.assertTrue(link_state(agent, 'linked'))
+        self.assertTrue(link_state(editor, 'related'))
 
         select_entry(editor_outline, editor)
-        self.assertAlmostEqual(link_strength(editor, 'linked_strength'), 1)
-        self.assertAlmostEqual(link_strength(agent, 'related_strength'), 1)
+        self.assertTrue(link_state(editor, 'linked'))
+        self.assertTrue(link_state(agent, 'related'))
 
         # Different project keys must not link.
         rows(agent_project_key=b'/tmp/a', editor_project_key=b'/tmp/b')
         select_entry(outline, agent_identity)
-        self.assertAlmostEqual(link_strength(agent, 'linked_strength'), 0)
-        self.assertAlmostEqual(link_strength(editor, 'related_strength'), 0)
+        self.assertFalse(link_state(agent, 'linked'))
+        self.assertFalse(link_state(editor, 'related'))
         rows()
 
         cell = send(outline, 'viewAtColumn:row:makeIfNecessary:', types=(C.c_long, C.c_long, C.c_bool), args=(0, 0, True))

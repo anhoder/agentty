@@ -9,8 +9,8 @@ To update |kitty|, :doc:`follow the instructions <binary>`.
 Recent major new features
 ---------------------------
 
-- macOS: Link Agent and Editor sidebar rows that share a project, with
-  selection-driven highlighting and a delayed hover preview.
+- macOS: Link Agent and Editor sidebar rows that share a project using
+  selection-driven highlighting.
 
 - macOS: Use equally light content tints for the Agents and Editors sidebar
   sections, with slightly darker matching header bands.
