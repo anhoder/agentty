@@ -150,16 +150,23 @@ class TestSidebarSections(BaseTest):
         select_entry(outline, agent_identity)
         self.assertTrue(link_state(agent, 'linked'))
         self.assertTrue(link_state(editor, 'related'))
+        self.assertFalse(link_state(editor, 'linked'))
+        self.assertGreaterEqual(send(outline, 'selectedRow', C.c_long), 0)
+        self.ae(send(editor_outline, 'selectedRow', C.c_long), -1)
 
         select_entry(editor_outline, editor)
         self.assertTrue(link_state(editor, 'linked'))
         self.assertTrue(link_state(agent, 'related'))
+        self.assertFalse(link_state(agent, 'linked'))
+        self.assertGreaterEqual(send(editor_outline, 'selectedRow', C.c_long), 0)
+        self.ae(send(outline, 'selectedRow', C.c_long), -1)
 
         # Different project keys must not link.
         rows(agent_project_key=b'/tmp/a', editor_project_key=b'/tmp/b')
         select_entry(outline, agent_identity)
         self.assertFalse(link_state(agent, 'linked'))
         self.assertFalse(link_state(editor, 'related'))
+        self.assertFalse(link_state(editor, 'linked'))
         rows()
 
         cell = send(outline, 'viewAtColumn:row:makeIfNecessary:', types=(C.c_long, C.c_long, C.c_bool), args=(0, 0, True))

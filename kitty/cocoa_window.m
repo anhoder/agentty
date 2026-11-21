@@ -1690,17 +1690,21 @@ static NSColor *KittySidebarSectionHeaderColor(BOOL agents_section) {
         NSRectFill(rect);
         [[[NSColor labelColor] colorWithAlphaComponent:0.14] setFill];
         NSRectFill(NSMakeRect(NSMinX(rect), NSMaxY(rect) - 1, rect.size.width, 1));
-    } else if (self.activeAgent || highlighted) {
-        NSColor *background = self.activeAgent ? [NSColor selectedContentBackgroundColor] :
-            [[NSColor controlBackgroundColor] colorWithAlphaComponent:0.38];
-        [background setFill];
-        NSRectFill(rect);
-    }
-    if (!self.groupHeading && self.related) {
-        [[[NSColor controlAccentColor] colorWithAlphaComponent:0.10] setFill];
-        NSRectFill(rect);
-        [[[NSColor controlAccentColor] colorWithAlphaComponent:0.78] setFill];
-        NSRectFill(NSMakeRect(NSMinX(rect), NSMinY(rect), 2, rect.size.height));
+    } else {
+        if (self.related) {
+            [[[NSColor controlAccentColor] colorWithAlphaComponent:0.10] setFill];
+            NSRectFill(rect);
+        }
+        if (self.activeAgent || highlighted) {
+            NSColor *background = self.activeAgent ? [NSColor selectedContentBackgroundColor] :
+                [[NSColor controlBackgroundColor] colorWithAlphaComponent:0.38];
+            [background setFill];
+            NSRectFill(rect);
+        }
+        if (self.related) {
+            [[[NSColor controlAccentColor] colorWithAlphaComponent:0.78] setFill];
+            NSRectFill(NSMakeRect(NSMinX(rect), NSMinY(rect), 2, rect.size.height));
+        }
     }
 }
 - (void)drawSelectionInRect:(NSRect)dirtyRect {
@@ -2183,6 +2187,15 @@ static NSColor *KittySidebarSectionHeaderColor(BOOL agents_section) {
     }
 }
 
+- (void)clearOtherOutlineSelection:(NSOutlineView *)view {
+    NSOutlineView *other = view == outline ? editor_outline : outline;
+    if (other.selectedRow < 0) return;
+    BOOL was_syncing = syncing_outline;
+    syncing_outline = YES;
+    [other deselectAll:nil];
+    syncing_outline = was_syncing;
+}
+
 - (void)setLinkSourceFromOutline:(NSOutlineView *)view {
     id node = view.selectedRow >= 0 ? [view itemAtRow:view.selectedRow] : nil;
     KittyAgentsSidebarEntry *entry = nil;
@@ -2310,11 +2323,14 @@ static NSColor *KittySidebarSectionHeaderColor(BOOL agents_section) {
 - (void)outlineViewSelectionDidChange:(NSNotification *)notification {
     if (syncing_outline) return;
     if (notification.object == editor_outline) {
+        [self clearOtherOutlineSelection:editor_outline];
         [self setLinkSourceFromOutline:editor_outline];
         return;
     }
+    [self clearOtherOutlineSelection:outline];
+    id selected = outline.selectedRow >= 0 ? [outline itemAtRow:outline.selectedRow] : nil;
     [remembered_selection release];
-    remembered_selection = [[self selectedNode] retain];
+    remembered_selection = [selected retain];
     [self setLinkSourceFromOutline:outline];
 }
 - (void)groupChanged:(NSNotification *)notification collapsed:(BOOL)collapsed {
@@ -2410,13 +2426,19 @@ static NSColor *KittySidebarSectionHeaderColor(BOOL agents_section) {
         [self setGroup:node expanded:![outline isItemExpanded:node] animated:YES];
     } else if ([node unsignedLongLongValue]) [self sendCommand:@"focus" windowID:[node unsignedLongLongValue]];
 }
+- (id)selectClickedRowInOutline:(NSOutlineView *)view {
+    NSInteger row = view.clickedRow;
+    if (row < 0) return nil;
+    [view selectRowIndexes:[NSIndexSet indexSetWithIndex:(NSUInteger)row] byExtendingSelection:NO];
+    [self clearOtherOutlineSelection:view];
+    [self setLinkSourceFromOutline:view];
+    return [view itemAtRow:row];
+}
+
 - (void)outlineClicked:(id)sender {
-    if (sender == editor_outline) {
-        NSInteger row = editor_outline.clickedRow;
-        if (row >= 0) [self activateNode:[editor_outline itemAtRow:row]];
-        return;
-    }
-    if (outline.clickedRow >= 0) [self activateNode:[outline itemAtRow:outline.clickedRow]];
+    NSOutlineView *view = sender == editor_outline ? editor_outline : outline;
+    id node = [self selectClickedRowInOutline:view];
+    if (node) [self activateNode:node];
 }
 - (BOOL)kittySidebarHandleKeyEvent:(NSEvent *)event {
     SEL configured = NSSelectorFromString(@"kittySidebarHandleConfiguredKeyEvent:");

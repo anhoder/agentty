@@ -9,6 +9,9 @@ To update |kitty|, :doc:`follow the instructions <binary>`.
 Recent major new features
 ---------------------------
 
+- macOS: Keep project-link selection exclusive across the Agents and Editors
+  sections so clicking a related row moves the badge and highlight.
+
 - macOS: Link Agent and Editor sidebar rows that share a project using
   selection-driven highlighting.
 
