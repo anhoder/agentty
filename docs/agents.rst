@@ -127,11 +127,12 @@ state. Available window space constrains the displayed heights without
 discarding the preferred ratio.
 
 The Editors section automatically recognizes local foreground ``nvim``, ``vim``,
-``vi``, ``view`` and their supported diff entry points. No editor plugin,
-configuration change or RPC server is required. Click an editor to focus its
-kitty pane and the containing tab or window. Entries show the editor's brand
-icon together with the terminal title and working directory, not an
-authoritative current buffer or unsaved-file status.
+``vi``, ``view``, ``nano``, ``micro``, ``hx``/``helix``, ``kak`` and terminal
+Emacs (``emacs -nw`` or ``emacsclient -t``), plus the supported Vim diff entry
+points. No editor plugin, configuration change or RPC server is required.
+Click an editor to focus its kitty pane and the containing tab or window.
+Entries show the editor's brand icon together with the terminal title and
+working directory, not an authoritative current buffer or unsaved-file status.
 Editors do not participate in agent lifecycle states or completion notifications.
 
 Editor discovery shares the visible sidebar's existing refresh cycle and process

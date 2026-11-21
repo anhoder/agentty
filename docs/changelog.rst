@@ -9,6 +9,9 @@ To update |kitty|, :doc:`follow the instructions <binary>`.
 Recent major new features
 ---------------------------
 
+- macOS: Recognize GNU nano, Micro, Helix, Kakoune and terminal Emacs in the
+  Editors sidebar section, with colored brand icons.
+
 - macOS: Show colored per-editor brand icons in the Editors sidebar section
   and align them with the Agent row icon treatment.
 

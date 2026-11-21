@@ -88,7 +88,7 @@ class TestSidebarSections(BaseTest):
         self.addCleanup(lambda: send(view, 'release', None))
         icons_dir = os.path.join(kitty_base_dir, 'kitty', 'agent_icons')
         send(view, 'setValue:forKey:', None, (ptr, ptr), (string(icons_dir), string('iconsDir')))
-        for editor in ('nvim', 'vim', 'vi', 'view'):
+        for editor in ('nvim', 'vim', 'vi', 'view', 'nano', 'micro', 'helix', 'kakoune', 'emacs'):
             icon = send(view, 'iconForEditor:textColor:', types=(ptr, ptr),
                         args=(string(editor), send(cls('NSColor'), 'labelColor')))
             self.assertTrue(icon, editor)

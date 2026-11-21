@@ -23,6 +23,45 @@ class TestEditors(BaseTest):
         self.ae(detect_editor([{'cmdline': ['nvim', '--server', '/tmp/nvim', '--remote-ui']}]), 'nvim')
         self.ae(detect_editor([{'cmdline': ['vim', '--', '--headless']}]), 'vim')
 
+    def test_additional_editor_detection(self):
+        cases = (
+            (['nano', 'file'], 'nano'),
+            (['nano', '-v', 'file'], 'nano'),
+            (['nano', '--version'], None),
+            (['nano', '-h'], None),
+            (['micro', 'file'], 'micro'),
+            (['micro', '--version'], None),
+            (['micro', '-help'], None),
+            (['hx', 'file'], 'helix'),
+            (['helix', 'file'], 'helix'),
+            (['hx', '--tutor'], 'helix'),
+            (['hx', '--version'], None),
+            (['hx', '--health'], None),
+            (['hx', '-g', 'fetch'], None),
+            (['kak', 'file'], 'kakoune'),
+            (['kak', '-ui', 'terminal', 'file'], 'kakoune'),
+            (['kak', '-c', 'session', 'file'], 'kakoune'),
+            (['kak', '-ui', 'dummy'], None),
+            (['kak', '--ui=dummy'], None),
+            (['kak', '-d', '-s', 'name'], None),
+            (['kak', '-p', 'session'], None),
+            (['kak', '-f', 'keys', 'file'], None),
+            (['kak', '-l'], None),
+            (['emacs', '-nw', 'file'], 'emacs'),
+            (['emacs', '--no-window-system', 'file'], 'emacs'),
+            (['emacs', 'file'], None),
+            (['emacs', '--batch', '-nw', 'file'], None),
+            (['emacs', '--daemon', '-nw'], None),
+            (['emacsclient', '-t', 'file'], 'emacs'),
+            (['emacsclient', '-nw', 'file'], 'emacs'),
+            (['emacsclient', '-c', 'file'], None),
+            (['emacsclient', '-e', '(x)'], None),
+        )
+        for argv, expected in cases:
+            with self.subTest(argv=argv):
+                self.ae(detect_editor([{'cmdline': argv}]), expected)
+                self.assertIsNone(detect_agent([{'cmdline': argv}]))
+
     def test_editor_option_arguments(self):
         for option in ('-c', '--cmd', '-u', '-U', '-S', '-i', '-t'):
             for value in ('--headless', '--version', '--remote-send', 'script'):
