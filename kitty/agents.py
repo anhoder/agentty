@@ -7,6 +7,7 @@ from collections import deque
 from collections.abc import Mapping, Sequence
 from dataclasses import asdict, dataclass, replace
 from enum import Enum
+from functools import lru_cache
 from typing import Any
 
 from .agent_manifest import ManifestState, Screen, StateAuthority, authority_for, detect, is_valid_session_id, manifest_for
@@ -64,6 +65,28 @@ class AgentSidebarRow:
     state: AgentState
     is_active: bool
     kind: str = 'agent'
+    project_key: str = ''
+
+
+@lru_cache(maxsize=256)
+def project_key_for_cwd(cwd: str) -> str:
+    """Return a stable key for linking sidebar rows in the same project.
+
+    A Git worktree top-level groups edits in subdirectories; otherwise the
+    normalized working directory is the project boundary.
+    """
+    if not cwd:
+        return ''
+    path = os.path.realpath(cwd)
+    current = path
+    while True:
+        if os.path.exists(os.path.join(current, '.git')):
+            return current
+        parent = os.path.dirname(current)
+        if parent == current:
+            break
+        current = parent
+    return os.path.normpath(path)
 
 
 # Maps a foreground executable name to a manifest id. The value side must match

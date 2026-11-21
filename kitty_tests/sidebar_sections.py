@@ -93,15 +93,17 @@ class TestSidebarSections(BaseTest):
                         args=(string(editor), send(cls('NSColor'), 'labelColor')))
             self.assertTrue(icon, editor)
 
-        def rows(agent_id=7, editor_id=7, label=b'nvim'):
+        def rows(agent_id=7, editor_id=7, label=b'nvim', agent_project_key=b'/tmp/project',
+                 editor_project_key=b'/tmp/project'):
             ids = (C.c_ulonglong * 2)(agent_id, editor_id)
             strings = [(C.c_char_p * 2)(*values) for values in (
-                (b'', b''), (b'', b''), (b'claude', b'vim'), (b'Agent', label), (b'', b''))]
+                (b'', b''), (b'', b''), (b'claude', b'vim'), (b'Agent', label), (b'', b''),
+                (agent_project_key, editor_project_key))]
             states = (C.c_ubyte * 2)(2, 0)
             active = (C.c_bool * 2)(False, False)
             kinds = (C.c_char_p * 2)(b'agent', b'editor')
-            send(view, 'setRows:groups:groupKeys:agents:labels:details:states:active:count:kinds:', None,
-                 (C.POINTER(C.c_ulonglong),) + (C.POINTER(C.c_char_p),) * 5 +
+            send(view, 'setRows:groups:groupKeys:agents:labels:details:projectKeys:states:active:count:kinds:', None,
+                 (C.POINTER(C.c_ulonglong),) + (C.POINTER(C.c_char_p),) * 6 +
                  (C.POINTER(C.c_ubyte), C.POINTER(C.c_bool), C.c_size_t, C.POINTER(C.c_char_p)),
                  (ids, *strings, states, active, 2, kinds))
 
@@ -128,6 +130,51 @@ class TestSidebarSections(BaseTest):
         self.assertTrue(editor)
         self.assertNotEqual(agent, editor)
         outline = get(view, 'outline')
+        editor_outline = get(view, 'editor_outline')
+
+        def link_strength(entry, key):
+            return send(get(entry, key), 'doubleValue', C.c_double)
+
+        def selection_note(outline_view):
+            return send(cls('NSNotification'), 'notificationWithName:object:', types=(ptr, ptr),
+                        args=(string('NSOutlineViewSelectionDidChangeNotification'), outline_view))
+
+        def select_entry(outline_view, item):
+            row = send(outline_view, 'rowForItem:', C.c_long, (ptr,), (item,))
+            indexes = send(cls('NSIndexSet'), 'indexSetWithIndex:', types=(C.c_ulong,), args=(C.c_ulong(row),))
+            send(outline_view, 'selectRowIndexes:byExtendingSelection:', None, (ptr, C.c_bool), (indexes, False))
+            send(view, 'outlineViewSelectionDidChange:', None, (ptr,), (selection_note(outline_view),))
+
+        # Hover previews at half strength after the delay, then clears on exit.
+        send(view, 'rowViewHoverChanged:hovered:', None, (ptr, C.c_bool), (agent, True))
+        send(view, 'hoverLinkTimerFired:', None, (ptr,), (None,))
+        self.assertAlmostEqual(link_strength(agent, 'linked_strength'), 0.5)
+        self.assertAlmostEqual(link_strength(editor, 'related_strength'), 0.5)
+        send(view, 'rowViewHoverChanged:hovered:', None, (ptr, C.c_bool), (agent, False))
+        self.assertAlmostEqual(link_strength(agent, 'linked_strength'), 0)
+        self.assertAlmostEqual(link_strength(editor, 'related_strength'), 0)
+
+        # Selecting a row links the same-project row in the other section.
+        agent_identity = get(agent, 'identity')
+        select_entry(outline, agent_identity)
+        self.assertAlmostEqual(link_strength(agent, 'linked_strength'), 1)
+        self.assertAlmostEqual(link_strength(editor, 'related_strength'), 1)
+        # Selection takes priority over a hover preview.
+        send(view, 'rowViewHoverChanged:hovered:', None, (ptr, C.c_bool), (editor, True))
+        self.assertAlmostEqual(link_strength(editor, 'linked_strength'), 0)
+        send(view, 'rowViewHoverChanged:hovered:', None, (ptr, C.c_bool), (editor, False))
+
+        select_entry(editor_outline, editor)
+        self.assertAlmostEqual(link_strength(editor, 'linked_strength'), 1)
+        self.assertAlmostEqual(link_strength(agent, 'related_strength'), 1)
+
+        # Different project keys must not link.
+        rows(agent_project_key=b'/tmp/a', editor_project_key=b'/tmp/b')
+        select_entry(outline, agent_identity)
+        self.assertAlmostEqual(link_strength(agent, 'linked_strength'), 0)
+        self.assertAlmostEqual(link_strength(editor, 'related_strength'), 0)
+        rows()
+
         cell = send(outline, 'viewAtColumn:row:makeIfNecessary:', types=(C.c_long, C.c_long, C.c_bool), args=(0, 0, True))
         rows(label=b'Updated editor')
         self.ae(entry('entries_by_id', 7), agent)

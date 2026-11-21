@@ -3368,10 +3368,10 @@ set_agents_sidebar(PyObject *self UNUSED, PyObject *args) {
     unsigned cell_width = 0;
     // Keep small sidebars on the stack and use one allocation for larger ones.
     // Pointer/ID arrays precede byte arrays so each retains its alignment.
-    const size_t row_size = sizeof(unsigned long long) + 6 * sizeof(char *) + sizeof(unsigned char) + sizeof(bool);
+    const size_t row_size = sizeof(unsigned long long) + 7 * sizeof(char *) + sizeof(unsigned char) + sizeof(bool);
     struct {
         unsigned long long window_ids[32];
-        const char *groups[32], *group_keys[32], *agents[32], *labels[32], *details[32], *kinds[32], *collapsed[32];
+        const char *groups[32], *group_keys[32], *agents[32], *labels[32], *details[32], *kinds[32], *project_keys[32], *collapsed[32];
         unsigned char states[32];
         bool active[32];
     } local;
@@ -3397,15 +3397,16 @@ set_agents_sidebar(PyObject *self UNUSED, PyObject *args) {
     const char **labels = heap_storage ? agents + count : local.labels;
     const char **details = heap_storage ? labels + count : local.details;
     const char **kinds = heap_storage ? details + count : local.kinds;
-    const char **collapsed = heap_storage ? kinds + count : local.collapsed;
+    const char **project_keys = heap_storage ? kinds + count : local.project_keys;
+    const char **collapsed = heap_storage ? project_keys + count : local.collapsed;
     unsigned char *states = heap_storage ? (unsigned char *)(collapsed + collapsed_count) : local.states;
     bool *active = heap_storage ? (bool *)(states + count) : local.active;
     for (Py_ssize_t i = 0; i < count; i++) {
         PyObject *item = PySequence_Fast_GET_ITEM(fast, i);
-        if (!PyTuple_Check(item) || PyTuple_GET_SIZE(item) != 9 || !PyLong_Check(PyTuple_GET_ITEM(item, 0)) || !PyUnicode_Check(PyTuple_GET_ITEM(item, 1)) ||
+        if (!PyTuple_Check(item) || PyTuple_GET_SIZE(item) != 10 || !PyLong_Check(PyTuple_GET_ITEM(item, 0)) || !PyUnicode_Check(PyTuple_GET_ITEM(item, 1)) ||
             !PyUnicode_Check(PyTuple_GET_ITEM(item, 2)) || !PyUnicode_Check(PyTuple_GET_ITEM(item, 3)) || !PyUnicode_Check(PyTuple_GET_ITEM(item, 4)) ||
-            !PyUnicode_Check(PyTuple_GET_ITEM(item, 5)) || !PyUnicode_Check(PyTuple_GET_ITEM(item, 8))) {
-            PyErr_SetString(PyExc_TypeError, "sidebar rows must contain (window_id, group, group_key, agent, title, detail, state, active, kind) tuples");
+            !PyUnicode_Check(PyTuple_GET_ITEM(item, 5)) || !PyUnicode_Check(PyTuple_GET_ITEM(item, 8)) || !PyUnicode_Check(PyTuple_GET_ITEM(item, 9))) {
+            PyErr_SetString(PyExc_TypeError, "sidebar rows must contain (window_id, group, group_key, agent, title, detail, state, active, kind, project_key) tuples");
             goto cleanup;
         }
         window_ids[i] = PyLong_AsUnsignedLongLong(PyTuple_GET_ITEM(item, 0));
@@ -3415,7 +3416,8 @@ set_agents_sidebar(PyObject *self UNUSED, PyObject *args) {
         labels[i] = PyUnicode_AsUTF8(PyTuple_GET_ITEM(item, 4));
         details[i] = PyUnicode_AsUTF8(PyTuple_GET_ITEM(item, 5));
         kinds[i] = PyUnicode_AsUTF8(PyTuple_GET_ITEM(item, 8));
-        if (PyErr_Occurred() || !groups[i] || !group_keys[i] || !agents[i] || !labels[i] || !details[i] || !kinds[i]) goto cleanup;
+        project_keys[i] = PyUnicode_AsUTF8(PyTuple_GET_ITEM(item, 9));
+        if (PyErr_Occurred() || !groups[i] || !group_keys[i] || !agents[i] || !labels[i] || !details[i] || !kinds[i] || !project_keys[i]) goto cleanup;
         if (strcmp(kinds[i], "agent") && strcmp(kinds[i], "editor")) {
             PyErr_SetString(PyExc_ValueError, "invalid sidebar row kind");
             goto cleanup;
@@ -3455,6 +3457,7 @@ set_agents_sidebar(PyObject *self UNUSED, PyObject *args) {
         agents,
         labels,
         details,
+        project_keys,
         states,
         active,
         collapsed,

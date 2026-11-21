@@ -105,6 +105,7 @@ void cocoa_set_agents_sidebar(
     const char **,
     const char **,
     const char **,
+    const char **,
     const unsigned char *,
     const bool *,
     const char **,

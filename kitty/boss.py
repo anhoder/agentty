@@ -30,7 +30,7 @@ from weakref import WeakValueDictionary
 
 from kitty.types import WindowResizeDrag
 
-from .agents import AgentSidebarRow, AgentState, AgentTracker, group_sidebar_rows, session_group_for_window
+from .agents import AgentSidebarRow, AgentState, AgentTracker, group_sidebar_rows, project_key_for_cwd, session_group_for_window
 from .child import cached_process_data, default_env, process_data_cache, set_default_env
 from .cli import create_opts, green, parse_args
 from .cli_stub import CLIOptions, SaveAsSessionOptions
@@ -2069,7 +2069,8 @@ class Boss:
                     # The agent's own terminal title, which it repaints with
                     # the task it is on. Empty before the agent sets one.
                     title = f'{snapshot.agent} · {snapshot.title}' if snapshot.title else snapshot.agent
-                    rows.append(AgentSidebarRow(window.id, group, group_key, snapshot.agent, title, detail, snapshot.state, window is active_window))
+                    rows.append(AgentSidebarRow(window.id, group, group_key, snapshot.agent, title, detail, snapshot.state,
+                                                window is active_window, project_key=project_key_for_cwd(snapshot.cwd)))
         rows = list(group_sidebar_rows(rows, strategy))
         if not rows:
             rows.append(AgentSidebarRow(0, '', '', '', 'No AI agents', '', AgentState.unknown, False))

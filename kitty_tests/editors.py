@@ -1,10 +1,12 @@
 #!/usr/bin/env python
 # License: GPLv3 Copyright: 2026, Kovid Goyal <kovid at kovidgoyal.net>
 
+import os
+import tempfile
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
-from kitty.agents import detect_agent
+from kitty.agents import detect_agent, project_key_for_cwd
 from kitty.editors import detect_editor, editor_row
 
 from .base import BaseTest
@@ -149,6 +151,21 @@ class TestEditors(BaseTest):
                 window.cwd_of_child = cwd
                 self.ae(editor_row(window, True).detail, expected)
 
+    def test_project_key_groups_subdirectories(self):
+        project_key_for_cwd.cache_clear()
+        with tempfile.TemporaryDirectory() as tdir:
+            root = os.path.join(tdir, 'repo')
+            os.makedirs(os.path.join(root, '.git'))
+            sub = os.path.join(root, 'src')
+            os.makedirs(sub)
+            other = os.path.join(tdir, 'other')
+            os.makedirs(other)
+            self.ae(project_key_for_cwd(sub), os.path.realpath(root))
+            self.ae(project_key_for_cwd(root), os.path.realpath(root))
+            self.ae(project_key_for_cwd(other), os.path.realpath(other))
+            self.ae(project_key_for_cwd(''), '')
+        project_key_for_cwd.cache_clear()
+
     def test_single_foreground_query(self):
         class Child:
             queries = 0
@@ -163,7 +180,7 @@ class TestEditors(BaseTest):
         self.ae(editor_row(window, True).kind, 'editor')
         self.ae(child.queries, 1)
 
-    def test_nine_field_bridge(self):
+    def test_ten_field_bridge(self):
         from kitty.tabs import TabManager
 
         window = SimpleNamespace(id=1, title='title', cwd_of_child='/tmp', child=SimpleNamespace(foreground_processes=[{'cmdline': ['vim']}]))
@@ -174,5 +191,7 @@ class TestEditors(BaseTest):
                 patch('kitty.tabs.set_agents_sidebar') as send:
             TabManager.update_native_agents_sidebar(tm)
         serialized = send.call_args.args[5][0]
-        self.ae(len(serialized), 9)
-        self.ae(serialized[-1], 'editor')
+        self.ae(len(serialized), 10)
+        self.ae(serialized[8], 'editor')
+        self.ae(serialized[9], row.project_key)
+        self.assertTrue(row.project_key)

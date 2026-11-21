@@ -1958,7 +1958,8 @@ class TabManager:  # {{{
             get_options().agents_sidebar_grouping,
             agent_icons_dir,
             tuple(
-                (row.window_id, row.group, row.group_key, row.agent, row.title, row.detail, state_code(row.state), row.is_active, row.kind)
+                (row.window_id, row.group, row.group_key, row.agent, row.title, row.detail, state_code(row.state), row.is_active,
+                 row.kind, row.project_key)
                 for row in self.agent_sidebar_rows
             ),
             tuple(sorted(getattr(boss, 'agent_sidebar_collapsed_groups', ()))),

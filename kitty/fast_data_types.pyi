@@ -941,7 +941,7 @@ def set_agents_sidebar(
     cols: int,
     grouping: str,
     icons_dir: str,
-    rows: tuple[tuple[int, str, str, str, str, str, int, bool, str], ...],
+    rows: tuple[tuple[int, str, str, str, str, str, int, bool, str, str], ...],
     collapsed_groups: tuple[str, ...] = (),
 ) -> None: ...
 def set_agents_sidebar_focus(os_window_id: int, focused: bool, toggle: bool = False) -> bool: ...

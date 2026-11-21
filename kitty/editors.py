@@ -5,7 +5,7 @@ import os
 from collections.abc import Mapping, Sequence
 from typing import Any
 
-from .agents import AgentSidebarRow, AgentState
+from .agents import AgentSidebarRow, AgentState, project_key_for_cwd
 
 EDITOR_EXECUTABLES = {
     'nvim': 'nvim', 'nvimdiff': 'nvim',
@@ -102,4 +102,5 @@ def editor_row(window: Any, is_active: bool) -> AgentSidebarRow | None:
         return None
     cwd = window.cwd_of_child or ''
     title = f'{editor} · {window.title}' if window.title else editor
-    return AgentSidebarRow(window.id, editor, f'editor:{editor}', editor, title, os.path.basename(cwd) or cwd, AgentState.unknown, is_active, 'editor')
+    return AgentSidebarRow(window.id, editor, f'editor:{editor}', editor, title, os.path.basename(cwd) or cwd,
+                           AgentState.unknown, is_active, 'editor', project_key_for_cwd(cwd))

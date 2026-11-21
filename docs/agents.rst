@@ -135,6 +135,13 @@ Entries show the editor's brand icon together with the terminal title and
 working directory, not an authoritative current buffer or unsaved-file status.
 Editors do not participate in agent lifecycle states or completion notifications.
 
+Agent and editor rows in the same project are linked. Selecting either row
+highlights matching rows in the other section with a subtle background, left
+rail and link badge. Matching uses the same Git worktree root, or the exact
+working directory outside Git. Hovering a row for 120 ms previews the same
+relation at reduced strength; selection state takes precedence, and moving
+away clears the preview.
+
 Editor discovery shares the visible sidebar's existing refresh cycle and process
 cache; it does not scan terminal screen contents or create a separate polling
 timer. An editor disappears when it exits or leaves the foreground, including

@@ -354,7 +354,7 @@ class TestAgents(BaseTest):
         from types import SimpleNamespace
         from unittest.mock import patch
 
-        from kitty.agents import AgentSnapshot, detect_agent
+        from kitty.agents import AgentSnapshot, detect_agent, project_key_for_cwd
         from kitty.boss import Boss
 
         # Matched executable is resolved to the manifest id.
@@ -390,6 +390,7 @@ class TestAgents(BaseTest):
         by_id = {r.window_id: r for r in scope[0].agent_sidebar_rows}
         self.ae(by_id[1].title, 'opencode · OC | 你好问候')
         self.ae(by_id[1].agent, 'opencode')  # icon lookup keys on the manifest id
+        self.ae(by_id[1].project_key, project_key_for_cwd('/tmp'))
         self.ae(by_id[2].title, 'omp')  # no title → agent name only
 
     def test_sidebar_same_title_tabs(self):
