@@ -162,6 +162,7 @@ class TestSidebarSections(BaseTest):
         set_value(view, 'agents_collapsed', 0)
         set_value(view, 'editors_collapsed', 0)
         set_value(view, 'agents_fraction', 0.62)
+        send(view, 'updateSectionHeaders', None, ())
 
         def layout(height):
             send(view, 'setFrameSize:', None, (Size,), (Size(260, height),))

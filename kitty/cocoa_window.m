@@ -1457,7 +1457,7 @@ static NSColor *KittySidebarSectionTint(BOOL agents_section) {
 static NSColor *KittySidebarSectionBackgroundColor(BOOL agents_section) {
     NSColor *base = [NSColor controlBackgroundColor];
     NSColor *tint = KittySidebarSectionTint(agents_section);
-    return [base blendedColorWithFraction:agents_section ? 0.13 : 0.10 ofColor:tint];
+    return [base blendedColorWithFraction:agents_section ? 0.08 : 0.06 ofColor:tint];
 }
 
 @implementation KittySidebarSectionButton

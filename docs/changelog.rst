@@ -9,6 +9,8 @@ To update |kitty|, :doc:`follow the instructions <binary>`.
 Recent major new features
 ---------------------------
 
+- macOS: Soften the Agents and Editors sidebar section background tints.
+
 - macOS: Recognize GNU nano, Micro, Helix, Kakoune and terminal Emacs in the
   Editors sidebar section, with colored brand icons.
 
