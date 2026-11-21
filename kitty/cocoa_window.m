@@ -726,7 +726,9 @@ extern bool cocoa_dispatch_pane_switcher_shortcut(void *, const GLFWkeyevent *);
         BOOL selected = i == owner->selected;
         BOOL current = i == owner->current_index;
         NSBezierPath *outline = [NSBezierPath bezierPathWithRoundedRect:NSInsetRect(tile, 2, 2) xRadius:8 yRadius:8];
-        [(selected ? [NSColor.selectedControlColor colorWithAlphaComponent:0.16] : NSColor.controlBackgroundColor) setFill];
+        NSColor *tile_fill = current ? [[NSColor controlAccentColor] colorWithAlphaComponent:0.26] :
+            (selected ? [[NSColor selectedControlColor] colorWithAlphaComponent:0.14] : NSColor.controlBackgroundColor);
+        [tile_fill setFill];
         [outline fill];
         if (selected) { [NSColor.selectedControlColor setStroke]; outline.lineWidth = 2; [outline stroke]; }
         NSRect preview = NSMakeRect(tile.origin.x + 10, tile.origin.y + 10, MAX(0, tile.size.width - 20), MAX(0, tile.size.height - 44));
@@ -754,9 +756,6 @@ extern bool cocoa_dispatch_pane_switcher_shortcut(void *, const GLFWkeyevent *);
             [(entry->pending ? @"Loading preview…" : @"Preview unavailable") drawInRect:
                 NSMakeRect(preview.origin.x + 4, NSMidY(preview) - 8, MAX(0, preview.size.width - 8), 18) withAttributes:loading_attributes];
         }
-        [[NSColor.separatorColor colorWithAlphaComponent:0.9] setStroke];
-        preview_path.lineWidth = 1;
-        [preview_path stroke];
         CGFloat title_right = NSMaxX(tile) - 12;
         if (current) {
             NSString *badge_text = @"CURRENT";

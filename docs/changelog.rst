@@ -20,8 +20,8 @@ Recent major new features
 - macOS: Remove the top inset above the Agents sidebar section so its heading
   starts at the window edge.
 
-- macOS: Mark the current pane in the pane switcher and draw preview images
-  with a rounded shadowed border.
+- macOS: Mark the current pane in the pane switcher with a distinct tinted
+  background, and keep preview shadows without colored borders.
 
 - macOS: Show the vertical-resize cursor across the full divider hit area
   between the Agents and Editors sections, matching its drag behavior.
