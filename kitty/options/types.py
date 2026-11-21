@@ -56,6 +56,7 @@ option_names = (
     'active_tab_foreground',
     'active_tab_title_template',
     'active_window_title_template',
+    'agents_sidebar_animated_background',
     'agents_sidebar_grouping',
     'allow_cloning',
     'allow_hyperlinks',
@@ -560,6 +561,7 @@ class Options:
     active_tab_foreground: Color = Color(0, 0, 0)
     active_tab_title_template: str | None = None
     active_window_title_template: str = 'none'
+    agents_sidebar_animated_background: bool = False
     agents_sidebar_grouping: choices_for_agents_sidebar_grouping = 'time'
     allow_cloning: choices_for_allow_cloning = 'ask'
     allow_hyperlinks: int = 1

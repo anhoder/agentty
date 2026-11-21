@@ -1300,6 +1300,15 @@ agents_sidebar_update_string(NSString **string, const char *value) {
 @end
 
 @class KittyAgentsSidebarView;
+@class KittySidebarSectionGlowView;
+
+@interface KittySidebarSectionGlowView : NSView {
+    CAGradientLayer *glow;
+    BOOL agents_section, glow_active, glow_animating;
+}
+- (instancetype)initWithAgentsSection:(BOOL)agents;
+- (void)setGlowActive:(BOOL)active;
+@end
 
 @interface KittyAgentsOutlineView : NSOutlineView
 @property BOOL keyboardFocusRequested;
@@ -1348,7 +1357,8 @@ agents_sidebar_update_string(NSString **string, const char *value) {
     NSArray *root_nodes;
     NSDictionary *group_children;
     NSArray *editor_entries;
-    NSView *agents_section, *editors_section, *section_divider, *divider_hit_view;
+    KittySidebarSectionGlowView *agents_section, *editors_section;
+    NSView *section_divider, *divider_hit_view;
     NSButton *agents_header, *editors_header;
     NSScrollView *editor_scroll_view;
     KittyAgentsOutlineView *editor_outline;
@@ -1571,6 +1581,111 @@ static NSColor *KittySidebarSectionHeaderColor(BOOL agents_section) {
     [super dealloc];
 }
 @end
+
+@implementation KittySidebarSectionGlowView
+- (instancetype)initWithAgentsSection:(BOOL)agents {
+    self = [super initWithFrame:NSZeroRect];
+    if (self) {
+        agents_section = agents;
+        self.wantsLayer = YES;
+        CALayer *host = self.layer;
+        if (!host) { host = [CALayer layer]; self.layer = host; }
+        host.masksToBounds = YES;
+        glow = [[CAGradientLayer layer] retain];
+        glow.type = kCAGradientLayerAxial;
+        glow.startPoint = CGPointMake(0.0, 0.25);
+        glow.endPoint = CGPointMake(1.0, 0.75);
+        glow.locations = @[@(0.0), @(0.12), @(0.24)];
+        glow.opacity = 0.0f;
+        [host addSublayer:glow];
+        [self updateGlowColors];
+        [NSWorkspace.sharedWorkspace.notificationCenter addObserver:self selector:@selector(animationPreferencesChanged:)
+            name:NSWorkspaceAccessibilityDisplayOptionsDidChangeNotification object:nil];
+    }
+    return self;
+}
+- (void)updateGlowColors {
+    NSColor *tint = KittySidebarSectionTint(agents_section);
+    void (^apply)(void) = ^{
+        CGColorRef transparent = [tint colorWithAlphaComponent:0.0].CGColor;
+        CGColorRef highlight = [tint colorWithAlphaComponent:0.16].CGColor;
+        [CATransaction begin];
+        [CATransaction setDisableActions:YES];
+        glow.colors = @[(id)transparent, (id)highlight, (id)transparent];
+        [CATransaction commit];
+    };
+    if (@available(macOS 11.0, *)) [self.effectiveAppearance performAsCurrentDrawingAppearance:apply];
+    else apply();
+}
+- (BOOL)shouldAnimate {
+    if (!glow_active) return NO;
+    if (NSWorkspace.sharedWorkspace.accessibilityDisplayShouldReduceMotion) return NO;
+    NSWindow *window = self.window;
+    return window != nil && window.isVisible && (window.occlusionState & NSWindowOcclusionStateVisible) != 0;
+}
+- (void)syncAnimation {
+    BOOL animate = [self shouldAnimate];
+    if (animate == glow_animating) return;
+    glow_animating = animate;
+    [CATransaction begin];
+    [CATransaction setDisableActions:YES];
+    if (animate) {
+        CABasicAnimation *drift = [CABasicAnimation animationWithKeyPath:@"locations"];
+        drift.fromValue = @[@(0.0), @(0.12), @(0.24)];
+        drift.toValue = @[@(0.76), @(0.88), @(1.0)];
+        drift.duration = agents_section ? 7.5 : 9.5;
+        drift.autoreverses = YES;
+        drift.repeatCount = HUGE_VALF;
+        drift.timingFunction = [CAMediaTimingFunction functionWithName:kCAMediaTimingFunctionEaseInEaseOut];
+        [glow addAnimation:drift forKey:@"sidebar-glow-drift"];
+        glow.opacity = 1.0f;
+    } else {
+        [glow removeAnimationForKey:@"sidebar-glow-drift"];
+        glow.opacity = 0.0f;
+    }
+    [CATransaction commit];
+}
+- (void)setGlowActive:(BOOL)active {
+    if (glow_active == active) return;
+    glow_active = active;
+    [self syncAnimation];
+}
+- (void)viewDidMoveToWindow {
+    [super viewDidMoveToWindow];
+    NSNotificationCenter *center = NSNotificationCenter.defaultCenter;
+    [center removeObserver:self name:NSWindowDidChangeOcclusionStateNotification object:nil];
+    if (self.window) [center addObserver:self selector:@selector(windowVisibilityChanged:)
+        name:NSWindowDidChangeOcclusionStateNotification object:self.window];
+    [self syncAnimation];
+}
+- (void)viewDidHide { [super viewDidHide]; [self syncAnimation]; }
+- (void)viewDidUnhide { [super viewDidUnhide]; [self syncAnimation]; }
+- (void)viewDidChangeEffectiveAppearance { [super viewDidChangeEffectiveAppearance]; [self updateGlowColors]; }
+- (void)viewDidChangeBackingProperties {
+    [super viewDidChangeBackingProperties];
+    glow.contentsScale = self.window ? self.window.backingScaleFactor : 1.0;
+}
+- (void)setFrameSize:(NSSize)size {
+    [super setFrameSize:size];
+    [CATransaction begin];
+    [CATransaction setDisableActions:YES];
+    glow.frame = self.bounds;
+    [CATransaction commit];
+}
+- (void)windowVisibilityChanged:(NSNotification *)notification { (void)notification; [self syncAnimation]; }
+- (void)animationPreferencesChanged:(NSNotification *)notification {
+    (void)notification;
+    [self updateGlowColors];
+    [self syncAnimation];
+}
+- (void)dealloc {
+    [NSNotificationCenter.defaultCenter removeObserver:self];
+    [NSWorkspace.sharedWorkspace.notificationCenter removeObserver:self];
+    [glow release];
+    [super dealloc];
+}
+@end
+
 @implementation KittyAgentsSidebarCell
 - (instancetype)initWithFrame:(NSRect)frame {
     self = [super initWithFrame:frame];
@@ -1906,6 +2021,9 @@ static NSColor *KittySidebarSectionHeaderColor(BOOL agents_section) {
         [NSNotificationCenter.defaultCenter addObserver:self selector:@selector(spinnerViewportChanged:)
             name:NSViewBoundsDidChangeNotification object:scroll_view.contentView];
         [self addSubview:scroll_view];
+        agents_section = [[KittySidebarSectionGlowView alloc] initWithAgentsSection:YES];
+        agents_section.hidden = YES;
+        [self addSubview:agents_section positioned:NSWindowBelow relativeTo:scroll_view];
         editor_scroll_view = [[KittyAgentsScrollView alloc] initWithFrame:NSZeroRect];
         editor_scroll_view.drawsBackground = NO; editor_scroll_view.hasVerticalScroller = YES;
         editor_scroll_view.autohidesScrollers = YES; editor_scroll_view.scrollerStyle = NSScrollerStyleOverlay;
@@ -1923,6 +2041,9 @@ static NSColor *KittySidebarSectionHeaderColor(BOOL agents_section) {
         editor_outline.target = self; editor_outline.action = @selector(outlineClicked:);
         editor_outline.accessibilityLabel = @"Editors"; editor_outline.emptyStateText = @"No Editors"; editor_scroll_view.documentView = editor_outline;
         [self addSubview:editor_scroll_view];
+        editors_section = [[KittySidebarSectionGlowView alloc] initWithAgentsSection:NO];
+        editors_section.hidden = YES;
+        [self addSubview:editors_section positioned:NSWindowBelow relativeTo:editor_scroll_view];
         section_divider = [[NSView alloc] initWithFrame:NSZeroRect];
         section_divider.wantsLayer = YES; section_divider.layer.backgroundColor = [NSColor separatorColor].CGColor;
         [self addSubview:section_divider];
@@ -2066,6 +2187,8 @@ static NSColor *KittySidebarSectionHeaderColor(BOOL agents_section) {
     CGFloat editor_header_y = divider_y + divider_height;
     editors_header.frame = NSMakeRect(0, editor_header_y, width, header_height);
     editor_scroll_view.frame = NSMakeRect(0, editor_header_y + header_height, width, editor_height);
+    agents_section.frame = scroll_view.frame;
+    editors_section.frame = editor_scroll_view.frame;
     outline.tableColumns.firstObject.width = MAX(0, scroll_view.contentSize.width);
     editor_outline.tableColumns.firstObject.width = MAX(0, editor_scroll_view.contentSize.width);
     NSRect divider_hit_rect = [self dividerHitRect];
@@ -2073,7 +2196,16 @@ static NSColor *KittySidebarSectionHeaderColor(BOOL agents_section) {
     divider_hit_view.hidden = NSIsEmptyRect(divider_hit_rect);
     [self.window invalidateCursorRectsForView:divider_hit_view];
     [self.window invalidateCursorRectsForView:self];
+    [self syncSectionBackgroundAnimation];
     [self setNeedsDisplay:YES];
+}
+
+- (void)syncSectionBackgroundAnimation {
+    BOOL enabled = OPT(agents_sidebar_animated_background);
+    agents_section.hidden = !enabled || agents_collapsed;
+    editors_section.hidden = !enabled || editors_collapsed;
+    [agents_section setGlowActive:enabled && !agents_collapsed];
+    [editors_section setGlowActive:enabled && !editors_collapsed];
 }
 
 - (void)previewSizeWidth:(CGFloat)width {
@@ -2809,6 +2941,7 @@ static NSColor *KittySidebarSectionHeaderColor(BOOL agents_section) {
         summary_dirty = NO;
     }
     [self updateRelatedLinkState];
+    [self syncSectionBackgroundAnimation];
     row_style_changed = NO;
 }
 
@@ -3025,6 +3158,7 @@ static NSColor *KittySidebarSectionHeaderColor(BOOL agents_section) {
     [group_children release];
     [editor_entries release]; [agents_header release]; [editors_header release];
     [editor_outline release]; [editor_scroll_view release]; [section_divider release]; [divider_hit_view release];
+    [agents_section release]; [editors_section release];
     [remembered_selection release];
     [previous_responders release];
     [outline release];

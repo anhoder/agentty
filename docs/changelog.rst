@@ -364,6 +364,9 @@ Recent major new features
 - Add :opt:`agents_sidebar_grouping` with ``time``, ``agent``, ``tab`` and
   ``path`` strategies. The sidebar now opens only through its persistent
   titlebar control or the toggle action; automatic-show has been removed.
+- macOS: Add :opt:`agents_sidebar_animated_background` to animate the Agents
+  and Editors sidebar content backgrounds with a slow tinted shimmer. Disabled
+  by default; the macOS Reduce Motion setting also disables it.
 - Place the Agents expand/collapse control in the titlebar after the traffic
   lights and before the window title, with distinct expanded/collapsed styles.
 - Reserve titlebar space for the Agents toggle so window titles cannot overlap

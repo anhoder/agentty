@@ -86,6 +86,18 @@ class TestSidebarSections(BaseTest):
                     types=(C.c_uint, C.c_double, C.c_uint), args=(0, 260, 8))
         self.assertTrue(view)
         self.addCleanup(lambda: send(view, 'release', None))
+        sections = [get(view, 'agents_section'), get(view, 'editors_section')]
+        for section in sections:
+            self.assertTrue(section)
+            self.assertTrue(send(section, 'isHidden', C.c_bool))
+        self.set_options({'agents_sidebar_animated_background': True})
+        send(view, 'syncSectionBackgroundAnimation', None)
+        for section in sections:
+            self.assertFalse(send(section, 'isHidden', C.c_bool))
+        self.set_options({'agents_sidebar_animated_background': False})
+        send(view, 'syncSectionBackgroundAnimation', None)
+        for section in sections:
+            self.assertTrue(send(section, 'isHidden', C.c_bool))
         icons_dir = os.path.join(kitty_base_dir, 'kitty', 'agent_icons')
         send(view, 'setValue:forKey:', None, (ptr, ptr), (string(icons_dir), string('iconsDir')))
         for editor in ('nvim', 'vim', 'vi', 'view', 'nano', 'micro', 'helix', 'kakoune', 'emacs'):

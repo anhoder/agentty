@@ -92,6 +92,10 @@ collapse or expand the section. The grouping strategy is configurable with
 * ``tab``: group rows by tab sequence number and kitty tab title;
 * ``path``: group rows by the full working directory.
 
+Set :opt:`agents_sidebar_animated_background` to :code:`yes` to give both
+section content backgrounds a slow tinted shimmer, purple for Agents and teal
+for Editors. It is off by default and follows the macOS Reduce Motion setting.
+
 Group headings use a full-width shaded band and a theme-aware disclosure chevron.
 Their entire clickable area uses the pointing-hand cursor, including the chevron.
 When the sidebar has keyboard focus, a full accent border surrounds the sidebar
