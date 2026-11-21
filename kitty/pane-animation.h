@@ -81,10 +81,15 @@ pane_animation_progress(double elapsed, double duration, const PaneAnimationSpri
 
 static inline PaneAnimationRect
 pane_animation_sample(const PaneAnimationFrame *frame, double elapsed, double duration) {
+    PaneAnimationRect a = frame->from, b = frame->target;
+    // Make the last rendered animation frames exactly the target. The final
+    // content frame uses the real layout size, so any residual spring offset
+    // left on the last animation frame would appear as a size jump.
+    double settle = duration < 1. / 60. ? duration : 1. / 60.;
+    if (duration > 0 && elapsed >= duration - settle) return b;
     double p = pane_animation_progress(elapsed, duration, &frame->position_spring);
     double s = frame->position_spring.damping == frame->size_spring.damping ? p :
         pane_animation_progress(elapsed, duration, &frame->size_spring);
-    PaneAnimationRect a = frame->from, b = frame->target;
     double width = fmax(0., a.width + (b.width - a.width) * s);
     double height = fmax(0., a.height + (b.height - a.height) * s);
     double cx = a.x + a.width / 2. + (b.x + b.width / 2. - a.x - a.width / 2.) * p;

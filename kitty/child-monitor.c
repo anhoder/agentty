@@ -1277,7 +1277,14 @@ render_os_window(OSWindow *w, monotonic_t now, bool scan_for_animated_images) {
         return false;
     }
     if (!w->keep_rendering_till_swap && USE_RENDER_FRAMES && w->render_state != RENDER_FRAME_READY) {
-        if (w->render_state == RENDER_FRAME_NOT_REQUESTED || no_render_frame_received_recently(w, now, ms_to_monotonic_t(250ll))) request_frame_render(w);
+        bool pane_animating = pane_animation_active_at(&w->pane_animation, monotonic_t_to_s_double(now));
+        // A pane animation must reach its target; a stalled display link would
+        // otherwise freeze it at the last spring sample and make the final
+        // content render look like a size jump. Wake regularly and re-request
+        // much sooner than the ordinary watchdog while it is live.
+        if (pane_animating) set_maximum_wait(ms_to_monotonic_t(10ll));
+        monotonic_t frame_wait = ms_to_monotonic_t(pane_animating ? 50ll : 250ll);
+        if (w->render_state == RENDER_FRAME_NOT_REQUESTED || no_render_frame_received_recently(w, now, frame_wait)) request_frame_render(w);
         if (w->id != global_state.thumbnail_callback.os_window) {
             // dont respect render frames soon after a resize on Wayland as they cause flicker because
             // we want to fill the newly resized buffer ASAP, not at compositors convenience

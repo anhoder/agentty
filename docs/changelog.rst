@@ -76,6 +76,8 @@ Recent major new features
 - macOS: Cross-fade the previous layout while pane spring animations run, so
   changing to or from the stack layout no longer flashes an empty region or
   pops hidden panes into place.
+- macOS: Finish pane spring animations at the exact layout size and recover
+  stalled animation frames, preventing a size jump at the end of a transition.
 - macOS: Skip pane spring animations during keyboard and interactive pane
   resizing, including edge adjustments and size resets, just as for mouse drags.
 - macOS: Animate working-agent sidebar indicators using Core Animation layers
