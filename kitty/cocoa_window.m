@@ -1494,7 +1494,11 @@ static NSColor *KittySidebarSectionColor(BOOL agents_section, BOOL header) {
     CGFloat fraction = agents_section ? (header ? 0.07 : 0.04) : (header ? 0.12 : 0.07);
     NSColor *base = [NSColor controlBackgroundColor];
     NSColor *tint = KittySidebarSectionTint(agents_section);
-    return [base blendedColorWithFraction:fraction ofColor:tint];
+    NSColor *color = [base blendedColorWithFraction:fraction ofColor:tint];
+    // Content is a light fill inside the section; the stronger header band
+    // keeps the section identity visible against it.
+    if (!header) color = [color blendedColorWithFraction:0.08 ofColor:[NSColor whiteColor]];
+    return color;
 }
 
 static NSColor *KittySidebarSectionBackgroundColor(BOOL agents_section) {

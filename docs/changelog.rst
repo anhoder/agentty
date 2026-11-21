@@ -78,6 +78,8 @@ Recent major new features
   pops hidden panes into place.
 - macOS: Finish pane spring animations at the exact layout size and recover
   stalled animation frames, preventing a size jump at the end of a transition.
+- macOS: Use a lighter fill for the Agents and Editors sidebar section content,
+  keeping the darker heading bands for section identity.
 - macOS: Skip pane spring animations during keyboard and interactive pane
   resizing, including edge adjustments and size resets, just as for mouse drags.
 - macOS: Animate working-agent sidebar indicators using Core Animation layers
