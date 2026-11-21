@@ -3770,19 +3770,6 @@ working directory. The default is :code:`time`.
 )
 
 opt(
-    'agents_sidebar_animated_background',
-    'no',
-    option_type='to_bool',
-    ctype='bool',
-    long_text="""
-macOS: Drift slow, gentle tinted waves across the content backgrounds of the
-Agents and Editors sidebar sections, using the purple Agents tint and the teal
-Editors tint. Disabled by default. The macOS Reduce Motion setting also
-disables the animation. This option has no effect on other platforms.
-""",
-)
-
-opt(
     'macos_native_tabs',
     'no',
     option_type='to_bool',

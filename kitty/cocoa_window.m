@@ -1300,15 +1300,6 @@ agents_sidebar_update_string(NSString **string, const char *value) {
 @end
 
 @class KittyAgentsSidebarView;
-@class KittySidebarSectionWaveView;
-
-@interface KittySidebarSectionWaveView : NSView {
-    CAShapeLayer *wave_back, *wave_front;
-    BOOL agents_section, wave_active, wave_animating;
-}
-- (instancetype)initWithAgentsSection:(BOOL)agents;
-- (void)setWaveActive:(BOOL)active;
-@end
 
 @interface KittyAgentsOutlineView : NSOutlineView
 @property BOOL keyboardFocusRequested;
@@ -1357,8 +1348,7 @@ agents_sidebar_update_string(NSString **string, const char *value) {
     NSArray *root_nodes;
     NSDictionary *group_children;
     NSArray *editor_entries;
-    KittySidebarSectionWaveView *agents_section, *editors_section;
-    NSView *section_divider, *divider_hit_view;
+    NSView *agents_section, *editors_section, *section_divider, *divider_hit_view;
     NSButton *agents_header, *editors_header;
     NSScrollView *editor_scroll_view;
     KittyAgentsOutlineView *editor_outline;
@@ -1581,166 +1571,6 @@ static NSColor *KittySidebarSectionHeaderColor(BOOL agents_section) {
     [super dealloc];
 }
 @end
-
-static CGPathRef
-KittySidebarWavePath(CGFloat width, CGFloat height, CGFloat mid_fraction, CGFloat amplitude, CGFloat thickness, CGFloat phase) {
-    CGMutablePathRef path = CGPathCreateMutable();
-    const CGFloat period = MAX(1.0, width);
-    const CGFloat mid = height * mid_fraction;
-    const CGFloat step = 4.0;
-    const NSUInteger count = (NSUInteger)ceil(2.0 * width / step);
-    for (NSUInteger i = 0; i <= count; i++) {
-        CGFloat x = MIN(2.0 * width, (CGFloat)i * step);
-        CGFloat y = mid + amplitude * sin(2.0 * M_PI * x / period + phase);
-        if (i == 0) CGPathMoveToPoint(path, NULL, x, y);
-        else CGPathAddLineToPoint(path, NULL, x, y);
-    }
-    for (NSInteger i = (NSInteger)count; i >= 0; i--) {
-        CGFloat x = MIN(2.0 * width, (CGFloat)i * step);
-        CGFloat y = mid + amplitude * sin(2.0 * M_PI * x / period + phase) + thickness;
-        CGPathAddLineToPoint(path, NULL, x, y);
-    }
-    CGPathCloseSubpath(path);
-    return path;
-}
-
-@implementation KittySidebarSectionWaveView
-- (instancetype)initWithAgentsSection:(BOOL)agents {
-    self = [super initWithFrame:NSZeroRect];
-    if (self) {
-        agents_section = agents;
-        self.wantsLayer = YES;
-        CALayer *host = self.layer;
-        if (!host) { host = [CALayer layer]; self.layer = host; }
-        host.masksToBounds = YES;
-        wave_back = [[CAShapeLayer layer] retain];
-        wave_front = [[CAShapeLayer layer] retain];
-        wave_back.opacity = wave_front.opacity = 0.0f;
-        [host addSublayer:wave_back];
-        [host addSublayer:wave_front];
-        [self updateWaveColors];
-        [NSWorkspace.sharedWorkspace.notificationCenter addObserver:self selector:@selector(animationPreferencesChanged:)
-            name:NSWorkspaceAccessibilityDisplayOptionsDidChangeNotification object:nil];
-    }
-    return self;
-}
-- (void)updateWaveColors {
-    NSColor *tint = KittySidebarSectionTint(agents_section);
-    void (^apply)(void) = ^{
-        CGColorRef back = [tint colorWithAlphaComponent:agents_section ? 0.035 : 0.04].CGColor;
-        CGColorRef front = [tint colorWithAlphaComponent:agents_section ? 0.055 : 0.06].CGColor;
-        [CATransaction begin];
-        [CATransaction setDisableActions:YES];
-        wave_back.fillColor = back;
-        wave_front.fillColor = front;
-        [CATransaction commit];
-    };
-    if (@available(macOS 11.0, *)) [self.effectiveAppearance performAsCurrentDrawingAppearance:apply];
-    else apply();
-}
-- (void)updateWavePaths {
-    CGFloat width = self.bounds.size.width, height = self.bounds.size.height;
-    if (width <= 1 || height <= 1) return;
-    CGFloat amplitude = MAX(3.0, MIN(9.0, height * 0.035));
-    CGFloat thickness = MAX(14.0, MIN(34.0, height * 0.12));
-    CGPathRef back = KittySidebarWavePath(width, height, 0.56, amplitude * 1.5, thickness * 1.6, 1.1);
-    CGPathRef front = KittySidebarWavePath(width, height, 0.62, amplitude, thickness, 0.0);
-    [CATransaction begin];
-    [CATransaction setDisableActions:YES];
-    wave_back.path = back;
-    wave_front.path = front;
-    [CATransaction commit];
-    CGPathRelease(back);
-    CGPathRelease(front);
-}
-- (BOOL)shouldAnimate {
-    if (!wave_active) return NO;
-    if (NSWorkspace.sharedWorkspace.accessibilityDisplayShouldReduceMotion) return NO;
-    NSWindow *window = self.window;
-    return window != nil && window.isVisible && (window.occlusionState & NSWindowOcclusionStateVisible) != 0;
-}
-- (void)addWaveAnimations {
-    CGFloat period = MAX(1.0, self.bounds.size.width);
-    CABasicAnimation *back = [CABasicAnimation animationWithKeyPath:@"transform.translation.x"];
-    back.fromValue = @(-period);
-    back.toValue = @(0);
-    back.duration = agents_section ? 30.0 : 34.0;
-    back.repeatCount = HUGE_VALF;
-    back.timingFunction = [CAMediaTimingFunction functionWithName:kCAMediaTimingFunctionLinear];
-    [wave_back addAnimation:back forKey:@"sidebar-wave-drift"];
-    CABasicAnimation *front = [CABasicAnimation animationWithKeyPath:@"transform.translation.x"];
-    front.fromValue = @(0);
-    front.toValue = @(-period);
-    front.duration = agents_section ? 21.0 : 24.0;
-    front.repeatCount = HUGE_VALF;
-    front.timingFunction = [CAMediaTimingFunction functionWithName:kCAMediaTimingFunctionLinear];
-    [wave_front addAnimation:front forKey:@"sidebar-wave-drift"];
-    wave_back.opacity = wave_front.opacity = 1.0f;
-}
-- (void)removeWaveAnimations {
-    [wave_back removeAnimationForKey:@"sidebar-wave-drift"];
-    [wave_front removeAnimationForKey:@"sidebar-wave-drift"];
-    wave_back.opacity = wave_front.opacity = 0.0f;
-}
-- (void)syncAnimation {
-    BOOL animate = [self shouldAnimate];
-    if (animate == wave_animating) return;
-    wave_animating = animate;
-    [CATransaction begin];
-    [CATransaction setDisableActions:YES];
-    if (animate) [self addWaveAnimations];
-    else [self removeWaveAnimations];
-    [CATransaction commit];
-}
-- (void)setWaveActive:(BOOL)active {
-    if (wave_active == active) return;
-    wave_active = active;
-    [self syncAnimation];
-}
-- (void)viewDidMoveToWindow {
-    [super viewDidMoveToWindow];
-    NSNotificationCenter *center = NSNotificationCenter.defaultCenter;
-    [center removeObserver:self name:NSWindowDidChangeOcclusionStateNotification object:nil];
-    if (self.window) [center addObserver:self selector:@selector(windowVisibilityChanged:)
-        name:NSWindowDidChangeOcclusionStateNotification object:self.window];
-    [self syncAnimation];
-}
-- (void)viewDidHide { [super viewDidHide]; [self syncAnimation]; }
-- (void)viewDidUnhide { [super viewDidUnhide]; [self syncAnimation]; }
-- (void)viewDidChangeEffectiveAppearance { [super viewDidChangeEffectiveAppearance]; [self updateWaveColors]; }
-- (void)viewDidChangeBackingProperties {
-    [super viewDidChangeBackingProperties];
-    CGFloat scale = self.window ? self.window.backingScaleFactor : 1.0;
-    wave_back.contentsScale = wave_front.contentsScale = scale;
-}
-- (void)setFrameSize:(NSSize)size {
-    [super setFrameSize:size];
-    [CATransaction begin];
-    [CATransaction setDisableActions:YES];
-    wave_back.frame = self.bounds;
-    wave_front.frame = self.bounds;
-    [self updateWavePaths];
-    if (wave_animating) {
-        [self removeWaveAnimations];
-        [self addWaveAnimations];
-    }
-    [CATransaction commit];
-}
-- (void)windowVisibilityChanged:(NSNotification *)notification { (void)notification; [self syncAnimation]; }
-- (void)animationPreferencesChanged:(NSNotification *)notification {
-    (void)notification;
-    [self updateWaveColors];
-    [self syncAnimation];
-}
-- (void)dealloc {
-    [NSNotificationCenter.defaultCenter removeObserver:self];
-    [NSWorkspace.sharedWorkspace.notificationCenter removeObserver:self];
-    [wave_back release];
-    [wave_front release];
-    [super dealloc];
-}
-@end
-
 @implementation KittyAgentsSidebarCell
 - (instancetype)initWithFrame:(NSRect)frame {
     self = [super initWithFrame:frame];
@@ -2076,9 +1906,6 @@ KittySidebarWavePath(CGFloat width, CGFloat height, CGFloat mid_fraction, CGFloa
         [NSNotificationCenter.defaultCenter addObserver:self selector:@selector(spinnerViewportChanged:)
             name:NSViewBoundsDidChangeNotification object:scroll_view.contentView];
         [self addSubview:scroll_view];
-        agents_section = [[KittySidebarSectionWaveView alloc] initWithAgentsSection:YES];
-        agents_section.hidden = YES;
-        [self addSubview:agents_section positioned:NSWindowBelow relativeTo:scroll_view];
         editor_scroll_view = [[KittyAgentsScrollView alloc] initWithFrame:NSZeroRect];
         editor_scroll_view.drawsBackground = NO; editor_scroll_view.hasVerticalScroller = YES;
         editor_scroll_view.autohidesScrollers = YES; editor_scroll_view.scrollerStyle = NSScrollerStyleOverlay;
@@ -2096,9 +1923,6 @@ KittySidebarWavePath(CGFloat width, CGFloat height, CGFloat mid_fraction, CGFloa
         editor_outline.target = self; editor_outline.action = @selector(outlineClicked:);
         editor_outline.accessibilityLabel = @"Editors"; editor_outline.emptyStateText = @"No Editors"; editor_scroll_view.documentView = editor_outline;
         [self addSubview:editor_scroll_view];
-        editors_section = [[KittySidebarSectionWaveView alloc] initWithAgentsSection:NO];
-        editors_section.hidden = YES;
-        [self addSubview:editors_section positioned:NSWindowBelow relativeTo:editor_scroll_view];
         section_divider = [[NSView alloc] initWithFrame:NSZeroRect];
         section_divider.wantsLayer = YES; section_divider.layer.backgroundColor = [NSColor separatorColor].CGColor;
         [self addSubview:section_divider];
@@ -2242,8 +2066,6 @@ KittySidebarWavePath(CGFloat width, CGFloat height, CGFloat mid_fraction, CGFloa
     CGFloat editor_header_y = divider_y + divider_height;
     editors_header.frame = NSMakeRect(0, editor_header_y, width, header_height);
     editor_scroll_view.frame = NSMakeRect(0, editor_header_y + header_height, width, editor_height);
-    agents_section.frame = scroll_view.frame;
-    editors_section.frame = editor_scroll_view.frame;
     outline.tableColumns.firstObject.width = MAX(0, scroll_view.contentSize.width);
     editor_outline.tableColumns.firstObject.width = MAX(0, editor_scroll_view.contentSize.width);
     NSRect divider_hit_rect = [self dividerHitRect];
@@ -2251,16 +2073,7 @@ KittySidebarWavePath(CGFloat width, CGFloat height, CGFloat mid_fraction, CGFloa
     divider_hit_view.hidden = NSIsEmptyRect(divider_hit_rect);
     [self.window invalidateCursorRectsForView:divider_hit_view];
     [self.window invalidateCursorRectsForView:self];
-    [self syncSectionBackgroundAnimation];
     [self setNeedsDisplay:YES];
-}
-
-- (void)syncSectionBackgroundAnimation {
-    BOOL enabled = OPT(agents_sidebar_animated_background);
-    agents_section.hidden = !enabled || agents_collapsed;
-    editors_section.hidden = !enabled || editors_collapsed;
-    [agents_section setWaveActive:enabled && !agents_collapsed];
-    [editors_section setWaveActive:enabled && !editors_collapsed];
 }
 
 - (void)previewSizeWidth:(CGFloat)width {
@@ -2996,7 +2809,6 @@ KittySidebarWavePath(CGFloat width, CGFloat height, CGFloat mid_fraction, CGFloa
         summary_dirty = NO;
     }
     [self updateRelatedLinkState];
-    [self syncSectionBackgroundAnimation];
     row_style_changed = NO;
 }
 
@@ -3213,7 +3025,6 @@ KittySidebarWavePath(CGFloat width, CGFloat height, CGFloat mid_fraction, CGFloa
     [group_children release];
     [editor_entries release]; [agents_header release]; [editors_header release];
     [editor_outline release]; [editor_scroll_view release]; [section_divider release]; [divider_hit_view release];
-    [agents_section release]; [editors_section release];
     [remembered_selection release];
     [previous_responders release];
     [outline release];

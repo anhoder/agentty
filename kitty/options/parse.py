@@ -53,9 +53,6 @@ class Parser:
     def active_window_title_template(self, val: str, ans: dict[str, typing.Any]) -> None:
         ans['active_window_title_template'] = tab_title_template(val)
 
-    def agents_sidebar_animated_background(self, val: str, ans: dict[str, typing.Any]) -> None:
-        ans['agents_sidebar_animated_background'] = to_bool(val)
-
     def agents_sidebar_grouping(self, val: str, ans: dict[str, typing.Any]) -> None:
         val = val.lower()
         if val not in self.choices_for_agents_sidebar_grouping:
