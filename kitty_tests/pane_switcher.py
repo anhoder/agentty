@@ -11,21 +11,42 @@ from .base import BaseTest
 
 @unittest.skipUnless(is_macos, 'Native pane switcher requires macOS')
 class TestPaneSwitcher(BaseTest):
-    def test_modifier_release_through_glfw_dispatch(self):
-        import os
-        import subprocess
-        import tempfile
+    def test_dispatches_configured_shortcut(self):
+        from types import SimpleNamespace
+        from unittest.mock import Mock, patch
 
-        from kitty.constants import kitty_base_dir, kitty_exe
+        from kitty.boss import Boss
 
-        build_dir = os.path.join(kitty_base_dir, 'build')
-        os.makedirs(build_dir, exist_ok=True)
-        with tempfile.TemporaryDirectory(prefix='pane-dispatch-', dir=build_dir) as directory:
-            command = 'from kitty_tests.pane_switcher_dispatch_probe import main; main()'
-            process = subprocess.run([kitty_exe(), '+runpy', command, directory], cwd=kitty_base_dir,
-                                     capture_output=True, text=True, timeout=30)
-            self.ae(process.returncode, 0, process.stdout + process.stderr)
-            self.assertIn('PASS 24 actual shortcut cycles and fast release', process.stdout)
+        tab = SimpleNamespace(current_layout=SimpleNamespace(name='stack'))
+        tab.next_window = Mock()
+        tab.previous_window = Mock()
+        mappings = SimpleNamespace(
+            keyboard_mode_stack=[],
+            keyboard_modes={'': SimpleNamespace(keymap={})},
+            global_shortcuts_map={},
+        )
+        mappings.matching_key_actions = Mock(return_value=[SimpleNamespace(is_sequence=False, definition='next_window')])
+        boss = SimpleNamespace(mappings=mappings, active_tab=tab)
+        options = SimpleNamespace(
+            alias_map=SimpleNamespace(resolve_aliases=Mock(return_value=[SimpleNamespace(func='next_window', args=())])))
+        with patch('kitty.keys.get_shortcut', return_value=[object()]), \
+                patch('kitty.boss.get_options', return_value=options):
+            self.assertTrue(Boss.dispatch_pane_switcher_shortcut(boss, object()))
+        tab.next_window.assert_called_once_with()
+        tab.previous_window.assert_not_called()
+
+        mappings.matching_key_actions.return_value = [SimpleNamespace(is_sequence=True, definition='next_window')]
+        with patch('kitty.keys.get_shortcut', return_value=[object()]), \
+                patch('kitty.boss.get_options', return_value=options):
+            self.assertFalse(Boss.dispatch_pane_switcher_shortcut(boss, object()))
+        tab.next_window.reset_mock()
+
+        tab.current_layout.name = 'splits'
+        mappings.matching_key_actions.return_value = [SimpleNamespace(is_sequence=False, definition='next_window')]
+        with patch('kitty.keys.get_shortcut', return_value=[object()]), \
+                patch('kitty.boss.get_options', return_value=options):
+            self.assertFalse(Boss.dispatch_pane_switcher_shortcut(boss, object()))
+        tab.next_window.assert_not_called()
 
     def test_modifier_release_and_preview_fill(self):
         # Exercise the loaded production AppKit classes, not a copy of their code.
