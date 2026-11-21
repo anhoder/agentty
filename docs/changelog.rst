@@ -9,6 +9,8 @@ To update |kitty|, :doc:`follow the instructions <binary>`.
 Recent major new features
 ---------------------------
 
+- macOS: Prioritize project-link styling above hover feedback in the sidebar.
+
 - macOS: Keep project-link selection exclusive across the Agents and Editors
   sections so clicking a related row moves the badge and highlight.
 

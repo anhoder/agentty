@@ -1691,14 +1691,17 @@ static NSColor *KittySidebarSectionHeaderColor(BOOL agents_section) {
         [[[NSColor labelColor] colorWithAlphaComponent:0.14] setFill];
         NSRectFill(NSMakeRect(NSMinX(rect), NSMaxY(rect) - 1, rect.size.width, 1));
     } else {
-        if (self.related) {
-            [[[NSColor controlAccentColor] colorWithAlphaComponent:0.10] setFill];
-            NSRectFill(rect);
-        }
         if (self.activeAgent || highlighted) {
             NSColor *background = self.activeAgent ? [NSColor selectedContentBackgroundColor] :
                 [[NSColor controlBackgroundColor] colorWithAlphaComponent:0.38];
             [background setFill];
+            NSRectFill(rect);
+        }
+        // Related tint must win over hover feedback. Active rows keep their
+        // strong background so selected text remains readable; the rail and
+        // badge still communicate the relation.
+        if (self.related && !self.activeAgent) {
+            [[[NSColor controlAccentColor] colorWithAlphaComponent:0.10] setFill];
             NSRectFill(rect);
         }
         if (self.related) {
