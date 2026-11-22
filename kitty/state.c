@@ -668,7 +668,6 @@ destroy_os_window_item(OSWindow *w) {
     if (w->persist_texture_id) free_texture(&w->persist_texture_id);
     if (w->persist_fbo_id) free_framebuffer(&w->persist_fbo_id);
     if (w->pane_animation.texture_id) free_texture(&w->pane_animation.texture_id);
-    if (w->pane_animation.backdrop_texture_id) free_texture(&w->pane_animation.backdrop_texture_id);
     free(w->pane_animation.frames);
     free(w->pane_animation.next_frames);
     free(w->pointer_map.data);

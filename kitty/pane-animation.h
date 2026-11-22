@@ -32,17 +32,7 @@ typedef struct {
     double started_at, duration, texture_used_at;
     uint32_t texture_id;
     int texture_width, texture_height;
-    // The last content frame from before a layout change, faded out while the
-    // new layout animates so the transition does not start from a blank region.
-    uint32_t backdrop_texture_id;
-    int backdrop_width, backdrop_height;
-    bool backdrop_valid;
 } PaneAnimation;
-
-static inline bool
-pane_animation_active_at(const PaneAnimation *a, double at) {
-    return a->active && at - a->started_at < a->duration;
-}
 
 static inline bool
 pane_animation_rect_equal(PaneAnimationRect a, PaneAnimationRect b) {
@@ -81,15 +71,10 @@ pane_animation_progress(double elapsed, double duration, const PaneAnimationSpri
 
 static inline PaneAnimationRect
 pane_animation_sample(const PaneAnimationFrame *frame, double elapsed, double duration) {
-    PaneAnimationRect a = frame->from, b = frame->target;
-    // Make the last rendered animation frames exactly the target. The final
-    // content frame uses the real layout size, so any residual spring offset
-    // left on the last animation frame would appear as a size jump.
-    double settle = duration < 1. / 60. ? duration : 1. / 60.;
-    if (duration > 0 && elapsed >= duration - settle) return b;
     double p = pane_animation_progress(elapsed, duration, &frame->position_spring);
     double s = frame->position_spring.damping == frame->size_spring.damping ? p :
         pane_animation_progress(elapsed, duration, &frame->size_spring);
+    PaneAnimationRect a = frame->from, b = frame->target;
     double width = fmax(0., a.width + (b.width - a.width) * s);
     double height = fmax(0., a.height + (b.height - a.height) * s);
     double cx = a.x + a.width / 2. + (b.x + b.width / 2. - a.x - a.width / 2.) * p;

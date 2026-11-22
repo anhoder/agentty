@@ -3807,10 +3807,6 @@ draw_pane_animation(OSWindow *w, Tab *tab, monotonic_t now) {
     PaneAnimation *a = &w->pane_animation;
     if (!a->active) {
         a->content_valid = false;
-        if (a->backdrop_texture_id) {
-            free_texture(&a->backdrop_texture_id);
-            a->backdrop_valid = false;
-        }
         if (a->texture_id && (uint64_t)a->texture_width * (uint64_t)a->texture_height * 4 > PANE_ANIMATION_TEXTURE_CACHE_BYTES)
             free_texture(&a->texture_id);
         return;
@@ -3866,24 +3862,6 @@ draw_pane_animation(OSWindow *w, Tab *tab, monotonic_t now) {
     glClearColor(((bg >> 16) & 255) / 255.f * alpha, ((bg >> 8) & 255) / 255.f * alpha, (bg & 255) / 255.f * alpha, alpha);
     glClear(GL_COLOR_BUFFER_BIT);
     double elapsed = monotonic_t_to_s_double(now) - a->started_at;
-    if (a->backdrop_valid && a->backdrop_texture_id && a->backdrop_width == width && a->backdrop_height == height) {
-        // Fade the previous layout out underneath the new panes so a layout
-        // change such as entering or leaving the stack layout never begins from
-        // an empty region.
-        float fade = a->duration > 0 ? 1.f - (float)(elapsed / a->duration) : 0.f;
-        if (fade < 0.f) fade = 0.f;
-        else if (fade > 1.f) fade = 1.f;
-        glActiveTexture(GL_TEXTURE0 + GRAPHICS_UNIT);
-        glBindTexture(GL_TEXTURE_2D, a->backdrop_texture_id);
-        glUniform1f(program_uniform_location(GRAPHICS_PREMULT_PROGRAM, "extra_alpha"), fade);
-        glUniform4f(source, (float)central.left / width, 1.f - (float)central.top / height,
-                    (float)central.right / width, 1.f - (float)central.bottom / height);
-        glUniform4f(destination, 2.f * (float)central.left / width - 1.f, 1.f - 2.f * (float)central.top / height,
-                    2.f * (float)central.right / width - 1.f, 1.f - 2.f * (float)central.bottom / height);
-        draw_quad(true, 0);
-        glBindTexture(GL_TEXTURE_2D, a->texture_id);
-        glUniform1f(program_uniform_location(GRAPHICS_PREMULT_PROGRAM, "extra_alpha"), 1.f);
-    }
     for (size_t i = 0; i < a->count; i++) {
         const PaneAnimationFrame *frame = a->frames + i;
         PaneAnimationRect rect = frame->target;

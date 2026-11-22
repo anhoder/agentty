@@ -1253,18 +1253,11 @@ render_os_window(OSWindow *w, monotonic_t now, bool scan_for_animated_images) {
     PaneAnimation *a = &w->pane_animation;
     double at = monotonic_t_to_s_double(now);
     bool wrong_size = a->texture_width != w->viewport_width || a->texture_height != w->viewport_height;
-    bool backdrop_wrong_size = a->backdrop_width != w->viewport_width || a->backdrop_height != w->viewport_height;
     double idle = at - a->texture_used_at;
     bool expired = idle >= PANE_ANIMATION_TEXTURE_IDLE_SECONDS;
     uint64_t bytes = (uint64_t)a->texture_width * (uint64_t)a->texture_height * 4;
-    bool free_backdrop = a->backdrop_texture_id && (backdrop_wrong_size || !a->active);
-    bool free_texture_id = a->texture_id && (wrong_size || expired || (!a->active && bytes > PANE_ANIMATION_TEXTURE_CACHE_BYTES));
-    if (free_backdrop || free_texture_id) make_os_window_context_current(w);
-    if (free_backdrop) {
-        free_texture(&a->backdrop_texture_id);
-        a->backdrop_valid = false;
-    }
-    if (free_texture_id) {
+    if (a->texture_id && (wrong_size || expired || (!a->active && bytes > PANE_ANIMATION_TEXTURE_CACHE_BYTES))) {
+        make_os_window_context_current(w);
         free_texture(&a->texture_id);
         a->content_valid = false;
     }
@@ -1277,14 +1270,7 @@ render_os_window(OSWindow *w, monotonic_t now, bool scan_for_animated_images) {
         return false;
     }
     if (!w->keep_rendering_till_swap && USE_RENDER_FRAMES && w->render_state != RENDER_FRAME_READY) {
-        bool pane_animating = pane_animation_active_at(&w->pane_animation, monotonic_t_to_s_double(now));
-        // A pane animation must reach its target; a stalled display link would
-        // otherwise freeze it at the last spring sample and make the final
-        // content render look like a size jump. Wake regularly and re-request
-        // much sooner than the ordinary watchdog while it is live.
-        if (pane_animating) set_maximum_wait(ms_to_monotonic_t(10ll));
-        monotonic_t frame_wait = ms_to_monotonic_t(pane_animating ? 50ll : 250ll);
-        if (w->render_state == RENDER_FRAME_NOT_REQUESTED || no_render_frame_received_recently(w, now, frame_wait)) request_frame_render(w);
+        if (w->render_state == RENDER_FRAME_NOT_REQUESTED || no_render_frame_received_recently(w, now, ms_to_monotonic_t(250ll))) request_frame_render(w);
         if (w->id != global_state.thumbnail_callback.os_window) {
             // dont respect render frames soon after a resize on Wayland as they cause flicker because
             // we want to fill the newly resized buffer ASAP, not at compositors convenience
@@ -1318,28 +1304,12 @@ render_os_window(OSWindow *w, monotonic_t now, bool scan_for_animated_images) {
     return needs_render;
 }
 
-// Pane spring animations are sampled from the render loop, so they must advance
-// once per display refresh. repaint_delay throttles ordinary content updates and
-// would otherwise drop or unevenly space animation frames on high refresh displays.
-static bool
-pane_animation_needs_render(monotonic_t now) {
-#ifdef __APPLE__
-    double at = monotonic_t_to_s_double(now);
-    for (size_t i = 0; i < global_state.num_os_windows; i++)
-        if (pane_animation_active_at(&global_state.os_windows[i].pane_animation, at)) return true;
-#else
-    (void)now;
-#endif
-    return false;
-}
-
 static void
 render(monotonic_t now, bool input_read) {
     EVDBG("input_read: %d, check_for_active_animated_images: %d\n", input_read, global_state.check_for_active_animated_images);
     static monotonic_t last_render_at = MONOTONIC_T_MIN;
     monotonic_t time_since_last_render = last_render_at == MONOTONIC_T_MIN ? OPT(repaint_delay) : now - last_render_at;
-    if (!input_read && !pane_animation_needs_render(now) && time_since_last_render < OPT(repaint_delay) &&
-        !global_state.thumbnail_callback.os_window) {
+    if (!input_read && time_since_last_render < OPT(repaint_delay) && !global_state.thumbnail_callback.os_window) {
         set_maximum_wait(OPT(repaint_delay) - time_since_last_render);
         return;
     }

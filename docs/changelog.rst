@@ -69,15 +69,6 @@ Recent major new features
 - macOS: Composite pane spring animations from live OpenGL textures without
   reading terminal pixels back to the CPU. Keep rapid layout changes continuous
   and preserve transparency, live output and interactive resize behavior.
-- macOS: Keep pane spring animations at the display refresh rate: keep the
-  display link running while an animation is live instead of restarting it
-  after every swap, and do not throttle the animation with
-  :opt:`repaint_delay`. Ordinary content updates stay throttled.
-- macOS: Cross-fade the previous layout while pane spring animations run, so
-  changing to or from the stack layout no longer flashes an empty region or
-  pops hidden panes into place.
-- macOS: Finish pane spring animations at the exact layout size and recover
-  stalled animation frames, preventing a size jump at the end of a transition.
 - macOS: Use a lighter fill for the Agents and Editors sidebar section content,
   keeping the darker heading bands for section identity.
 - macOS: Skip pane spring animations during keyboard and interactive pane

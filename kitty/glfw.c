@@ -3982,16 +3982,9 @@ get_cocoa_key_equivalent(uint32_t key, int mods, char *cocoa_key, size_t key_sz,
 static void
 cocoa_frame_request_callback(GLFWwindow *window) {
     for (size_t i = 0; i < global_state.num_os_windows; i++) {
-        OSWindow *w = global_state.os_windows + i;
-        if (w->handle == window) {
-            w->render_state = RENDER_FRAME_READY;
-            w->last_render_frame_received_at = monotonic();
-            // A live pane animation needs a frame at every display tick. Request
-            // the next callback here, before dispatch stops a link with no pending
-            // request. Restarting the link after each swap can miss a refresh and
-            // judder on high refresh displays.
-            if (pane_animation_active_at(&w->pane_animation, monotonic_t_to_s_double(monotonic())))
-                glfwCocoaRequestRenderFrame(window, cocoa_frame_request_callback);
+        if (global_state.os_windows[i].handle == window) {
+            global_state.os_windows[i].render_state = RENDER_FRAME_READY;
+            global_state.os_windows[i].last_render_frame_received_at = monotonic();
             request_tick_callback();
             break;
         }

@@ -34,11 +34,7 @@ fragment_main(float2 texcoord: TEXCOORD, uniform float3 amask_fg, uniform float4
         color = float4(amask_fg, color.r);
         color = vec4_premul(color);
         color = alpha_blend_premul(color, amask_bg_premult);
-    } else {
-        color.a *= extra_alpha;
-        // A premultiplied color must fade both its color and alpha.
-        if (!texture_is_not_premultiplied) color.rgb *= extra_alpha;
-    }
+    } else color.a *= extra_alpha;
 
     if (texture_is_not_premultiplied) color = vec4_premul(color);
 
