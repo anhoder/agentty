@@ -227,7 +227,9 @@ Recent major new features
   agent conversation, so resumed agents inherit shell-configured PATH and API
   credentials even when shell integration is disabled.
 - Separate restored scrollback from new output with blank lines and a divider
-  before the restoration timestamp.
+  before the restoration timestamp. The timestamp is always rendered in reverse
+  video with the default colors, regardless of the colors used by the restored
+  history.
 - macOS: Keep kitty's ordinary tab bar visible and interactive alongside the
   Agents sidebar when :opt:`macos_native_tabs` is disabled, including vertical
   tab bars and sidebar resizing.

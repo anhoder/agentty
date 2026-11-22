@@ -432,6 +432,22 @@ class TestSessions(BaseTest):
         with self.assertRaises(RuntimeError):
             s.restore_scrollback(b'x')
 
+    def test_restored_marker_uses_default_colors(self) -> None:
+        from kitty.logout_session import ProcessState, load_snapshot, save_snapshot
+        from kitty.window import as_text
+
+        opts = self.set_options()
+        with TemporaryDirectory() as tdir:
+            session = shlex.join(['launch', unserialize_launch_flag + json.dumps({'id': 7})])
+            path = save_snapshot(tdir, 10, session, {7: b'\x1b[31mred history'}, ProcessState((), tdir, {}, 0), None)
+            (s,) = load_snapshot(path, opts, None)
+        screen = self.create_screen(cols=100, lines=10, scrollback=20)
+        screen.restore_scrollback(s.tabs[0].windows[0].restored_scrollback)
+        (marker_line,) = [line for line in as_text(screen, as_ansi=True, add_history=True).splitlines() if 'Restored from' in line]
+        # The restored history ends in red, but the marker must not inherit it
+        self.assertNotIn('\x1b[31m', marker_line)
+        self.assertIn('\x1b[7m', marker_line)
+
     def test_sanitize_restored_output(self) -> None:
         from kitty.logout_session import sanitize_restored_output as s
 

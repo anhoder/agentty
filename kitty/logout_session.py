@@ -607,7 +607,8 @@ def load_snapshot(path: str, opts: Options, key_store: KeyStore | None, *, migra
         raw = read_snapshot_file(path, key, SESSION_FILE).decode()
         saved_at = read_snapshot(path, key).saved_at
         sessions = tuple(parse_session(raw, opts))
-        marker = '\r\n\r\n\r\n\x1b[7m ' + _('Restored from {}').format(time.strftime('%c', time.localtime(saved_at))) + ' \x1b[m\r\n' + '-' * 60 + '\r\n\r\n\r\n'
+        # Reset the SGR state left by the restored history so the marker always uses the default colors, reversed.
+        marker = '\r\n\r\n\r\n\x1b[0;7m ' + _('Restored from {}').format(time.strftime('%c', time.localtime(saved_at))) + ' \x1b[m\r\n' + '-' * 60 + '\r\n\r\n\r\n'
         windows = {str(window.serialized_id): window for session in sessions for tab in session.tabs for window in tab.windows}
         with os.scandir(os.path.join(path, SCROLLBACK_DIR)) as entries:
             for entry in entries:
