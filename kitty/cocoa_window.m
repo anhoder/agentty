@@ -1468,8 +1468,12 @@ static NSColor *KittySidebarSectionColor(BOOL agents_section, BOOL header) {
     NSColor *tint = KittySidebarSectionTint(agents_section);
     NSColor *color = [base blendedColorWithFraction:fraction ofColor:tint];
     // Content is a light fill inside the section; the stronger header band
-    // keeps the section identity visible against it.
-    if (!header) color = [color blendedColorWithFraction:0.08 ofColor:[NSColor whiteColor]];
+    // keeps the section identity visible against it. The Agents tint is
+    // darker, so it needs more white to reach the Editors content lightness.
+    if (!header) {
+        CGFloat white_fraction = agents_section ? 0.11 : 0.08;
+        color = [color blendedColorWithFraction:white_fraction ofColor:[NSColor whiteColor]];
+    }
     return color;
 }
 

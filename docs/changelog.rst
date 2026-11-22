@@ -9,6 +9,9 @@ To update |kitty|, :doc:`follow the instructions <binary>`.
 Recent major new features
 ---------------------------
 
+- macOS: Lighten the Agents sidebar content background to match the Editors
+  section tint.
+
 - macOS: Prioritize project-link styling above hover feedback in the sidebar.
 
 - macOS: Keep project-link selection exclusive across the Agents and Editors
