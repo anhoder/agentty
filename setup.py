@@ -1647,6 +1647,11 @@ def read_bool_options(path: str = 'kitty/cli.py') -> Tuple[str, ...]:
 
 
 def build_launcher(args: Options, launcher_dir: str = '.', bundle_type: str = 'source') -> str:
+    # main.c includes cli-parser-data_generated.h, which is not checked in.
+    # Generate it here since build_launcher() can run before build() (for
+    # example in macos-freeze and build-frozen-launcher), and on a pristine
+    # tree the header would not exist yet.
+    build_cli_parser_specs(args.skip_code_generation)
     cflags = ['-Wall']
     if not args.ignore_compiler_warnings:
         cflags.extend(('-pedantic-errors', '-Werror'))
