@@ -1710,6 +1710,23 @@ set_cocoa_pending_action(CocoaPendingAction action, const char *data) {
             case AGENTS_SIDEBAR_MENU:
             case AGENTS_SIDEBAR_RESIZE:
             case AGENTS_SIDEBAR_GROUP_TOGGLE: {
+                // Only the final width matters within a consecutive drag burst.
+                // Keep clicks, menus, group actions and other windows as barriers.
+                size_t count = cocoa_pending_actions_data.sidebar_actions.count;
+                if (action == AGENTS_SIDEBAR_RESIZE && count) {
+                    __typeof__(*cocoa_pending_actions_data.sidebar_actions.items) *last =
+                        &cocoa_pending_actions_data.sidebar_actions.items[count - 1];
+                    const char *separator = strchr(data, ':');
+                    if (last->action == action && separator &&
+                        strncmp(last->data, data, (size_t)(separator - data) + 1) == 0) {
+                        if (strcmp(last->data, data)) {
+                            char *latest = strdup(data);
+                            free(last->data);
+                            last->data = latest;
+                        }
+                        break;
+                    }
+                }
                 size_t index = cocoa_pending_actions_data.sidebar_actions.count++;
                 ensure_space_for(&cocoa_pending_actions_data.sidebar_actions, items,
                                  __typeof__(*cocoa_pending_actions_data.sidebar_actions.items), index + 1, capacity, 8, false);

@@ -20,6 +20,7 @@
 #import <QuartzCore/QuartzCore.h>
 #include "gl.h"
 #include "glfw-wrapper.h"
+#include "agents_sidebar_resize.h"
 
 #include <AvailabilityMacros.h>
 // Needed for _NSGetProgname
@@ -1335,6 +1336,8 @@ agents_sidebar_update_string(NSString **string, const char *value) {
     NSHashTable *previous_responders;
     id remembered_selection;
     BOOL syncing_outline, resizing, resize_hovered;
+    CGFloat resize_start_width, resize_preview_width, resize_pointer_offset;
+    NSView *resize_indicator;
     BOOL has_entered_navigation;
     unsigned cell_width_pixels;
     NSMutableSet<NSString *> *collapsed_groups;
@@ -1778,6 +1781,12 @@ static NSColor *KittySidebarSectionHeaderColor(BOOL agents_section) {
 @property(assign) KittyAgentsSidebarView *sidebar;
 @end
 
+@interface KittySidebarResizeIndicator : NSView
+@end
+@implementation KittySidebarResizeIndicator
+- (NSView *)hitTest:(NSPoint)point { (void)point; return nil; }
+@end
+
 @implementation KittySidebarDividerHitView
 - (BOOL)acceptsFirstMouse:(NSEvent *)event { (void)event; return YES; }
 - (void)resetCursorRects {
@@ -1957,7 +1966,14 @@ static NSColor *KittySidebarSectionHeaderColor(BOOL agents_section) {
         dragging_divider = YES; divider_drag_origin = point.y; divider_start_fraction = agents_fraction;
         [[NSCursor resizeUpDownCursor] set]; return;
     }
-    if (point.x >= self.bounds.size.width - 8) { resizing = YES; resize_hovered = YES; [self setNeedsDisplay:YES]; return; }
+    if (point.x >= self.bounds.size.width - 8) {
+        resizing = YES; resize_hovered = YES;
+        resize_start_width = self.frame.size.width;
+        resize_preview_width = resize_start_width;
+        NSPoint pointer = self.superview ? [self.superview convertPoint:event.locationInWindow fromView:nil] : NSZeroPoint;
+        resize_pointer_offset = resize_start_width - pointer.x;
+        [self setNeedsDisplay:YES]; return;
+    }
     [super mouseDown:event];
 }
 - (void)mouseDragged:(NSEvent *)event {
@@ -1968,24 +1984,44 @@ static NSColor *KittySidebarSectionHeaderColor(BOOL agents_section) {
         agents_fraction = MIN(0.88, MAX(0.12, next)); [self setFrameSize:self.frame.size]; return;
     }
     if (!resizing || !self.superview) return;
+    [self updateResizePreviewForEvent:event];
+}
+- (void)updateResizePreviewForEvent:(NSEvent *)event {
+    if (!self.superview) return;
     CGFloat scale = MAX(1.0, self.window.backingScaleFactor);
     NSPoint p = [self.superview convertPoint:event.locationInWindow fromView:nil];
-    CGFloat min_width = 16.0 * cell_width_pixels / scale;
-    CGFloat max_width = self.superview.bounds.size.width * 0.75;
-    CGFloat width = MIN(max_width, MAX(min_width, p.x));
-    unsigned cols = MAX(16u, (unsigned)llround(width * scale / (CGFloat)cell_width_pixels));
-    width = cols * cell_width_pixels / scale;
-    [self previewSizeWidth:width];
-    self.resizePending = YES;
-    char data[64];
-    snprintf(data, sizeof(data), "%u:%u", os_window_id, cols);
-    set_cocoa_pending_action(AGENTS_SIDEBAR_RESIZE, data);
-    OSWindow *osw = os_window_for_id(os_window_id);
-    if (osw) osw->suppress_pane_animation = true;
+    unsigned cols = kitty_agents_sidebar_resize_columns(p.x + resize_pointer_offset, scale, cell_width_pixels, self.superview.bounds.size.width);
+    CGFloat width = cols * cell_width_pixels / scale;
+    resize_preview_width = width;
+    if (!resize_indicator) {
+        resize_indicator = [[KittySidebarResizeIndicator alloc] initWithFrame:NSZeroRect];
+        resize_indicator.wantsLayer = YES;
+        resize_indicator.layer.backgroundColor = [NSColor controlAccentColor].CGColor;
+    }
+    NSRect indicator = NSMakeRect(width - 1, 0, 2, NSHeight(self.superview.bounds));
+    [resize_indicator setFrame:indicator];
+    if (resize_indicator.superview != self.superview) [self.superview addSubview:resize_indicator positioned:NSWindowAbove relativeTo:nil];
+    [self setNeedsDisplay:YES];
 }
 - (void)mouseUp:(NSEvent *)event {
     if (dragging_divider) { dragging_divider = NO; [self persistSectionState]; return; }
+    if (resizing && self.superview) [self updateResizePreviewForEvent:event];
+    if (resizing && self.superview && kitty_agents_sidebar_resize_should_commit(
+            (unsigned)llround(resize_start_width * MAX(1.0, self.window.backingScaleFactor) / cell_width_pixels),
+            (unsigned)llround(resize_preview_width * MAX(1.0, self.window.backingScaleFactor) / cell_width_pixels))) {
+        CGFloat scale = MAX(1.0, self.window.backingScaleFactor);
+        unsigned cols = MAX(16u, (unsigned)llround(resize_preview_width * scale / (CGFloat)cell_width_pixels));
+        self.resizePending = YES;
+        char data[64];
+        snprintf(data, sizeof(data), "%u:%u", os_window_id, cols);
+        set_cocoa_pending_action(AGENTS_SIDEBAR_RESIZE, data);
+        OSWindow *osw = os_window_for_id(os_window_id);
+        if (osw) osw->suppress_pane_animation = true;
+    }
     resizing = NO;
+    [resize_indicator removeFromSuperview];
+    resize_preview_width = resize_start_width = resize_pointer_offset = 0;
+    [self setNeedsDisplay:YES];
     NSPoint p = [self convertPoint:event.locationInWindow fromView:nil];
     [self updateHoverAtPoint:p]; [self resetCursorRects];
 }
@@ -2061,6 +2097,12 @@ static NSColor *KittySidebarSectionHeaderColor(BOOL agents_section) {
     [background_view setFrame:frame];
     [self resetCursorRects];
     [self setNeedsDisplay:YES];
+}
+
+- (void)viewDidHide { [super viewDidHide]; resizing = NO; resize_preview_width = resize_start_width = 0; [resize_indicator removeFromSuperview]; [self setNeedsDisplay:YES]; }
+- (void)viewDidMoveToWindow {
+    [super viewDidMoveToWindow];
+    if (!self.window) [self cancelWidthResize];
 }
 
 - (void)updateTrackingAreas {
@@ -2400,7 +2442,13 @@ static NSColor *KittySidebarSectionHeaderColor(BOOL agents_section) {
     [self setFocusBorderNeedsDisplay];
 }
 - (void)windowResignedKey:(NSNotification *)notification {
-    if (notification.object == self.window) [self kittySidebarCancelNavigation];
+    if (notification.object == self.window) { [self cancelWidthResize]; [self kittySidebarCancelNavigation]; }
+}
+- (void)cancelWidthResize {
+    resizing = NO;
+    resize_start_width = resize_preview_width = resize_pointer_offset = 0;
+    [resize_indicator removeFromSuperview];
+    [self setNeedsDisplay:YES];
 }
 - (void)focusSidebar {
     if (agents_collapsed && editors_collapsed) {
@@ -2489,6 +2537,7 @@ static NSColor *KittySidebarSectionHeaderColor(BOOL agents_section) {
     if (node) [self activateNode:node];
 }
 - (BOOL)kittySidebarHandleKeyEvent:(NSEvent *)event {
+    if (resizing && event.keyCode == 53) { [self cancelWidthResize]; return YES; }
     SEL configured = NSSelectorFromString(@"kittySidebarHandleConfiguredKeyEvent:");
     if ([self.window.contentView respondsToSelector:configured]) {
         BOOL (*invoke)(id, SEL, id) = (BOOL (*)(id, SEL, id))[self.window.contentView methodForSelector:configured];
@@ -2986,6 +3035,8 @@ static NSColor *KittySidebarSectionHeaderColor(BOOL agents_section) {
 }
 - (void)dealloc {
     [[NSNotificationCenter defaultCenter] removeObserver:self];
+    [resize_indicator removeFromSuperview];
+    [resize_indicator release];
     if (resize_tracking_area) [self removeTrackingArea:resize_tracking_area];
     [resize_tracking_area release];
     outline.delegate = nil;
