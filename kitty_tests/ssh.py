@@ -12,6 +12,7 @@ import subprocess
 import tempfile
 from contextlib import suppress
 from functools import lru_cache
+from unittest.mock import patch
 
 from kittens.ssh.utils import get_connection_data
 from kitty.constants import is_macos, kitten_exe, kitty_base_dir, runtime_dir
@@ -36,7 +37,36 @@ def files_in(path):
             yield os.path.relpath(os.path.join(record[0], f), path)
 
 
+def python_candidates():
+    for name in ('python3.15', 'python3.14', 'python3.13', 'python3.12', 'python3', 'python2', 'python'):
+        candidate = shutil.which(name)
+        if candidate is None:
+            continue
+        resolved = os.path.realpath(candidate)
+        # Apple's developer-tool stubs can open an installer instead of Python,
+        # including when an otherwise usable stub is exec'ed with a login argv[0].
+        if is_macos and (resolved.startswith('/usr/bin/python') or resolved in ('/usr/bin/xcrun', '/usr/bin/xcodebuild')):
+            continue
+        yield candidate
+
+
 class SSHKitten(BaseTest):
+    def test_python_discovery_excludes_macos_installer_stubs(self):
+        paths = {'python3.15': '/safe/python3.15', 'python3': '/usr/bin/python3', 'python2': '/alias/python2', 'python': '/alias/python'}
+        resolved = {'/alias/python2': '/usr/bin/python2.7', '/alias/python': '/usr/bin/xcrun'}
+        with (
+            patch(__name__ + '.shutil.which', side_effect=paths.get),
+            patch(__name__ + '.os.path.realpath', side_effect=lambda path: resolved.get(path, path)),
+            patch(__name__ + '.is_macos', True),
+        ):
+            self.ae(tuple(python_candidates()), ('/safe/python3.15',))
+        with (
+            patch(__name__ + '.shutil.which', side_effect=paths.get),
+            patch(__name__ + '.os.path.realpath', side_effect=lambda path: resolved.get(path, path)),
+            patch(__name__ + '.is_macos', False),
+        ):
+            self.ae(tuple(python_candidates()), tuple(paths.values()))
+
     @retry_on_failure()
     def test_basic_pty_operations(self):
         pty = self.create_pty('echo hello')
@@ -74,6 +104,10 @@ print(' '.join(map(str, buf)))"""),
     @property
     @lru_cache
     def all_possible_sh(self):
+        if is_macos:
+            python = next(python_candidates(), None)
+            shells = tuple(filter(shutil.which, ('dash', 'zsh', 'bash', 'posh', 'sh')))
+            return shells + ((python,) if python else ())
         python = 'python3' if shutil.which('python3') else 'python'
         return tuple(filter(shutil.which, ('dash', 'zsh', 'bash', 'posh', 'sh', python)))
 
@@ -354,7 +388,8 @@ env COLORTERM
     @retry_on_failure()
     def test_ssh_login_shell_detection(self):
         methods = []
-        if shutil.which('python') or shutil.which('python3') or shutil.which('python2'):
+        has_python = next(python_candidates(), None) is not None if is_macos else any(shutil.which(name) for name in ('python', 'python3', 'python2'))
+        if has_python:
             methods.append('using_python')
         if is_macos:
             methods += ['using_id']
@@ -382,15 +417,11 @@ env COLORTERM
 
     def test_ssh_login_shell_fallback_quoting(self):
         bootstrap_utils = os.path.join(kitty_base_dir, 'shell-integration', 'ssh', 'bootstrap-utils.sh')
-        candidates = [shutil.which(name) for name in ('python3.15', 'python3.14', 'python3.13', 'python3.12', 'python3', 'python2', 'python')]
+        candidates = python_candidates()
         python = None
         for candidate in candidates:
-            if candidate is None:
-                continue
             try:
-                # The bootstrap execs the interpreter with an argv[0] that starts
-                # with a dash. Apple's /usr/bin/python3 stub cannot handle that
-                # and asks xcodebuild to install command line tools instead.
+                # Exercise the login argv[0] only after excluding macOS stubs.
                 cp = subprocess.run([candidate, '-c', 'import os, sys; os.execlp(sys.argv[1], "-" + sys.argv[2])', candidate, 'python'], capture_output=True)
             except OSError:
                 continue
@@ -488,6 +519,18 @@ shell_name=$(command basename "$login_shell")
         del cp
         try:
             env = basic_shell_env(home_dir)
+            if is_macos:
+                # The shell bootstrap also discovers Python for login-shell
+                # detection and exec fallbacks. Shadow all its Python names so
+                # it cannot fall through to Apple's /usr/bin installer stub.
+                python = next(python_candidates(), None)
+                bindir = self.enterContext(tempfile.TemporaryDirectory())
+                for name in ('python3', 'python2', 'python'):
+                    path = os.path.join(bindir, name)
+                    with open(path, 'w') as f:
+                        f.write('#!/bin/sh\n' + (f'exec {shlex.quote(python)} "$@"\n' if python else 'exit 1\n'))
+                    os.chmod(path, 0o700)
+                env['PATH'] = bindir + os.pathsep + env['PATH']
             # Avoid generating unneeded completion scripts
             os.makedirs(os.path.join(home_dir, '.local', 'share', 'fish', 'generated_completions'), exist_ok=True)
             # prevent newuser-install from running

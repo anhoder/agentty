@@ -78,7 +78,7 @@ class TestBuild(BaseTest):
 
             int main(void) {
                 @autoreleasepool {
-                    [NSApplication sharedApplication];
+                    [[NSApplication sharedApplication] setActivationPolicy:NSApplicationActivationPolicyProhibited];
                     void *handle = dlopen(@@COCOA_MODULE@@, RTLD_NOW | RTLD_GLOBAL);
                     require_true(handle != NULL, dlerror());
 

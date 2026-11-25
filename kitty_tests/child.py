@@ -244,9 +244,10 @@ class ChildRootTest(BaseTest):
         code = f"""\
 import sys, threading, time
 def run_child(started):
-    import subprocess, sys, time
+    import subprocess, time
+    # sys.executable is kitty here, whose Python entry point is +runpy, not -c.
     subprocess.Popen(
-        [sys.executable, '-c', 'import time; time.sleep(300)'], cwd={child_cwd!r},
+        [{kitty_exe()!r}, '+runpy', 'import time; time.sleep(300)'], cwd={child_cwd!r},
         stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     started.set()
     time.sleep(300)  # keep the thread alive so the child stays its child

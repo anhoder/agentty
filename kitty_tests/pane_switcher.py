@@ -89,7 +89,10 @@ class TestPaneSwitcher(BaseTest):
         def rect(x, y, w, h):
             return Rect(Point(x, y), Size(w, h))
 
-        send(cls('NSApplication'), 'sharedApplication')
+        application = send(cls('NSApplication'), 'sharedApplication')
+        activation_policy = send(application, 'activationPolicy', C.c_long)
+        send(application, 'setActivationPolicy:', None, (C.c_long,), (2,))
+        self.addCleanup(lambda: send(application, 'setActivationPolicy:', None, (C.c_long,), (activation_policy,)))
         # Isolate only native window validity and the final Python callback.
         # Event handling and production image drawing remain unchanged.
         objc.objc_allocateClassPair.argtypes = [ptr, C.c_char_p, C.c_size_t]
@@ -107,7 +110,7 @@ class TestPaneSwitcher(BaseTest):
         view = send(send(subclass, 'alloc'), 'initWithFrame:', types=(Rect,), args=(rect(0, 0, 600, 400),))
         self.addCleanup(lambda: send(view, 'release', None))
         window = send(send(cls('NSWindow'), 'alloc'), 'initWithContentRect:styleMask:backing:defer:',
-                      types=(Rect, C.c_ulong, C.c_ulong, C.c_bool), args=(rect(0, 0, 20, 20), 0, 2, False))
+                      types=(Rect, C.c_ulong, C.c_ulong, C.c_bool), args=(rect(0, 0, 20, 20), 0, 2, True))
         self.addCleanup(lambda: send(window, 'release', None))
 
         def event(kind, flags=0, code=55):
