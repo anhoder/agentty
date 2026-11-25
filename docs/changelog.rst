@@ -9,8 +9,63 @@ To update |kitty|, :doc:`follow the instructions <binary>`.
 Recent major new features
 ---------------------------
 
+- macOS: Keep text and image pixels at their original size during pane spring
+  transitions, including leaving Zoom. Animate pane bounds with clipping and
+  background reveal instead of stretching the final-layout contents.
+
+- macOS: Keep a theme-aware neutral sidebar background when both Agents and
+  Editors are collapsed, respecting window opacity without resizing the terminal.
+
+- macOS: Show the left accent stripe on Agents and Editors section headings
+  only while the corresponding section is expanded.
+
+- macOS: Soften sidebar header, group and panel separators with a consistent
+  low-contrast neutral tint, composited over translucent section backgrounds.
+
+- macOS: Show the Agents section title as agent and group counts followed by
+  the grouping mode in parentheses, keeping the existing middle-dot separator.
+
+- macOS: Use an intermediate Agents-section tint for Agent group headings,
+  between the section header and panel background.
+
+- macOS: Make ``focus_agents_sidebar`` follow the active terminal pane: Editor
+  panes now open keyboard navigation in the Editors section, while Agent panes
+  remain in Agents. Tab and Shift+Tab preserve the last selection in each
+  section when switching between them.
+
+- macOS: Keep Agent/Editor project-link hints on the committed item while
+  keyboard navigation previews other sidebar rows. Clear the keyboard preview
+  when focus returns to the terminal; Enter or a mouse click commits the item.
+
+- macOS: Make Agents and Editors sidebar backgrounds follow the window's
+  effective background opacity, including runtime changes, without fading text
+  or icons.
+
+- macOS: Rotate working-agent sidebar indicators clockwise.
+
+- macOS: Build debug packages with matching native-extension and launcher dSYMs
+  using ``make macos-app DONT_STRIP=1``. Save a UUID-validated symbol archive
+  alongside the DMG for debugging and profiling.
+
+- macOS: Coalesce consecutive sidebar width-drag events for the same window
+  before relayout, preserving the final width and intervening sidebar actions.
+  Skip native drag updates that remain within the same terminal column.
+
+- macOS: Pace active pane spring animations with ready display-link frames
+  instead of applying the terminal output batching delay again. Preserve normal
+  output limits for other windows and avoid redundant animation timer wakeups.
+
+- macOS: Restore sidebar navigation to agents in other tabs after synchronizing
+  Editor selections across tabs.
+- macOS: Preserve Agent selection and project-link badges when a sidebar jump
+  switches tabs, including subsequent periodic row refreshes.
+
 - macOS: Lighten the Agents sidebar content background to match the Editors
   section tint.
+- macOS: Show the vertical resize cursor when hovering the Editors sidebar's
+  upper divider, matching its existing drag-resize behavior.
+- macOS: Refresh the Editors sidebar section when switching tabs so editor
+  status, active state and project relations stay consistent across tabs.
 
 - macOS: Prioritize project-link styling above hover feedback in the sidebar.
 
@@ -67,8 +122,10 @@ Recent major new features
   Preserve the originating physical shortcut event and forward modifier releases
   from GLFW before its global event monitor consumes them.
   Adapt preview proportions and use unstretched edge-to-edge image filling.
-- Run the pane-switcher modifier regression through the package import system
-  so frozen application checks do not require an unpacked Python probe file.
+- Keep pane-switcher and sidebar regressions isolated: test shortcut dispatch
+  and offscreen native controls without starting the terminal application or
+  taking focus. Capture sidebar activation commands without invoking an
+  uninitialized GLFW event loop, and use a real responder for focus transitions.
 - macOS: Composite pane spring animations from live OpenGL textures without
   reading terminal pixels back to the CPU. Keep rapid layout changes continuous
   and preserve transparency, live output and interactive resize behavior.
@@ -91,6 +148,8 @@ Recent major new features
 - macOS: Reuse pane-animation content on geometry-only frames while keeping
   terminal output, cursor changes and palette updates live. Bound cached texture
   retention and precompute spring coefficients when layout targets change.
+- Stack layout: Defer resizing hidden panes until they become visible, avoiding
+  unnecessary scrollback rewrapping when entering stack with many panes.
 - Keep Agents sidebar content refreshes independent of pane layout. Share
   foreground process details within each observation batch and extract agent
   detection text only when needed, reusing unchanged live-screen evidence.
