@@ -150,6 +150,87 @@ class TestLayout(BaseTest):
         Boss.pane_switcher_done(boss, tab.id, 3)
         self.ae(windows.active_window.id, 2)
 
+    def test_stack_layout_only_resizes_visible_group(self):
+        class CountingWindow(Window):
+            def __init__(self, win_id):
+                super().__init__(win_id)
+                self.geometry_calls = 0
+
+            def set_geometry(self, geometry):
+                self.geometry_calls += 1
+                super().set_geometry(geometry)
+
+        layout = create_layout(Stack)
+        windows = create_windows(layout, 4, CountingWindow)
+        layout(windows)
+        active = windows.active_main_group
+        hidden = [g for g in windows.groups if g is not active]
+        self.ae(sum(w.geometry_calls for w in active), 1)
+        self.ae(sum(w.geometry_calls for g in hidden for w in g), 0)
+
+        before_switch = {w.id: w.geometry_calls for w in windows}
+        windows.set_active_group_idx(2)
+        layout(windows)
+        self.ae(sum(w.geometry_calls - before_switch[w.id] for w in windows.groups[2]), 1)
+        self.ae(sum(w.geometry_calls - before_switch[w.id] for g in windows.groups if g is not windows.groups[2] for w in g), 0)
+
+        # Exercise the production focus callback: active-only layouts need a
+        # full relayout when visibility changes, even when no docks exist.
+        from unittest.mock import Mock
+        from kitty.tabs import Tab as RealTab
+
+        active_only_tab = SimpleNamespace(
+            active_window=windows.active_window,
+            os_window_id=17,
+            id=91,
+            mark_tab_bar_dirty=Mock(),
+            relayout=Mock(side_effect=lambda: layout(windows)),
+            relayout_borders=Mock(),
+            current_layout=layout,
+            windows=windows,
+        )
+        before_switch = {w.id: w.geometry_calls for w in windows}
+        windows.set_active_group_idx(3, notify=False)
+        active_only_tab.active_window = windows.active_window
+        with patch('kitty.tabs.set_active_window'), patch('kitty.tabs.get_boss', return_value=None):
+            RealTab.active_window_changed(active_only_tab)
+        active_only_tab.relayout.assert_called_once_with()
+        active_only_tab.relayout_borders.assert_not_called()
+        self.ae(sum(w.geometry_calls - before_switch[w.id] for w in windows.groups[3]), 1)
+        self.ae(sum(w.geometry_calls - before_switch[w.id] for g in windows.groups if g is not windows.groups[3] for w in g), 0)
+
+        # Leaving stack must lay out every group again, including previously
+        # hidden ones, so their geometry is current for the new layout.
+        layout = create_layout(Tall)
+        before_exit = {w.id: w.geometry_calls for w in windows}
+        layout(windows)
+        self.assertTrue(all(w.geometry_calls > before_exit[w.id] for w in windows))
+
+    def test_active_window_change_only_relayouts_for_active_only_layout(self):
+        from unittest.mock import Mock
+
+        from kitty.tabs import Tab as RealTab
+
+        for active_only, has_docks in ((True, False), (True, True), (False, False), (False, True)):
+            with self.subTest(active_only=active_only, has_docks=has_docks):
+                layout = SimpleNamespace(only_active_window_visible=active_only, update_visibility=Mock())
+                groups = [SimpleNamespace(docks=[object()] if has_docks else [])]
+                tab = SimpleNamespace(
+                    active_window=None,
+                    os_window_id=17,
+                    id=91,
+                    mark_tab_bar_dirty=Mock(),
+                    relayout=Mock(),
+                    relayout_borders=Mock(),
+                    current_layout=layout,
+                    windows=SimpleNamespace(groups=groups),
+                )
+                with patch('kitty.tabs.set_active_window'), patch('kitty.tabs.get_boss', return_value=None):
+                    RealTab.active_window_changed(tab)
+                self.ae(tab.relayout.call_count, int(active_only))
+                self.ae(tab.relayout_borders.call_count, int(not active_only))
+                self.ae(layout.update_visibility.call_count, int(not active_only))
+
     def test_border_refresh_during_window_creation(self):
         self.set_options({'draw_minimal_borders': False, 'window_border_radius': (8, 'px')})
         tab_bar = Border(0, 0, 120, 10, BorderColor.tab_bar_bg)

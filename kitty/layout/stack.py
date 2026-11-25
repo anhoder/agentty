@@ -21,7 +21,7 @@ class Stack(Layout):
         wg.set_geometry(layout_single_window(xdecoration_pairs, ydecoration_pairs, xalignment=lgd.alignment_x, yalignment=lgd.alignment_y))
 
     def do_layout(self, windows: WindowList) -> None:
-        for group in windows.iter_all_layoutable_groups():
+        for group in windows.iter_all_layoutable_groups(only_visible=True):
             self.layout_single_window_group(group)
 
     def neighbors_for_window(self, window: WindowType, windows: WindowList) -> NeighborsMap:
