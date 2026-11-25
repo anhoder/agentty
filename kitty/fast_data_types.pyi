@@ -1592,6 +1592,7 @@ class OSWindowSize(TypedDict):
     is_layer_shell: bool
 
 def suppress_pane_animation(os_window_id: int) -> None: ...
+def sync_agents_sidebar_editor_selection(os_window_id: int, window_id: int) -> None: ...
 
 def mark_os_window_dirty(os_window_id: int) -> None:
     pass

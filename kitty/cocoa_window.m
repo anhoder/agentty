@@ -1280,6 +1280,7 @@ agents_sidebar_update_string(NSString **string, const char *value) {
 @end
 
 @interface KittyAgentsScrollView : NSScrollView
+@property BOOL resizeTopEdgeCursor;
 @end
 // Only this small view is layer-hosted; labels and icons keep native drawing.
 @interface KittyAgentsSidebarSpinnerView : NSView
@@ -1323,22 +1324,24 @@ agents_sidebar_update_string(NSString **string, const char *value) {
     NSArray *editor_entries;
     NSView *agents_section, *editors_section, *section_divider, *divider_hit_view;
     NSButton *agents_header, *editors_header;
-    NSScrollView *editor_scroll_view;
-    KittyAgentsOutlineView *editor_outline;
+    KittyAgentsScrollView *editor_scroll_view;
     CGFloat agents_fraction;
     BOOL agents_collapsed, editors_collapsed, dragging_divider;
     CGFloat divider_drag_origin, divider_start_fraction;
     BOOL summary_dirty, row_style_changed;
     NSScrollView *scroll_view;
     KittyAgentsOutlineView *outline;
+    KittyAgentsOutlineView *editor_outline;
     NSTextField *summary;
     NSVisualEffectView *background_view;
     NSHashTable *previous_responders;
     id remembered_selection;
+    BOOL remembered_selection_is_editor;
     BOOL syncing_outline, resizing, resize_hovered;
     CGFloat resize_start_width, resize_preview_width, resize_pointer_offset;
     NSView *resize_indicator;
     BOOL has_entered_navigation;
+    CGFloat background_opacity;
     unsigned cell_width_pixels;
     NSMutableSet<NSString *> *collapsed_groups;
     NSTrackingArea *resize_tracking_area;
@@ -1348,6 +1351,7 @@ agents_sidebar_update_string(NSString **string, const char *value) {
 @property(copy) NSString *grouping;
 @property BOOL resizePending;
 @property(copy) NSString *iconsDir;
+- (void)setBackgroundOpacity:(CGFloat)opacity;
 - (instancetype)initWithOSWindowID:(unsigned)window_id width:(CGFloat)width cellWidth:(unsigned)cell_width;
 - (void)setRows:(const unsigned long long *)new_window_ids
          groups:(const char **)new_groups
@@ -1367,6 +1371,7 @@ agents_sidebar_update_string(NSString **string, const char *value) {
 - (void)focusSidebar;
 - (void)drawNode:(id)node inRect:(NSRect)rect;
 - (void)updateRelatedLinkState;
+- (void)syncEditorSelectionToWindowID:(unsigned long long)window_id;
 - (NSColor *)workingSpinnerColorForNode:(id)node;
 - (NSString *)labelForNode:(id)node;
 - (NSMenu *)menuForNode:(id)node;
@@ -1398,7 +1403,11 @@ agents_sidebar_update_string(NSString **string, const char *value) {
 }
 - (BOOL)resignFirstResponder {
     BOOL accepted = [super resignFirstResponder];
-    if (accepted) self.keyboardFocusRequested = NO;
+    if (accepted) {
+        [self deselectAll:nil];
+        self.keyboardFocusRequested = NO;
+        [(NSView *)self.delegate setNeedsDisplay:YES];
+    }
     [self setNeedsDisplay:YES];
     return accepted;
 }
@@ -1442,12 +1451,20 @@ agents_sidebar_update_string(NSString **string, const char *value) {
 
 @implementation KittyAgentsScrollView
 - (void)cursorUpdate:(NSEvent *)event {
-    (void)event;
-    [[NSCursor pointingHandCursor] set];
+    NSPoint point = [self convertPoint:event.locationInWindow fromView:nil];
+    if (self.resizeTopEdgeCursor && point.y <= 8) [[NSCursor resizeUpDownCursor] set];
+    else [[NSCursor pointingHandCursor] set];
 }
 - (void)resetCursorRects {
     [super resetCursorRects];
-    [self addCursorRect:self.visibleRect cursor:[NSCursor pointingHandCursor]];
+    if (self.resizeTopEdgeCursor) {
+        NSRect top = NSIntersectionRect(self.bounds, NSMakeRect(0, 0, NSWidth(self.bounds), 8));
+        if (!NSIsEmptyRect(top)) [self addCursorRect:top cursor:[NSCursor resizeUpDownCursor]];
+        NSRect rest = NSIntersectionRect(self.bounds, NSMakeRect(0, 8, NSWidth(self.bounds), MAX(0, NSHeight(self.bounds) - 8)));
+        if (!NSIsEmptyRect(rest)) [self addCursorRect:rest cursor:[NSCursor pointingHandCursor]];
+    } else {
+        [self addCursorRect:self.visibleRect cursor:[NSCursor pointingHandCursor]];
+    }
 }
 @end
 
@@ -1456,6 +1473,7 @@ agents_sidebar_update_string(NSString **string, const char *value) {
 @property BOOL agentsSection;
 @property BOOL expanded;
 @property BOOL pointerHovered;
+@property CGFloat backgroundOpacity;
 @property(retain) NSTrackingArea *headerTrackingArea;
 @end
 
@@ -1488,6 +1506,10 @@ static NSColor *KittySidebarSectionHeaderColor(BOOL agents_section) {
     return KittySidebarSectionColor(agents_section, YES);
 }
 
+static NSColor *KittySidebarSeparatorColor(void) {
+    return [[NSColor labelColor] colorWithAlphaComponent:0.10];
+}
+
 @implementation KittySidebarSectionButton
 - (void)mouseDown:(NSEvent *)event { [super mouseDown:event]; }
 - (void)updateTrackingAreas {
@@ -1518,9 +1540,13 @@ static NSColor *KittySidebarSectionHeaderColor(BOOL agents_section) {
         NSColor *hover_tint = self.agentsSection ? tint : [NSColor controlAccentColor];
         band = [band blendedColorWithFraction:0.12 ofColor:hover_tint];
     }
-    [band setFill]; NSRectFill(self.bounds);
-    [[NSColor separatorColor] setFill]; NSRectFill(NSMakeRect(0, NSMaxY(self.bounds) - 1, self.bounds.size.width, 1));
-    [tint setFill]; NSRectFill(NSMakeRect(0, 0, 2, self.bounds.size.height));
+    [[band colorWithAlphaComponent:band.alphaComponent * self.backgroundOpacity] setFill]; NSRectFill(self.bounds);
+    NSColor *separator = KittySidebarSeparatorColor();
+    [[separator colorWithAlphaComponent:separator.alphaComponent * self.backgroundOpacity] setFill];
+    NSRectFillUsingOperation(NSMakeRect(0, NSMaxY(self.bounds) - 1, self.bounds.size.width, 1), NSCompositingOperationSourceOver);
+    if (self.expanded) {
+        [[tint colorWithAlphaComponent:tint.alphaComponent * self.backgroundOpacity] setFill]; NSRectFill(NSMakeRect(0, 0, 2, self.bounds.size.height));
+    }
     NSFont *titleFont = self.font ? self.font : [NSFont systemFontOfSize:11];
     NSColor *titleColor = self.pointerHovered ? [NSColor labelColor] : [NSColor secondaryLabelColor];
     NSMutableParagraphStyle *titleStyle = [[[NSMutableParagraphStyle alloc] init] autorelease];
@@ -1617,7 +1643,7 @@ static NSColor *KittySidebarSectionHeaderColor(BOOL agents_section) {
     if (rotate && !spinner_rotating) {
         CABasicAnimation *rotation = [CABasicAnimation animationWithKeyPath:@"transform.rotation.z"];
         rotation.fromValue = @0;
-        rotation.toValue = @(-2 * M_PI);
+        rotation.toValue = @(2 * M_PI);
         rotation.duration = 1.0 / 0.9;
         rotation.repeatCount = HUGE_VALF;
         rotation.timingFunction = [CAMediaTimingFunction functionWithName:kCAMediaTimingFunctionLinear];
@@ -1695,12 +1721,12 @@ static NSColor *KittySidebarSectionHeaderColor(BOOL agents_section) {
     BOOL highlighted = self.pointerHovered || (self.selected && [self.sidebar kittySidebarHasKeyboardFocus]);
     NSRect rect = [self decorationRect];
     if (self.groupHeading) {
-        NSColor *background = [[NSColor windowBackgroundColor] blendedColorWithFraction:highlighted ? 0.14 : 0.08
-            ofColor:[NSColor labelColor]];
+        NSColor *background = [KittySidebarSectionBackgroundColor(YES) blendedColorWithFraction:highlighted ? 0.7 : 0.5
+            ofColor:KittySidebarSectionHeaderColor(YES)];
         [background setFill];
         NSRectFill(rect);
-        [[[NSColor labelColor] colorWithAlphaComponent:0.14] setFill];
-        NSRectFill(NSMakeRect(NSMinX(rect), NSMaxY(rect) - 1, rect.size.width, 1));
+        [KittySidebarSeparatorColor() setFill];
+        NSRectFillUsingOperation(NSMakeRect(NSMinX(rect), NSMaxY(rect) - 1, rect.size.width, 1), NSCompositingOperationSourceOver);
     } else {
         if (self.activeAgent || highlighted) {
             NSColor *background = self.activeAgent ? [NSColor selectedContentBackgroundColor] :
@@ -1805,6 +1831,8 @@ static NSColor *KittySidebarSectionHeaderColor(BOOL agents_section) {
     self = [super initWithFrame:NSMakeRect(0, 0, width, 100)];
     if (self) {
         os_window_id = window_id;
+        // Force the first opacity update even when the effective value is zero.
+        background_opacity = NAN;
         summary_dirty = YES;
         cell_width_pixels = MAX(1u, cell_width);
         collapsed_groups = [[KittyAgentsSidebarView sharedCollapsedGroups] retain];
@@ -1844,7 +1872,7 @@ static NSColor *KittySidebarSectionHeaderColor(BOOL agents_section) {
             header.cell.truncatesLastVisibleLine = YES;
             header.cell.lineBreakMode = NSLineBreakByTruncatingTail;
         }
-        agents_header.title = @"Grouping: tab · 0 agents · 0 groups"; agents_header.target = self; agents_header.action = @selector(toggleAgentsSection:);
+        agents_header.title = @"Agents: 0 agents · 0 groups(tab)"; agents_header.target = self; agents_header.action = @selector(toggleAgentsSection:);
         agents_header.allowsExpansionToolTips = NO;
         agents_header.image = nil;
         editors_header.title = @"Editors"; editors_header.target = self; editors_header.action = @selector(toggleEditorsSection:);
@@ -1907,9 +1935,10 @@ static NSColor *KittySidebarSectionHeaderColor(BOOL agents_section) {
         editor_outline.dataSource = self; editor_outline.delegate = self; editor_outline.allowsTypeSelect = NO;
         editor_outline.target = self; editor_outline.action = @selector(outlineClicked:);
         editor_outline.accessibilityLabel = @"Editors"; editor_outline.emptyStateText = @"No Editors"; editor_scroll_view.documentView = editor_outline;
+        editor_scroll_view.resizeTopEdgeCursor = YES;
         [self addSubview:editor_scroll_view];
         section_divider = [[NSView alloc] initWithFrame:NSZeroRect];
-        section_divider.wantsLayer = YES; section_divider.layer.backgroundColor = [NSColor separatorColor].CGColor;
+        section_divider.wantsLayer = YES;
         [self addSubview:section_divider];
         divider_hit_view = [[KittySidebarDividerHitView alloc] initWithFrame:NSZeroRect];
         ((KittySidebarDividerHitView *)divider_hit_view).sidebar = self;
@@ -1920,6 +1949,19 @@ static NSColor *KittySidebarSectionHeaderColor(BOOL agents_section) {
         [self setFrameSize:self.frame.size];
     }
     return self;
+}
+- (void)setBackgroundOpacity:(CGFloat)opacity {
+    CGFloat normalized = isfinite(opacity) ? MAX(0.0, MIN(1.0, opacity)) : 1.0;
+    if (background_opacity == normalized) return;
+    background_opacity = normalized;
+    // The material is a separate, opaque backing surface. Disable it below
+    // opacity 1 so the real window compositing (not just vibrancy) is visible.
+    background_view.alphaValue = background_opacity >= 1.0 ? 1.0 : 0.0;
+    ((KittySidebarSectionButton *)agents_header).backgroundOpacity = background_opacity;
+    ((KittySidebarSectionButton *)editors_header).backgroundOpacity = background_opacity;
+    [self setNeedsDisplay:YES];
+    [agents_header setNeedsDisplay:YES];
+    [editors_header setNeedsDisplay:YES];
 }
 
 - (BOOL)isFlipped {
@@ -2233,22 +2275,10 @@ static NSColor *KittySidebarSectionHeaderColor(BOOL agents_section) {
     return found;
 }
 
-- (BOOL)linkSourceIsSelected {
-    if (!link_source_window_id) return NO;
-    if (link_source_is_editor) {
-        if (editor_outline.selectedRow < 0) return NO;
-        id node = [editor_outline itemAtRow:editor_outline.selectedRow];
-        return [node isKindOfClass:[KittyAgentsSidebarEntry class]] &&
-            ((KittyAgentsSidebarEntry *)node)->identity.unsignedLongLongValue == link_source_window_id;
-    }
-    if (outline.selectedRow < 0) return NO;
-    id node = [outline itemAtRow:outline.selectedRow];
-    return [node isKindOfClass:[NSNumber class]] && [node unsignedLongLongValue] == link_source_window_id;
-}
 
 - (void)updateRelatedLinkState {
     KittyAgentsSidebarEntry *source = nil;
-    if (link_source_window_id && [self linkSourceIsSelected])
+    if (link_source_window_id)
         source = [self linkEntryForWindowID:link_source_window_id editor:link_source_is_editor];
     if (source) {
         link_source_is_editor = source->editor;
@@ -2263,9 +2293,10 @@ static NSColor *KittySidebarSectionHeaderColor(BOOL agents_section) {
 
 - (void)clearOtherOutlineSelection:(NSOutlineView *)view {
     NSOutlineView *other = view == outline ? editor_outline : outline;
-    if (other == outline) {
+    if (other == outline && !((KittyAgentsOutlineView *)view).keyboardFocusRequested) {
         [remembered_selection release];
         remembered_selection = nil;
+        remembered_selection_is_editor = NO;
     }
     if (other.selectedRow < 0) return;
     BOOL was_syncing = syncing_outline;
@@ -2274,23 +2305,64 @@ static NSColor *KittySidebarSectionHeaderColor(BOOL agents_section) {
     syncing_outline = was_syncing;
 }
 
+- (void)setLinkSourceFromEntry:(KittyAgentsSidebarEntry *)entry {
+    link_source_window_id = entry ? entry->identity.unsignedLongLongValue : 0;
+    link_source_is_editor = entry ? entry->editor : NO;
+    [self updateRelatedLinkState];
+}
+
 - (void)setLinkSourceFromOutline:(NSOutlineView *)view {
     id node = view.selectedRow >= 0 ? [view itemAtRow:view.selectedRow] : nil;
     KittyAgentsSidebarEntry *entry = nil;
     if ([node isKindOfClass:[KittyAgentsSidebarEntry class]]) entry = node;
     else if ([node isKindOfClass:[NSNumber class]]) entry = entries_by_id[node];
-    if (entry) {
-        link_source_window_id = entry->identity.unsignedLongLongValue;
-        link_source_is_editor = entry->editor;
-    } else {
-        link_source_window_id = 0;
-        link_source_is_editor = NO;
+    [self setLinkSourceFromEntry:entry];
+}
+
+- (void)syncEditorSelectionToWindowID:(unsigned long long)window_id {
+    // Tab activation supplies the active pane ID, which may be an Agent rather
+    // than an Editor. Keep its selected row as the relation source instead of
+    // treating every non-Editor target as an empty selection.
+    KittyAgentsSidebarEntry *agent = window_id ? entries_by_id[@(window_id)] : nil;
+    if (agent) {
+        BOOL was_syncing = syncing_outline;
+        syncing_outline = YES;
+        [self clearOtherOutlineSelection:outline];
+        BOOL show_selection = !self.window || [self kittySidebarHasKeyboardFocus];
+        if (agent->group_key.length) [outline expandItem:agent->group_key];
+        NSInteger agent_row = [outline rowForItem:agent->identity];
+        if (show_selection && agent_row >= 0)
+            [outline selectRowIndexes:[NSIndexSet indexSetWithIndex:(NSUInteger)agent_row] byExtendingSelection:NO];
+        [remembered_selection release];
+        remembered_selection_is_editor = NO;
+        remembered_selection = [agent->identity retain];
+        syncing_outline = was_syncing;
+        [self setLinkSourceFromEntry:agent];
+        return;
     }
-    [self updateRelatedLinkState];
+    NSInteger row = -1;
+    if (window_id) {
+        for (NSUInteger i = 0; i < editor_entries.count; i++) {
+            KittyAgentsSidebarEntry *entry = editor_entries[i];
+            if (entry->identity.unsignedLongLongValue == window_id) { row = (NSInteger)i; break; }
+        }
+    }
+    BOOL was_syncing = syncing_outline;
+    syncing_outline = YES;
+    BOOL show_selection = !self.window || [self kittySidebarHasKeyboardFocus];
+    [self clearOtherOutlineSelection:editor_outline];
+    if (show_selection && row >= 0)
+        [editor_outline selectRowIndexes:[NSIndexSet indexSetWithIndex:(NSUInteger)row] byExtendingSelection:NO];
+    else [editor_outline deselectAll:nil];
+    [remembered_selection release];
+    remembered_selection_is_editor = row >= 0;
+    remembered_selection = row >= 0 ? [((KittyAgentsSidebarEntry *)editor_entries[(NSUInteger)row])->identity retain] : nil;
+    syncing_outline = was_syncing;
+    [self setLinkSourceFromEntry:row >= 0 ? editor_entries[(NSUInteger)row] : nil];
 }
 
 - (void)rebuildOutline {
-    id selected = [remembered_selection retain];
+    id selected = remembered_selection_is_editor ? nil : [remembered_selection retain];
     NSPoint anchor = scroll_view.contentView.bounds.origin;
     syncing_outline = YES;
     [outline reloadData];
@@ -2400,16 +2472,24 @@ static NSColor *KittySidebarSectionHeaderColor(BOOL agents_section) {
 }
 - (void)outlineViewSelectionDidChange:(NSNotification *)notification {
     if (syncing_outline) return;
+    KittyAgentsOutlineView *view = notification.object;
+    BOOL preview = view.keyboardFocusRequested;
+    if (preview && view.selectedRow < 0) return;
     if (notification.object == editor_outline) {
         [self clearOtherOutlineSelection:editor_outline];
-        [self setLinkSourceFromOutline:editor_outline];
+        id selected = editor_outline.selectedRow >= 0 ? [editor_outline itemAtRow:editor_outline.selectedRow] : nil;
+        [remembered_selection release];
+        remembered_selection_is_editor = YES;
+        remembered_selection = [selected isKindOfClass:[KittyAgentsSidebarEntry class]] ? [((KittyAgentsSidebarEntry *)selected)->identity retain] : nil;
+        if (!preview) [self setLinkSourceFromOutline:editor_outline];
         return;
     }
     [self clearOtherOutlineSelection:outline];
     id selected = outline.selectedRow >= 0 ? [outline itemAtRow:outline.selectedRow] : nil;
     [remembered_selection release];
+    remembered_selection_is_editor = NO;
     remembered_selection = [selected retain];
-    [self setLinkSourceFromOutline:outline];
+    if (!preview) [self setLinkSourceFromOutline:outline];
 }
 - (void)groupChanged:(NSNotification *)notification collapsed:(BOOL)collapsed {
     if (syncing_outline) return;
@@ -2451,6 +2531,8 @@ static NSColor *KittySidebarSectionHeaderColor(BOOL agents_section) {
     [self setNeedsDisplay:YES];
 }
 - (void)focusSidebar {
+    BOOL was_syncing = syncing_outline;
+    syncing_outline = YES;
     if (agents_collapsed && editors_collapsed) {
         agents_collapsed = NO;
         [self persistSectionState]; [self updateSectionHeaders]; [self setFrameSize:self.frame.size];
@@ -2459,51 +2541,77 @@ static NSColor *KittySidebarSectionHeaderColor(BOOL agents_section) {
         [previous_responders removeAllObjects];
         if (self.window.firstResponder) [previous_responders addObject:self.window.firstResponder];
     }
-    id target = remembered_selection;
-    if (!has_entered_navigation || !target) {
-        for (KittyAgentsSidebarEntry *entry in entries) {
-            if (!entry->editor && entry->active && entry->identity.unsignedLongLongValue) { target = entry->identity; break; }
-        }
-    }
-    has_entered_navigation = YES;
-    if ([target isKindOfClass:[NSNumber class]] && entries_by_id[target]) {
-        NSString *key = entries_by_id[target]->group_key;
-        if (key.length) [outline expandItem:key];
-    }
-    NSInteger row = -1;
-    for (NSInteger i = 0; i < outline.numberOfRows; i++) if ([[outline itemAtRow:i] isEqual:target]) { row = i; break; }
-    if (row < 0 && outline.numberOfRows) row = 0;
-    if (row >= 0) {
-        [outline selectRowIndexes:[NSIndexSet indexSetWithIndex:(NSUInteger)row] byExtendingSelection:NO];
-        [self revealRow:row];
-    }
+    KittyAgentsSidebarEntry *active_agent = nil, *active_editor = nil;
     BOOL has_agents = NO, has_editors = NO;
-    KittyAgentsSidebarEntry *active_editor = nil;
     for (KittyAgentsSidebarEntry *entry in entries) {
         if (!entry->identity.unsignedLongLongValue) continue;
         if (entry->editor) {
             has_editors = YES;
             if (entry->active) active_editor = entry;
-        } else has_agents = YES;
-    }
-    KittyAgentsOutlineView *view = agents_collapsed || (!has_agents && has_editors && !editors_collapsed) ? editor_outline : outline;
-    if (view == editor_outline && active_editor) {
-        NSInteger editor_row = [editor_outline rowForItem:active_editor];
-        if (editor_row >= 0) {
-            [editor_outline selectRowIndexes:[NSIndexSet indexSetWithIndex:(NSUInteger)editor_row] byExtendingSelection:NO];
-            [editor_outline scrollRowToVisible:editor_row];
+        } else {
+            has_agents = YES;
+            if (entry->active) active_agent = entry;
         }
     }
-    if (view.selectedRow < 0 && view.numberOfRows) [view selectRowIndexes:[NSIndexSet indexSetWithIndex:0] byExtendingSelection:NO];
+    KittyAgentsOutlineView *view;
+    id target = nil;
+    if (active_editor) {
+        view = editor_outline;
+        target = active_editor->identity;
+    } else if (active_agent) {
+        view = outline;
+        target = active_agent->identity;
+    } else if (remembered_selection && entries_by_id[remembered_selection]) {
+        view = outline;
+        target = remembered_selection;
+    } else if (remembered_selection && editors_by_id[remembered_selection]) {
+        view = editor_outline;
+        target = remembered_selection;
+    } else if (has_agents && !agents_collapsed) {
+        view = outline;
+    } else if (has_editors && !editors_collapsed) {
+        view = editor_outline;
+    } else if (has_agents) {
+        view = outline;
+    } else {
+        view = editor_outline;
+    }
+    if (view == outline && agents_collapsed) {
+        agents_collapsed = NO;
+        [self persistSectionState]; [self updateSectionHeaders]; [self setFrameSize:self.frame.size];
+    } else if (view == editor_outline && editors_collapsed) {
+        editors_collapsed = NO;
+        [self persistSectionState]; [self updateSectionHeaders]; [self setFrameSize:self.frame.size];
+    }
+    has_entered_navigation = YES;
+    if (view == outline && [target isKindOfClass:[NSNumber class]] && entries_by_id[target]) {
+        NSString *key = entries_by_id[target]->group_key;
+        if (key.length) [outline expandItem:key];
+    }
+    NSInteger row = -1;
+    for (NSInteger i = 0; i < view.numberOfRows; i++) {
+        id item = [view itemAtRow:i];
+        if ((view == editor_outline && [item isKindOfClass:[KittyAgentsSidebarEntry class]] &&
+             [((KittyAgentsSidebarEntry *)item)->identity isEqual:target]) || [item isEqual:target]) {
+            row = i;
+            break;
+        }
+    }
+    if (row < 0 && view.numberOfRows) row = 0;
+    if (row >= 0) {
+        [view selectRowIndexes:[NSIndexSet indexSetWithIndex:(NSUInteger)row] byExtendingSelection:NO];
+        [view scrollRowToVisible:row];
+    }
     view.keyboardFocusRequested = YES;
     [self.window makeFirstResponder:view];
-    if (view == outline) {
-        id selected = view.selectedRow >= 0 ? [view itemAtRow:view.selectedRow] : nil;
-        [remembered_selection release];
-        remembered_selection = [selected retain];
-    }
+    id selected = view.selectedRow >= 0 ? [view itemAtRow:view.selectedRow] : nil;
+    [remembered_selection release];
+    remembered_selection_is_editor = view == editor_outline;
+    if (remembered_selection_is_editor && [selected isKindOfClass:[KittyAgentsSidebarEntry class]])
+        remembered_selection = [((KittyAgentsSidebarEntry *)selected)->identity retain];
+    else remembered_selection = [selected retain];
     [self clearOtherOutlineSelection:view];
-    [self setLinkSourceFromOutline:view];
+    syncing_outline = was_syncing;
     [self setFocusBorderNeedsDisplay];
 }
 - (void)sendCommand:(NSString *)command windowID:(unsigned long long)window_id {
@@ -2512,6 +2620,9 @@ static NSColor *KittySidebarSectionHeaderColor(BOOL agents_section) {
     set_cocoa_pending_action(AGENTS_SIDEBAR_MENU, payload.UTF8String);
 }
 - (void)activateNode:(id)node {
+    if (([node isKindOfClass:[KittyAgentsSidebarEntry class]] && ((KittyAgentsSidebarEntry *)node)->identity.unsignedLongLongValue) ||
+        ([node isKindOfClass:[NSNumber class]] && [node unsignedLongLongValue]))
+        [self setLinkSourceFromOutline:[node isKindOfClass:[KittyAgentsSidebarEntry class]] ? editor_outline : outline];
     if ([node isKindOfClass:[KittyAgentsSidebarEntry class]]) node = ((KittyAgentsSidebarEntry *)node)->identity;
     if ([node isKindOfClass:[NSString class]]) {
         [self setGroup:node expanded:![outline isItemExpanded:node] animated:YES];
@@ -2523,10 +2634,11 @@ static NSColor *KittySidebarSectionHeaderColor(BOOL agents_section) {
     [view selectRowIndexes:[NSIndexSet indexSetWithIndex:(NSUInteger)row] byExtendingSelection:NO];
     [self clearOtherOutlineSelection:view];
     id item = [view itemAtRow:row];
-    if (view == outline) {
-        [remembered_selection release];
-        remembered_selection = [item retain];
-    }
+    [remembered_selection release];
+    remembered_selection_is_editor = view == editor_outline;
+    if (remembered_selection_is_editor && [item isKindOfClass:[KittyAgentsSidebarEntry class]])
+        remembered_selection = [((KittyAgentsSidebarEntry *)item)->identity retain];
+    else remembered_selection = [item retain];
     [self setLinkSourceFromOutline:view];
     return item;
 }
@@ -2558,14 +2670,26 @@ static NSColor *KittySidebarSectionHeaderColor(BOOL agents_section) {
         if (!next.enclosingScrollView.hidden) {
             next.keyboardFocusRequested = YES;
             [self.window makeFirstResponder:next];
-            if (next.selectedRow < 0 && next.numberOfRows) [next selectRowIndexes:[NSIndexSet indexSetWithIndex:0] byExtendingSelection:NO];
-            if (next == outline) {
-                id selected = next.selectedRow >= 0 ? [next itemAtRow:next.selectedRow] : nil;
-                [remembered_selection release];
-                remembered_selection = [selected retain];
+            if (next.selectedRow < 0 && next.numberOfRows) {
+                NSInteger row = -1;
+                if (next == outline && !remembered_selection_is_editor && remembered_selection)
+                    row = [next rowForItem:remembered_selection];
+                else if (next == editor_outline && remembered_selection_is_editor && remembered_selection) {
+                    for (NSInteger i = 0; i < next.numberOfRows; i++) {
+                        id item = [next itemAtRow:i];
+                        if ([item isKindOfClass:[KittyAgentsSidebarEntry class]] &&
+                            [((KittyAgentsSidebarEntry *)item)->identity isEqual:remembered_selection]) { row = i; break; }
+                    }
+                }
+                [next selectRowIndexes:[NSIndexSet indexSetWithIndex:(NSUInteger)MAX(0, row)] byExtendingSelection:NO];
             }
+            id selected = next.selectedRow >= 0 ? [next itemAtRow:next.selectedRow] : nil;
+            [remembered_selection release];
+            remembered_selection_is_editor = next == editor_outline;
+            if (remembered_selection_is_editor && [selected isKindOfClass:[KittyAgentsSidebarEntry class]])
+                remembered_selection = [((KittyAgentsSidebarEntry *)selected)->identity retain];
+            else remembered_selection = [selected retain];
             [self clearOtherOutlineSelection:next];
-            [self setLinkSourceFromOutline:next];
         } else [self kittySidebarCancelNavigation];
         return YES;
     }
@@ -2759,7 +2883,7 @@ static NSColor *KittySidebarSectionHeaderColor(BOOL agents_section) {
             [self rebuildOutline];
         }
         summary_dirty = YES;
-        if (remembered_selection && !entries_by_id[remembered_selection] && !group_children[remembered_selection]) {
+        if (remembered_selection && !remembered_selection_is_editor && !entries_by_id[remembered_selection] && !group_children[remembered_selection]) {
             [remembered_selection release];
             remembered_selection = nil;
         }
@@ -2804,7 +2928,8 @@ static NSColor *KittySidebarSectionHeaderColor(BOOL agents_section) {
             }
             if (selected_editor_id) {
                 [remembered_selection release];
-                remembered_selection = nil;
+                remembered_selection_is_editor = YES;
+                remembered_selection = [@(selected_editor_id) retain];
             }
             NSPoint anchor = editor_scroll_view.contentView.bounds.origin;
             BOOL was_syncing = syncing_outline;
@@ -2825,8 +2950,8 @@ static NSColor *KittySidebarSectionHeaderColor(BOOL agents_section) {
         }
         NSUInteger agent_count = 0;
         for (NSNumber *identity in entries_by_id) if (identity.unsignedLongLongValue) agent_count++;
-        agents_header.title = [NSString stringWithFormat:@"Grouping: %@ · %lu agents · %lu groups", self.grouping ? self.grouping : @"tab",
-            (unsigned long)agent_count, (unsigned long)group_children.count];
+        agents_header.title = [NSString stringWithFormat:@"Agents: %lu agents · %lu groups(%@)",
+            (unsigned long)agent_count, (unsigned long)group_children.count, self.grouping ? self.grouping : @"tab"];
         agents_header.toolTip = agents_header.title;
         [self updateSectionHeaders];
         [self setFrameSize:self.frame.size];
@@ -3012,12 +3137,16 @@ static NSColor *KittySidebarSectionHeaderColor(BOOL agents_section) {
 }
 - (void)drawRect:(NSRect)dirtyRect {
     (void)dirtyRect;
-    // The scroll views and outline views are transparent; paint only their section
-    // content bounds so the native sidebar material remains visible elsewhere.
-    [KittySidebarSectionBackgroundColor(YES) setFill];
+    // Keep a continuous backing surface when both sections are collapsed.
+    [[NSColor.controlBackgroundColor colorWithAlphaComponent:background_opacity] setFill];
+    NSRectFill(self.bounds);
+    // Replace the base fill in expanded sections to preserve their opacity.
+    [[KittySidebarSectionBackgroundColor(YES) colorWithAlphaComponent:background_opacity] setFill];
     if (!scroll_view.hidden) NSRectFill(scroll_view.frame);
-    [KittySidebarSectionBackgroundColor(NO) setFill];
+    [[KittySidebarSectionBackgroundColor(NO) colorWithAlphaComponent:background_opacity] setFill];
     if (!editor_scroll_view.hidden) NSRectFill(editor_scroll_view.frame);
+    NSColor *divider = [KittySidebarSectionHeaderColor(NO) blendedColorWithFraction:0.10 ofColor:[NSColor labelColor]];
+    section_divider.layer.backgroundColor = [[divider colorWithAlphaComponent:background_opacity] CGColor];
     if ([self kittySidebarHasKeyboardFocus]) {
         [[NSColor controlAccentColor] setStroke];
         NSBezierPath *focus = [NSBezierPath bezierPathWithRect:NSInsetRect(self.bounds, 1, 1)];
@@ -3028,10 +3157,10 @@ static NSColor *KittySidebarSectionHeaderColor(BOOL agents_section) {
     const CGFloat rail_x = MAX(0.0, self.bounds.size.width - rail_width);
     NSColor *rail_color;
     if (resizing) rail_color = [[NSColor controlAccentColor] colorWithAlphaComponent:0.88];
-    else if (resize_hovered) rail_color = [[NSColor labelColor] colorWithAlphaComponent:0.72];
-    else rail_color = [[NSColor separatorColor] colorWithAlphaComponent:0.55];
+    else if (resize_hovered) rail_color = [[NSColor labelColor] colorWithAlphaComponent:0.24];
+    else rail_color = KittySidebarSeparatorColor();
     [rail_color setFill];
-    NSRectFill(NSMakeRect(rail_x, 0.0, rail_width, self.bounds.size.height));
+    NSRectFillUsingOperation(NSMakeRect(rail_x, 0.0, rail_width, self.bounds.size.height), NSCompositingOperationSourceOver);
 }
 - (void)dealloc {
     [[NSNotificationCenter defaultCenter] removeObserver:self];
@@ -3076,6 +3205,22 @@ cocoa_set_agents_sidebar_focus(void *ptr, bool focused, bool toggle) {
     if (focused && !(toggle && was_focused)) [sidebar focusSidebar];
     else [sidebar kittySidebarCancelNavigation];
     return was_focused;
+}
+
+void
+cocoa_sync_agents_sidebar_editor_selection(void *ptr, unsigned long long window_id) {
+    NSWindow *window = (NSWindow *)ptr;
+    if (!window) return;
+    KittyAgentsSidebarView *sidebar = objc_getAssociatedObject(window, kitty_agents_sidebar_key);
+    [sidebar syncEditorSelectionToWindowID:window_id];
+}
+
+void
+cocoa_update_agents_sidebar_opacity(void *ptr, float opacity) {
+    NSWindow *window = (NSWindow *)ptr;
+    if (!window) return;
+    KittyAgentsSidebarView *sidebar = objc_getAssociatedObject(window, kitty_agents_sidebar_key);
+    [sidebar setBackgroundOpacity:opacity];
 }
 
 void
@@ -3124,6 +3269,8 @@ cocoa_set_agents_sidebar(
         objc_setAssociatedObject(window, kitty_agents_sidebar_key, sidebar, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
         [sidebar release];
     }
+    OSWindow *osw = os_window_for_id(os_window_id);
+    [sidebar setBackgroundOpacity:osw ? effective_os_window_alpha(osw) : 1.0];
     // The sidebar action is deferred until after rendering. Carry suppression
     // across that render so the resulting layout cannot animate after mouse-up.
     if (sidebar.resizePending) {

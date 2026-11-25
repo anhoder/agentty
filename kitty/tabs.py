@@ -62,6 +62,7 @@ from .fast_data_types import (
     start_drag_with_data,
     suppress_pane_animation,
     swap_tabs,
+    sync_agents_sidebar_editor_selection,
     sync_os_window_title,
 )
 from .launch_wrapper import LaunchRequest, user_launch_request
@@ -655,9 +656,18 @@ class Tab:  # {{{
         w = self.active_window
         set_active_window(self.os_window_id, self.id, 0 if w is None else w.id)
         self.mark_tab_bar_dirty()
-        if self.current_layout.only_active_window_visible and any(g.docks for g in self.windows.groups):
-            # Which docks are visible depends on the active window, and
-            # the blank areas around them need to be recalculated
+        # Native Agents/Editors linking uses the active terminal pane as its
+        # source. Refresh immediately after mouse or keyboard focus changes;
+        # the periodic agent poll is not a focus-change notification.
+        boss = get_boss()
+        if boss is not None and getattr(boss, 'agent_sidebar_enabled', False):
+            boss.refresh_agent_sidebars()
+            if (tm := self.tab_manager_ref()) is not None and tm.active_tab is self:
+                for scope_manager in boss.agent_sidebar_scope(tm):
+                    sync_agents_sidebar_editor_selection(scope_manager.os_window_id, w.id if w is not None else 0)
+        if self.current_layout.only_active_window_visible:
+            # Active-only layouts must assign geometry to the newly visible
+            # group; geometry for hidden groups is intentionally deferred.
             self.relayout()
         else:
             self.relayout_borders()
@@ -2000,6 +2010,15 @@ class TabManager:  # {{{
             # Recompute its geometry before it becomes visible so the tab bar does not overlap it.
             tab.relayout()
         self.mark_tab_bar_dirty()
+        boss = get_boss()
+        if boss is not None and boss.agent_sidebar_enabled:
+            # Editors use the active pane as their source for related-state
+            # highlighting; changing tabs changes that source without changing
+            # a Tab.active_window value.
+            boss.refresh_agent_sidebars()
+            active_window_id = tab.active_window.id if tab is not None and tab.active_window is not None else 0
+            for scope_manager in boss.agent_sidebar_scope(self):
+                sync_agents_sidebar_editor_selection(scope_manager.os_window_id, active_window_id)
 
     @update_tab_bar_visibility
     def set_active_tab(self, tab: Tab, for_keep_focus: Tab | None = None) -> bool:

@@ -141,6 +141,7 @@ from .fast_data_types import (
     set_tab_being_dragged,
     set_window_being_dragged,
     start_drag_with_data,
+    sync_agents_sidebar_editor_selection,
     thread_write,
     toggle_fullscreen,
     toggle_macos_tab_overview,
@@ -2697,6 +2698,10 @@ class Boss:
                 if is_macos and focused:
                     cocoa_set_menubar_title(w.title or '')
             tm.mark_tab_bar_dirty()
+            if focused and self.agent_sidebar_enabled:
+                self.refresh_agent_sidebars()
+                for scope_manager in self.agent_sidebar_scope(tm):
+                    sync_agents_sidebar_editor_selection(scope_manager.os_window_id, w.id if w is not None else 0)
             # Redraw borders when focus changes if draw_window_borders_for_single_window is enabled
             # and there's only a single window (to show inactive border when OS window loses focus)
             opts = get_options()

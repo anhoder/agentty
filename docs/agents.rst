@@ -10,13 +10,22 @@ Working indicators rotate in independently composited Core Animation layers;
 their motion does not redraw the row's text and icons. They stop when hidden or
 no longer working, and remain static when macOS Reduce Motion is enabled.
 
-On macOS, press :kbd:`Cmd+B` to show the sidebar and focus its agent list.
-Press it again, or :kbd:`Esc`, to return to the terminal without hiding the
-sidebar. :kbd:`Cmd+Shift+B` shows or hides the sidebar. Both shortcuts can be
-rebound in :file:`kitty.conf`::
+On macOS, press :kbd:`Cmd+B` to show the sidebar and focus the list for the
+current terminal pane. An active Agent selects the Agents section; an active
+terminal Editor selects the Editors section. With no active Agent or Editor,
+kitty restores the most recently navigated section when possible. Press it
+again, or :kbd:`Esc`, to return to the terminal without hiding the sidebar.
+:kbd:`Cmd+Shift+B` shows or hides the sidebar. Both shortcuts can be rebound in
+:file:`kitty.conf`::
 
     map cmd+b focus_agents_sidebar
     map cmd+shift+b toggle_agents_sidebar
+
+The Agents and Editors sidebar backgrounds follow the window's effective
+:opt:`background_opacity`, including runtime changes when
+:opt:`dynamic_background_opacity` is enabled. Text and icons remain fully
+opaque. When the background is translucent, the sidebar's separate native
+material is disabled so it does not obscure the window transparency.
 
 Keyboard navigation
 -------------------
@@ -37,9 +46,10 @@ items; Page Up and Page Down move by a viewport. The list scrolls immediately to
 keep the selection visible. On compact Mac keyboards, use the corresponding
 Fn-modified navigation keys.
 
-Press Shift+F10 in the list, or right-click, to open the actions menu. Tab,
-Shift+Tab and Escape return to the terminal; there is no footer button.
-Navigate the menu with arrow keys and Enter; Escape dismisses the menu first.
+Press Shift+F10 in the list, or right-click, to open the actions menu. Tab and
+Shift+Tab switch between the Agents and Editors sections without activating the
+selected row; if the other section is unavailable, focus remains in the current
+section. Escape returns to the terminal; there is no footer button.
 The menu offers agent activation, a new terminal in the selected agent's working
 directory, copying that directory, and closing the agent's window using the
 existing close-confirmation rules. It also offers sidebar width adjustments in

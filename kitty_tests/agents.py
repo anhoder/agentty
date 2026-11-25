@@ -490,6 +490,55 @@ class TestAgentSidebarActions(BaseTest):
             Boss.toggle_agents_sidebar(boss)
         manager.resize.assert_called_once()
         boss.refresh_agent_sidebars.assert_called_once()
+    def test_focus_refreshes_sidebar_active_and_project_relation(self):
+        from types import SimpleNamespace
+        from unittest.mock import Mock, patch
+
+        from kitty.tabs import Tab
+
+        first = SimpleNamespace(id=1)
+        second = SimpleNamespace(id=2)
+        tab = SimpleNamespace(
+            active_window=first,
+            os_window_id=7,
+            id=8,
+            current_layout=SimpleNamespace(only_active_window_visible=False, update_visibility=Mock()),
+            windows=SimpleNamespace(groups=[]),
+            tab_manager_ref=lambda: None,
+            relayout_borders=Mock(),
+            mark_tab_bar_dirty=Mock(),
+        )
+        boss = SimpleNamespace(agent_sidebar_enabled=True, refresh_agent_sidebars=Mock())
+        with patch('kitty.tabs.get_boss', return_value=boss), patch('kitty.tabs.set_active_window') as native:
+            Tab.active_window_changed(tab)
+        native.assert_called_once_with(7, 8, 1)
+        boss.refresh_agent_sidebars.assert_called_once_with()
+        tab.active_window = second
+        with patch('kitty.tabs.get_boss', return_value=boss), patch('kitty.tabs.set_active_window') as native:
+            Tab.active_window_changed(tab)
+        native.assert_called_once_with(7, 8, 2)
+        self.assertEqual(boss.refresh_agent_sidebars.call_count, 2)
+    def test_tab_switch_refreshes_editor_rows_for_shared_sidebar(self):
+        from types import SimpleNamespace
+        from unittest.mock import Mock, patch
+
+        from kitty.tabs import TabManager
+
+        first = SimpleNamespace(id=1)
+        second = SimpleNamespace(id=2)
+        first_tab = SimpleNamespace(id=11, relayout=Mock(), active_window=SimpleNamespace(id=101))
+        second_tab = SimpleNamespace(id=12, relayout=Mock(), active_window=SimpleNamespace(id=102))
+        manager = SimpleNamespace(
+            tabs=[first_tab, second_tab], active_tab_idx=0, _active_tab_idx=0, active_tab=first_tab,
+            agent_sidebar_enabled=True, mark_tab_bar_dirty=Mock(), os_window_id=7,
+        )
+        manager._set_active_tab = lambda idx: setattr(manager, '_active_tab_idx', idx)
+        boss = SimpleNamespace(agent_sidebar_enabled=True, refresh_agent_sidebars=Mock(), agent_sidebar_scope=lambda manager: (manager,))
+        with patch('kitty.tabs.get_boss', return_value=boss), patch('kitty.tabs.set_active_tab'), patch('kitty.tabs.sync_agents_sidebar_editor_selection') as sync:
+            TabManager.set_active_tab_idx(manager, 1)
+        boss.refresh_agent_sidebars.assert_called_once_with()
+        sync.assert_called_once_with(7, 101)
+        self.assertIs(manager.active_tab, first_tab)
 
     def sidebar(self):
         from types import MethodType, SimpleNamespace
@@ -582,6 +631,57 @@ class TestAgentSidebarActions(BaseTest):
             with patch('kitty.boss.is_macos', True):
                 self.assertTrue(Boss.dispatch_possible_special_key(boss, KeyEvent(ord('k'), mods=GLFW_MOD_SUPER)))
             self.ae(seen, [])
+
+    def test_sidebar_click_focuses_agent_in_another_tab(self):
+        from types import MethodType, SimpleNamespace
+        from unittest.mock import Mock, patch
+
+        from kitty.boss import Boss
+        from kitty.tabs import TabManager
+
+        class Tab(list):
+            def set_active_window(self, window, for_keep_focus=None):
+                self.active_window = window
+
+        manager = object.__new__(TabManager)
+        first, target = SimpleNamespace(id=1), SimpleNamespace(id=2)
+        first_tab, target_tab = Tab([first]), Tab([target])
+        first_tab.active_window, target_tab.active_window = first, target
+        for tab in (first_tab, target_tab):
+            tab.relayout = Mock()
+        first.tabref = lambda: first_tab
+        target.tabref = lambda: target_tab
+        manager.tabs = [first_tab, target_tab]
+        manager.os_window_id = 7
+        manager._active_tab_idx = 0
+        manager.agent_sidebar_enabled = True
+        manager.agent_sidebar_rows = (AgentSidebarRow(2, '', '', 'omp', 'Target', '', AgentState.idle, False),)
+        manager.mark_tab_bar_dirty = Mock()
+        manager._set_active_tab = lambda idx: setattr(manager, '_active_tab_idx', idx)
+        manager.set_active_tab = lambda tab, **kw: TabManager.set_active_tab_idx(manager, manager.tabs.index(tab))
+
+        class Controller:
+            @property
+            def active_tab(self):
+                return manager.active_tab
+
+            @property
+            def active_window(self):
+                return manager.active_window
+
+        boss = Controller()
+        boss.os_window_map = {7: manager}
+        boss.window_id_map = {1: first, 2: target}
+        boss.agent_sidebar_enabled = True
+        boss.agent_sidebar_scope = lambda tm: (manager,)
+        boss.refresh_agent_sidebars = Mock()
+        for name in ('agents_sidebar_click', 'agents_sidebar_menu', 'set_active_window'):
+            setattr(boss, name, MethodType(getattr(Boss, name), boss))
+        with patch('kitty.tabs.get_boss', return_value=boss), patch('kitty.boss.set_agents_sidebar_focus'), \
+                patch('kitty.boss.current_focused_os_window_id', return_value=7):
+            boss.agents_sidebar_click('7:0')
+        self.assertIs(manager.active_tab, target_tab)
+        self.assertIs(boss.active_window, target)
 
     def test_sidebar_menu_rejects_targets_outside_native_tab_scope(self):
         from unittest.mock import patch

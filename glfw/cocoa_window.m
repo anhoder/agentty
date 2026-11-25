@@ -1123,6 +1123,7 @@ static void flush_focus_loss_text(_GLFWwindow *window);
 }
 
 - (void)mouseDown:(NSEvent *)event {
+    if (self.window.firstResponder != self) [self.window makeFirstResponder:self];
     if (!window) return;
     _glfwInputMouseClick(window, GLFW_MOUSE_BUTTON_LEFT, GLFW_PRESS, translateFlags([event modifierFlags]));
 }

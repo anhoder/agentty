@@ -90,7 +90,11 @@ void get_cocoa_key_equivalent(uint32_t, int, char *key, size_t key_sz, int *);
 void set_cocoa_pending_action(CocoaPendingAction action, const char *);
 void set_scrollback_search(id_type os_window_id, id_type window_id, const char *query, const char *status, bool visible, bool focus);
 void cocoa_initialize_agents_sidebar_toggle(void *);
+void cocoa_update_agents_sidebar_opacity(void *nswindow, float opacity);
 bool cocoa_set_agents_sidebar_focus(void *nswindow, bool focused, bool toggle);
+// After updating sidebar rows on tab activation, select the active Agent or Editor.
+// Zero (or a pane absent from the rows) clears selection and relations.
+void cocoa_sync_agents_sidebar_editor_selection(void *nswindow, unsigned long long window_id);
 void cocoa_set_agents_sidebar(
     void *,
     unsigned,

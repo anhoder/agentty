@@ -2176,6 +2176,9 @@ apply_window_chrome_state(GLFWwindow *w, WindowChromeState new_state, int width,
 void
 set_os_window_chrome(OSWindow *w) {
     if (!w->handle || w->is_layer_shell) return;
+#ifdef __APPLE__
+    cocoa_update_agents_sidebar_opacity(glfwGetCocoaWindow(w->handle), effective_os_window_alpha(w));
+#endif
     color_type bg = OPT(background);
     if (w->num_tabs > w->active_tab) {
         Tab *tab = w->tabs + w->active_tab;
@@ -3340,6 +3343,19 @@ set_agents_sidebar_focus(PyObject *self UNUSED, PyObject *args) {
     (void)toggle;
 #endif
     Py_RETURN_FALSE;
+}
+static PyObject *
+sync_agents_sidebar_editor_selection(PyObject *self UNUSED, PyObject *args) {
+    id_type osw_id, window_id;
+    if (!PyArg_ParseTuple(args, "KK", &osw_id, &window_id)) return NULL;
+#ifdef __APPLE__
+    OSWindow *osw = os_window_for_id(osw_id);
+    if (osw && osw->handle) cocoa_sync_agents_sidebar_editor_selection(glfwGetCocoaWindow(osw->handle), window_id);
+#else
+    (void)osw_id;
+    (void)window_id;
+#endif
+    Py_RETURN_NONE;
 }
 
 static PyObject *
@@ -4543,6 +4559,7 @@ static PyMethodDef module_methods[] = {
     METHODB(toggle_macos_tab_overview, METH_O),
     METHODB(set_agents_sidebar, METH_VARARGS),
     METHODB(set_agents_sidebar_focus, METH_VARARGS),
+    METHODB(sync_agents_sidebar_editor_selection, METH_VARARGS),
     {"cocoa_show_pane_switcher", (PyCFunction)py_cocoa_show_pane_switcher, METH_VARARGS, ""},
     METHODB(set_native_tab_title, METH_VARARGS),
     METHODB(get_content_scale_for_window, METH_NOARGS),
