@@ -3866,14 +3866,37 @@ draw_pane_animation(OSWindow *w, Tab *tab, monotonic_t now) {
         const PaneAnimationFrame *frame = a->frames + i;
         PaneAnimationRect rect = frame->target;
         if (!(rect.width > 0 && rect.height > 0)) continue;
-        PaneAnimationRect target = pane_animation_sample(frame, elapsed, a->duration);
+        PaneAnimationRect presentation = pane_animation_sample(frame, elapsed, a->duration);
+        // Move on the pixel grid. Resize the clipping region, never the glyphs
+        // or images in the freshly rendered final-layout texture.
+        double x = round(presentation.x), y = round(presentation.y);
+        double pane_width = round(presentation.width), pane_height = round(presentation.height);
+        int clip_left = (int)MAX(central.left, MAX(0., x)), clip_top = (int)MAX(central.top, MAX(0., y));
+        int clip_right = (int)MIN(central.right, MIN((double)width, x + pane_width));
+        int clip_bottom = (int)MIN(central.bottom, MIN((double)height, y + pane_height));
+        if (clip_right <= clip_left || clip_bottom <= clip_top) continue;
+        enable_scissor_using_top_left_origin((Viewport){clip_left, clip_top, clip_right - clip_left, clip_bottom - clip_top}, height);
+        color_type pane_bg = bg;
+        for (unsigned j = 0; j < tab->num_windows; j++) {
+            Window *pane = tab->windows + j;
+            if (pane->id != frame->id) continue;
+            Screen *screen = pane->render_data.screen;
+            if (screen) {
+                ColorProfile *cp = screen->color_profile;
+                pane_bg = colorprofile_to_color(cp, cp->overridden.default_bg, cp->configured.default_bg).rgb;
+            }
+            break;
+        }
+        glClearColor(((pane_bg >> 16) & 255) / 255.f * alpha, ((pane_bg >> 8) & 255) / 255.f * alpha,
+                     (pane_bg & 255) / 255.f * alpha, alpha);
+        glClear(GL_COLOR_BUFFER_BIT);
         double left = MAX(0., rect.x), top = MAX(0., rect.y);
-        double right = MIN((double)width, rect.x + rect.width), bottom = MIN((double)height, rect.y + rect.height);
+        double right = MIN((double)width, rect.x + MIN(rect.width, pane_width));
+        double bottom = MIN((double)height, rect.y + MIN(rect.height, pane_height));
         if (right <= left || bottom <= top) continue;
-        double x = target.x + (left - rect.x) / rect.width * target.width;
-        double y = target.y + (top - rect.y) / rect.height * target.height;
-        double r = target.x + (right - rect.x) / rect.width * target.width;
-        double b = target.y + (bottom - rect.y) / rect.height * target.height;
+        x += left - rect.x;
+        y += top - rect.y;
+        double r = x + right - left, b = y + bottom - top;
         glUniform4f(source, left / width, 1. - top / height, right / width, 1. - bottom / height);
         glUniform4f(destination, 2. * x / width - 1., 1. - 2. * y / height, 2. * r / width - 1., 1. - 2. * b / height);
         // Replace pixels, including their alpha, rather than darkening a

@@ -2088,10 +2088,12 @@ to toggle them without changing the duration.
 The macOS Reduce Motion setting also disables these animations. This option
 has no effect on other platforms.
 
-Transitions animate pane contents refreshed after each terminal render, keeping
-cursor animations and terminal output visible throughout the transition. The PTY
-size and input hit regions change immediately to the final geometry. The OS
-window frame and interactive live resizing are not animated.
+Transitions move pane contents at their original pixel size, clipping or revealing
+them as the pane's spring-animated bounds change. Text and images are not scaled.
+Contents refresh after each terminal render, keeping cursor animations and
+terminal output visible throughout the transition. The PTY size and input hit
+regions change immediately to the final geometry. The OS window frame and
+interactive live resizing are not animated.
 """,
 )
 

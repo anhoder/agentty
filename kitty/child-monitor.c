@@ -1094,7 +1094,7 @@ prepare_to_render_os_window(
     PaneAnimation *a = &os_window->pane_animation;
     a->reuse_content = a->active && a->content_valid && !needs_render &&
         was_previously_rendered_with_layers == os_window->needs_layers;
-    if (a->active) set_maximum_wait(MAX(OPT(repaint_delay), ms_to_monotonic_t(1ll)));
+    if (a->active && !USE_RENDER_FRAMES) set_maximum_wait(MAX(OPT(repaint_delay), ms_to_monotonic_t(1ll)));
     if (animation_needs_render) return true;
 #endif
     return needs_render || was_previously_rendered_with_layers != os_window->needs_layers;
@@ -1309,9 +1309,23 @@ render(monotonic_t now, bool input_read) {
     EVDBG("input_read: %d, check_for_active_animated_images: %d\n", input_read, global_state.check_for_active_animated_images);
     static monotonic_t last_render_at = MONOTONIC_T_MIN;
     monotonic_t time_since_last_render = last_render_at == MONOTONIC_T_MIN ? OPT(repaint_delay) : now - last_render_at;
-    if (!input_read && time_since_last_render < OPT(repaint_delay) && !global_state.thumbnail_callback.os_window) {
+    bool repaint_delayed = !input_read && time_since_last_render < OPT(repaint_delay) && !global_state.thumbnail_callback.os_window;
+    if (repaint_delayed) {
+        bool animation_frame_ready = false;
+#ifdef __APPLE__
+        // Display-link frames are already paced by the monitor. Applying the
+        // output batching delay again skips frames on high-refresh displays.
+        for (size_t i = 0; i < global_state.num_os_windows; i++) {
+            OSWindow *w = global_state.os_windows + i;
+            if (USE_RENDER_FRAMES && w->pane_animation.active && w->render_state == RENDER_FRAME_READY &&
+                !w->live_resize.in_progress && should_os_window_be_rendered(w)) {
+                animation_frame_ready = true;
+                break;
+            }
+        }
+#endif
         set_maximum_wait(OPT(repaint_delay) - time_since_last_render);
-        return;
+        if (!animation_frame_ready) return;
     }
 
     const bool scan_for_animated_images = global_state.check_for_active_animated_images;
@@ -1324,6 +1338,11 @@ render(monotonic_t now, bool input_read) {
 #ifdef __APPLE__
         // rendering is done in cocoa_os_window_resized()
         if (w->live_resize.in_progress) continue;
+        // An animation must not lift the ordinary output limit for other windows.
+        if (repaint_delayed && (!w->pane_animation.active || w->render_state != RENDER_FRAME_READY)) {
+            if (scan_for_animated_images) global_state.check_for_active_animated_images = true;
+            continue;
+        }
 #endif
         // Held bytes are not on this window yet. Painting it draws the old frame, and the
         // turn that parses them paints again because it ignores repaint_delay.
@@ -1346,7 +1365,7 @@ render(monotonic_t now, bool input_read) {
             w->keep_rendering_till_swap--;
         }
     }
-    if (!waiting_for_frame) last_render_at = now;
+    if (!waiting_for_frame && !repaint_delayed) last_render_at = now;
     call_boss(cache_process_data, "O", Py_False);
 #undef TD
 }
