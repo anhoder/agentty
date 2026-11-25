@@ -5,10 +5,12 @@
 import glob
 import json
 import os
+import re
 import shutil
 import stat
 import subprocess
 import sys
+import tarfile
 import tempfile
 import zipfile
 from collections.abc import Iterable
@@ -28,6 +30,77 @@ abspath = os.path.abspath
 APPNAME = kitty_constants['appname']
 VERSION = kitty_constants['version']
 py_ver = '.'.join(map(str, python_major_minor_version()))
+
+
+def stage_dsym(binary: str, destination: str) -> None:
+    source = binary + '.dSYM'
+    if not os.path.isdir(source):
+        raise RuntimeError(f'Missing requested debug symbols: {source}')
+    # macos-freeze runs dsymutil in each architecture pass, before lipo.
+    # Its adjacent bundle therefore describes only the last thin binary.
+    # Re-link DWARF from the completed universal binary while its objects exist.
+    subprocess.check_call(['xcrun', 'dsymutil', binary, '-o', destination])
+    if dwarf_uuids(binary) != dwarf_uuids(destination):
+        raise RuntimeError(f'Debug symbol UUID/architecture mismatch: {binary}')
+
+
+def dwarf_uuids(path: str) -> dict[str, str]:
+    output = subprocess.check_output(['xcrun', 'dwarfdump', '--uuid', path], text=True)
+    ans: dict[str, str] = {}
+    for line in output.splitlines():
+        match = re.fullmatch(r'UUID: ([0-9a-fA-F]{8}(?:-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}) \(([^()\s]+)\) .+', line.strip())
+        if match is None or match[2] in ans:
+            raise RuntimeError(f'Invalid UUID output for {path}: {output!r}')
+        ans[match[2]] = match[1].upper()
+    if not ans:
+        raise RuntimeError(f'No debug UUIDs found for {path}')
+    return ans
+
+
+def archive_dsyms(staging: str, app: str, archive: str) -> None:
+    symbols = sorted(glob.glob(join(staging, '*.dSYM')))
+    if not symbols:
+        raise RuntimeError('Missing requested debug symbol bundles')
+    # Launcher names also occur in resource scripts (notably SSH integration).
+    # Select launchers by bundle location, not basename or executable permission.
+    # Do not magic-filter expected binaries: malformed objects must fail UUID validation.
+    launchers = {join(app, 'Contents', 'MacOS', name) for name in ('kitty', 'kitty-quick-access')}
+    launchers.update(
+        join(bundle, 'Contents', 'MacOS', name)
+        for bundle in glob.glob(join(app, 'Contents', '*.app'))
+        for name in ('kitty', 'kitty-quick-access')
+    )
+    binaries = [p for p in files_in(app) if not os.path.islink(p) and (p.endswith('.so') or p in launchers)]
+    uuids = {os.path.relpath(p, app): dwarf_uuids(p) for p in binaries}
+    manifest = {}
+    covered = set()
+    mapping_path = join(staging, 'extension-map.json')
+    with open(mapping_path) as f:
+        extension_map = json.load(f)
+    for symbol in symbols:
+        ids = dwarf_uuids(symbol)
+        matches = [p for p, value in uuids.items() if value == ids]
+        if basename(symbol) in extension_map:
+            expected = extension_map[basename(symbol)]
+            matches = [p for p in matches if p == expected]
+        if not matches:
+            raise RuntimeError(f'Debug symbol UUID/architecture mismatch: {symbol}')
+        subprocess.check_call(['xcrun', 'dwarfdump', '--verify', symbol])
+        info = subprocess.check_output(['xcrun', 'dwarfdump', '--debug-info', symbol], text=True)
+        if 'DW_TAG_compile_unit' not in info or not any(tag in info for tag in ('DW_TAG_structure_type', 'DW_TAG_base_type')):
+            raise RuntimeError(f'Missing full DWARF type information: {symbol}')
+        covered.update(matches)
+        manifest[basename(symbol)] = {'uuids': ids, 'binaries': matches}
+        if basename(symbol) in extension_map:
+            manifest[basename(symbol)]['generated_extension'] = extension_map[basename(symbol)]
+    required = {p for p in uuids if basename(p) == 'kitty' or basename(p).startswith(('kitty.', 'kittens.')) or 'fast_data_types' in basename(p) or 'glfw' in basename(p)}
+    if not required.issubset(covered) or not any(basename(p) == 'kitty' for p in covered):
+        raise RuntimeError(f'Missing requested debug symbols for final binaries: {sorted(required - covered)}')
+    with open(join(staging, 'manifest.json'), 'w') as f:
+        json.dump(manifest, f, indent=2)
+    with tarfile.open(archive, 'w:xz') as tf:
+        for path in symbols + [join(staging, 'manifest.json')]:
+            tf.add(path, arcname=basename(path))
 
 
 def flush(func):
@@ -168,6 +241,22 @@ class Freeze(object):
         self.python_stdlib = join(self.resources_dir, 'Python', 'lib', f'python{self.py_ver}')
         self.site_packages = self.python_stdlib  # hack to avoid needing to add site-packages to path
         self.obj_dir = mkdtemp('launchers-')
+        self.symbol_dir = mkdtemp('debug-symbols-') if dont_strip else None
+        self.extension_symbols = {}
+        if self.symbol_dir:
+            # setup.py's package copy does not preserve dSYMs. Save them from
+            # the build source before freezing sanitizes/deletes that tree.
+            src = iv['build_frozen_launcher'].writeable_src_dir
+            for root, dirs, files in os.walk(src):
+                dirs[:] = [d for d in dirs if not d.endswith('.dSYM')]
+                for filename in files:
+                    if filename.endswith('.so'):
+                        path = join(root, filename)
+                        name = os.path.relpath(path, src).replace(os.sep, '-') + '.dSYM'
+                        stage_dsym(path, join(self.symbol_dir, name))
+                        self.extension_symbols[os.path.relpath(path, src)[:-3].replace(os.sep, '.')] = name
+            if not os.listdir(self.symbol_dir):
+                raise RuntimeError('Missing requested extension debug symbols')
 
         self.run()
 
@@ -417,6 +506,14 @@ class Freeze(object):
         os.mkdir(pdir)
         print('Extracting extension modules from', self.python_stdlib, 'to', pdir)
         ext_map = extract_extension_modules(self.python_stdlib, pdir)
+        if self.symbol_dir:
+            mapping = {}
+            for module, symbol in self.extension_symbols.items():
+                if module not in ext_map:
+                    raise RuntimeError(f'Generated extension not shipped: {module}')
+                mapping[symbol] = os.path.relpath(join(pdir, ext_map[module]), dirname(self.contents_dir))
+            with open(join(self.symbol_dir, 'extension-map.json'), 'w') as f:
+                json.dump(mapping, f, indent=2)
         shutil.copy(join(os.path.dirname(self_dir), 'site.py'), join(self.python_stdlib, 'site.py'))
         for x in bases:
             iv['sanitize_source_folder'](join(self.python_stdlib, x))
@@ -424,6 +521,8 @@ class Freeze(object):
         freeze_python(self.python_stdlib, pdir, self.obj_dir, ext_map, develop_mode_env_var='KITTY_DEVELOP_FROM', remove_pyc_files=True)
         shutil.rmtree(self.python_stdlib)
         iv['build_frozen_launcher']([path_to_freeze_dir(), self.obj_dir])
+        if self.symbol_dir:
+            stage_dsym(join(dirname(self.contents_dir), 'bin', 'kitty'), join(self.symbol_dir, 'kitty.dSYM'))
         os.rename(join(dirname(self.contents_dir), 'bin', 'kitty'), join(self.contents_dir, 'MacOS', 'kitty'))
         shutil.rmtree(join(dirname(self.contents_dir), 'bin'))
         self.fix_dependencies_in_lib(join(self.contents_dir, 'MacOS', 'kitty'))
@@ -530,6 +629,8 @@ class Freeze(object):
             print('\nSigning app bundle with identity: {}'.format(identity))
             subprocess.check_call(['codesign', '--force', '--deep', '--sign', identity, appdir])
             subprocess.check_call(['codesign', '--verify', '--deep', '--strict', appdir])
+        if self.symbol_dir:
+            archive_dsyms(self.symbol_dir, appdir, join(destdir, f'{volname}-dSYMs.tar.xz'))
         os.symlink('/Applications', join(tdir, 'Applications'))
         diskutil = '/usr/sbin/diskutil'
         if subprocess.run([diskutil, 'image', 'create', 'from', '--help'], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL).returncode == 0:

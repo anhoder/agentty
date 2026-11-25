@@ -104,7 +104,7 @@ def build_c_extensions(ext_dir, args):
     writeable_src_dir = os.path.join(ext_dir, 'src')
     build_frozen_launcher.writeable_src_dir = writeable_src_dir
     shutil.copytree(
-        KITTY_DIR, writeable_src_dir, symlinks=True, ignore=shutil.ignore_patterns('b', 'build', 'dist', '*_commands.json', '*.o', '*.so', '*.dylib', '*.pyd')
+        KITTY_DIR, writeable_src_dir, symlinks=True, ignore=shutil.ignore_patterns('b', 'build', 'dist', '*_commands.json', '*.o', '*.so', '*.dylib', '*.pyd', '*.dSYM')
     )
     with suppress(FileNotFoundError):
         shutil.rmtree(os.path.join(writeable_src_dir, 'shaders'))
@@ -113,9 +113,9 @@ def build_c_extensions(ext_dir, args):
         os.unlink(os.path.join(writeable_src_dir, 'kitty', 'launcher', 'kitty'))
 
     cmd = SETUP_CMD + ['macos-freeze' if ismacos else 'linux-freeze']
-    if args.dont_strip:
-        cmd.append('--debug')
     build_frozen_launcher.setup_py_options = setup_py_options(args.extra_program_data)
+    if args.dont_strip:
+        build_frozen_launcher.setup_py_options += ['--debug'] + (['--build-dSYM'] if ismacos else [])
     cmd += build_frozen_launcher.setup_py_options
     dest = kitty_constants['appname'] + ('.app' if ismacos else '')
     dest = build_frozen_launcher.prefix = os.path.join(ext_dir, dest)
