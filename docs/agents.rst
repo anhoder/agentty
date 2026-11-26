@@ -18,14 +18,29 @@ again, or :kbd:`Esc`, to return to the terminal without hiding the sidebar.
 :kbd:`Cmd+Shift+B` shows or hides the sidebar. Both shortcuts can be rebound in
 :file:`kitty.conf`::
 
-    map cmd+b focus_agents_sidebar
-    map cmd+shift+b toggle_agents_sidebar
+    map cmd+b focus_sidecar
+    map cmd+shift+b toggle_sidecar
 
 The Agents and Editors sidebar backgrounds follow the window's effective
 :opt:`background_opacity`, including runtime changes when
 :opt:`dynamic_background_opacity` is enabled. Text and icons remain fully
 opaque. When the background is translucent, the sidebar's separate native
 material is disabled so it does not obscure the window transparency.
+
+Sidebar font
+------------
+
+The native macOS sidebar uses the system UI font by default. To select an
+installed font independently of the terminal font, set
+:opt:`sidecar_font_family` in :file:`kitty.conf`, for example::
+
+    sidecar_font_family JetBrainsMono Nerd Font
+
+Use the font's family or PostScript name. Existing sidebar sizes and emphasis
+are preserved. An unavailable font falls back to the system font; set the value
+to ``system`` to restore the default. Reload the configuration to apply changes.
+Nerd glyphs require a selected font that contains those glyphs; this option does
+not apply the terminal's ``symbol_map`` or change SVG/PNG agent icons.
 
 Keyboard navigation
 -------------------
@@ -95,7 +110,7 @@ Its expanded and collapsed states use different background and chevron styles.
 The Agents section heading displays the active grouping, agent count, and group
 count, for example ``Grouping: tab · 3 agents · 2 groups``. Click the heading to
 collapse or expand the section. The grouping strategy is configurable with
-:opt:`agents_sidebar_grouping`:
+:opt:`sidecar_grouping`:
 
 * ``time`` (default): group by Today, Yesterday, and Earlier;
 * ``agent``: group rows by agent name;
@@ -162,7 +177,7 @@ editor buffer navigation.
 
 The sidebar is opened and closed manually with the persistent floating
 sidebar button at the upper-left of the window or the
-:code:`toggle_agents_sidebar` action; it is not opened automatically when an
+:code:`toggle_sidecar` action; it is not opened automatically when an
 agent starts.
 
 
@@ -191,6 +206,12 @@ answer *what the agent is doing*. That comes from one of two sources:
 The distinction matters. An integration that only reports session identity has
 no handler for cancelled turns and interrupts, so its last report goes stale
 and would otherwise pin the window to a state its own screen contradicts.
+
+OpenCode v2 sends native OSC 7501 reports even without Kitty's session reporter.
+When no session identity is available, Kitty uses only the root summary tagged
+``app=opencode``, not individual named session records. This summary covers the
+sessions OpenCode follows, which can include shared tabs. When a session
+identity is available, reports remain scoped to that session and its children.
 
 Screen detection is rule-based. Each agent has a table of rules in
 :file:`kitty/agent_manifests/`, and each rule matches inside one named region
@@ -276,6 +297,20 @@ in that terminal. Installing leaves other hooks and plugins untouched. Restart
 the agent after installing its reporter; enabling ``resume_agents_on_restore``
 alone does not install a reporter or recover an identity missing from an older
 snapshot.
+
+The OpenCode reporter targets OpenCode v2. It installs
+``kitty-agent-state/tui.js`` in OpenCode's configuration directory and registers
+``./kitty-agent-state`` in ``cli.json`` (or the existing ``cli.jsonc``), using
+the ``plugins`` list. Updating migrates Kitty-owned legacy
+``kitty-agent-state.js`` files and their ``tui.json``/``tui.jsonc`` registrations;
+other plugins and settings are kept. User-modified, unowned reporter files are
+not overwritten.
+
+The v2 plugin binds the current conversation's root session and reads its
+cached session family, including subagents already running when it loads.
+Pending prompts, running executions, permissions and forms determine status;
+activity in unrelated OpenCode tabs does not override that conversation.
+
 
 First-launch integration prompts
 ---------------------------------

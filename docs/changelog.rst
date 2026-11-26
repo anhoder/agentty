@@ -9,6 +9,31 @@ To update |kitty|, :doc:`follow the instructions <binary>`.
 Recent major new features
 ---------------------------
 
+- Make ``set_background_opacity_all`` apply one absolute opacity to all existing
+  and future OS windows in the current process. Relative changes adjust the
+  in-memory default once rather than each window independently. ``default`` or a
+  configuration reload restores the configured opacity without writing files.
+
+- macOS: Show the vertical resize cursor when hovering over the divider above
+  Editors, without requiring a click to start dragging.
+
+- macOS: Keep expanded Agents and Editors sidebar headings highlighted with
+  their hover background, text and arrow colors, even when the pointer is elsewhere.
+
+- macOS: Add distinct, section-colored icons to the left of the Agents and
+  Editors sidebar headings, visible in both expanded and collapsed sections.
+
+- macOS: Restore dynamic background opacity after native tab-group fullscreen
+  changes by checking each window's current fullscreen state instead of a
+  cached toggle flag.
+
+- Agents: Honor OpenCode v2 native program-status root reports when no session
+  identity is available, preventing running agents from appearing completed.
+
+- Agents: Migrate the OpenCode session reporter to the v2 TUI plugin API and
+  directory-based CLI registration. Track the selected session and its running
+  children, and migrate Kitty-owned legacy plugin installations on update.
+
 - macOS: Keep text and image pixels at their original size during pane spring
   transitions, including leaving Zoom. Animate pane bounds with clipping and
   background reveal instead of stretching the final-layout contents.
@@ -28,7 +53,7 @@ Recent major new features
 - macOS: Use an intermediate Agents-section tint for Agent group headings,
   between the section header and panel background.
 
-- macOS: Make ``focus_agents_sidebar`` follow the active terminal pane: Editor
+- macOS: Make ``focus_sidecar`` follow the active terminal pane: Editor
   panes now open keyboard navigation in the Editors section, while Agent panes
   remain in Agents. Tab and Shift+Tab preserve the last selection in each
   section when switching between them.
@@ -385,7 +410,7 @@ Recent major new features
 - Add a native macOS Agents sidebar for monitoring recognized AI coding agents.
   It uses a dedicated vertical Cocoa surface rather than kitty's tab-bar
   renderer, shows working/blocked/done/idle state, and focuses an agent window
-  when clicked. Map :code:`toggle_agents_sidebar` to enable it.
+  when clicked. Map :code:`toggle_sidecar` to enable it.
 - Fix the native macOS Agents sidebar leaving the terminal content area blank
   after it was opened.
 - Improve the native Agents sidebar with hierarchical agent/detail rows,
@@ -416,7 +441,7 @@ Recent major new features
   at the top while the bottom edge moves.
 - Make the Agents sidebar state text prominent and color-coded: working is
   orange, blocked is red, done is green, while idle and unknown remain neutral.
-- Add :opt:`agents_sidebar_grouping` with ``time``, ``agent``, ``tab`` and
+- Add :opt:`sidecar_grouping` with ``time``, ``agent``, ``tab`` and
   ``path`` strategies. The sidebar now opens only through its persistent
   titlebar control or the toggle action; automatic-show has been removed.
 - Place the Agents expand/collapse control in the titlebar after the traffic
