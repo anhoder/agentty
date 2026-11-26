@@ -2041,7 +2041,7 @@ class Boss:
         # while the sidebar is open; reuse them within this refresh only.
         project_key_for_cwd.cache_clear()
         active_window = self.active_window
-        strategy = get_options().agents_sidebar_grouping
+        strategy = get_options().sidecar_grouping
         rows: list[AgentSidebarRow] = []
         editors: list[AgentSidebarRow] = []
         tab_index = 0
@@ -2162,15 +2162,15 @@ class Boss:
         self.flush_agent_sidebar_updates()
 
     @ac('tab', 'Focus the native AI agents sidebar or return to the terminal')
-    def focus_agents_sidebar(self) -> None:
+    def focus_sidecar(self) -> None:
         if not is_macos or (tm := self.active_tab_manager) is None:
             return
         if not self.agent_sidebar_enabled:
-            self.toggle_agents_sidebar()
+            self.toggle_sidecar()
         set_agents_sidebar_focus(tm.os_window_id, True, True)
 
     @ac('tab', 'Toggle the native AI agents sidebar')
-    def toggle_agents_sidebar(self) -> None:
+    def toggle_sidecar(self) -> None:
         if self.active_tab_manager is None:
             return
         old_enabled = self.agent_sidebar_enabled
@@ -2238,7 +2238,7 @@ class Boss:
                 for tm in scope:
                     tm.update_native_agents_sidebar()
             elif command == 'hide' and self.agent_sidebar_enabled:
-                self.toggle_agents_sidebar()
+                self.toggle_sidecar()
             return
         window = self.window_id_map.get(window_id)
         if window is None or not any(w is window for tm in scope for tab in tm for w in tab):
@@ -2371,7 +2371,7 @@ class Boss:
         if not matches or matches[0].is_sequence:
             return False
         actions = get_options().alias_map.resolve_aliases(matches[0].definition, MapType.MAP)
-        if len(actions) != 1 or actions[0].args or actions[0].func not in ('focus_agents_sidebar', 'toggle_agents_sidebar'):
+        if len(actions) != 1 or actions[0].args or actions[0].func not in ('focus_sidecar', 'toggle_sidecar'):
             return False
         getattr(self, actions[0].func)()
         return True

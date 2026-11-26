@@ -1274,6 +1274,29 @@ agents_sidebar_update_string(NSString **string, const char *value) {
 
 @class KittyAgentsSidebarView;
 
+// Cached once per family/size/weight; never enumerate fonts during drawing.
+static NSString *kitty_agents_sidebar_font_family = nil;
+static NSMutableDictionary *kitty_agents_sidebar_font_cache = nil;
+static NSFont *
+agents_sidebar_font(CGFloat size, BOOL bold) {
+    if (!kitty_agents_sidebar_font_cache) kitty_agents_sidebar_font_cache = [[NSMutableDictionary alloc] init];
+    NSString *family = kitty_agents_sidebar_font_family;
+    NSString *key = [NSString stringWithFormat:@"%@/%.2f/%d", family ? family : @"system", size, bold];
+    NSFont *font = [kitty_agents_sidebar_font_cache objectForKey:key];
+    if (font) return font;
+    if (family.length && ![family isEqualToString:@"system"]) {
+        font = [NSFont fontWithName:family size:size];
+        if (font && bold) font = [[NSFontManager sharedFontManager] convertFont:font toHaveTrait:NSBoldFontMask];
+        if (!font) {
+            NSFontTraitMask traits = bold ? NSBoldFontMask : 0;
+            font = [[NSFontManager sharedFontManager] fontWithFamily:family traits:traits weight:bold ? 9 : 5 size:size];
+        }
+    }
+    if (!font) font = bold ? [NSFont boldSystemFontOfSize:size] : [NSFont systemFontOfSize:size];
+    [kitty_agents_sidebar_font_cache setObject:font forKey:key];
+    return font;
+}
+
 @interface KittyAgentsOutlineView : NSOutlineView
 @property BOOL keyboardFocusRequested;
 @property(copy) NSString *emptyStateText;
@@ -1347,11 +1370,14 @@ agents_sidebar_update_string(NSString **string, const char *value) {
     NSTrackingArea *resize_tracking_area;
     unsigned long long link_source_window_id;
     BOOL link_source_is_editor;
+    NSString *sidebarFontFamily;
 }
 @property(copy) NSString *grouping;
 @property BOOL resizePending;
 @property(copy) NSString *iconsDir;
 - (void)setBackgroundOpacity:(CGFloat)opacity;
+- (void)setFontFamily:(NSString *)family;
+- (NSFont *)sidebarFontOfSize:(CGFloat)size bold:(BOOL)bold;
 - (instancetype)initWithOSWindowID:(unsigned)window_id width:(CGFloat)width cellWidth:(unsigned)cell_width;
 - (void)setRows:(const unsigned long long *)new_window_ids
          groups:(const char **)new_groups
@@ -1389,7 +1415,7 @@ agents_sidebar_update_string(NSString **string, const char *value) {
     if (self.numberOfRows || !self.emptyStateText.length || self.bounds.size.height <= 20) return;
     NSMutableParagraphStyle *style = [[[NSMutableParagraphStyle alloc] init] autorelease];
     style.alignment = NSTextAlignmentCenter;
-    NSDictionary *attributes = @{NSFontAttributeName:[NSFont systemFontOfSize:11],
+    NSDictionary *attributes = @{NSFontAttributeName:agents_sidebar_font(11, NO),
         NSForegroundColorAttributeName:[NSColor tertiaryLabelColor], NSParagraphStyleAttributeName:style};
     [self.emptyStateText drawInRect:NSMakeRect(8, 10, MAX(0, self.bounds.size.width - 24), 16) withAttributes:attributes];
 }
@@ -1534,9 +1560,10 @@ static NSColor *KittySidebarSeparatorColor(void) {
 - (void)mouseExited:(NSEvent *)event { (void)event; self.pointerHovered = NO; [self setNeedsDisplay:YES]; [[NSCursor arrowCursor] set]; }
 - (void)drawRect:(NSRect)dirtyRect {
     (void)dirtyRect;
+    BOOL highlighted = self.expanded || self.pointerHovered;
     NSColor *tint = KittySidebarSectionTint(self.agentsSection);
     NSColor *band = KittySidebarSectionHeaderColor(self.agentsSection);
-    if (self.pointerHovered) {
+    if (highlighted) {
         NSColor *hover_tint = self.agentsSection ? tint : [NSColor controlAccentColor];
         band = [band blendedColorWithFraction:0.12 ofColor:hover_tint];
     }
@@ -1548,10 +1575,17 @@ static NSColor *KittySidebarSeparatorColor(void) {
         [[tint colorWithAlphaComponent:tint.alphaComponent * self.backgroundOpacity] setFill]; NSRectFill(NSMakeRect(0, 0, 2, self.bounds.size.height));
     }
     NSFont *titleFont = self.font ? self.font : [NSFont systemFontOfSize:11];
-    NSColor *titleColor = self.pointerHovered ? [NSColor labelColor] : [NSColor secondaryLabelColor];
+    NSColor *titleColor = highlighted ? [NSColor labelColor] : [NSColor secondaryLabelColor];
+    NSImage *icon = self.image;
+    if (icon.size.width > 0 && icon.size.height > 0) {
+        CGFloat scale = MIN(14 / icon.size.width, 14 / icon.size.height);
+        NSSize size = NSMakeSize(icon.size.width * scale, icon.size.height * scale);
+        [icon drawInRect:NSMakeRect(12 + (14 - size.width) / 2, NSMidY(self.bounds) - size.height / 2, size.width, size.height)
+               fromRect:NSZeroRect operation:NSCompositingOperationSourceOver fraction:1 respectFlipped:YES hints:nil];
+    }
     NSMutableParagraphStyle *titleStyle = [[[NSMutableParagraphStyle alloc] init] autorelease];
     titleStyle.lineBreakMode = NSLineBreakByTruncatingTail;
-    NSRect titleRect = NSMakeRect(12, 0, MAX(0, NSWidth(self.bounds) - 38), NSHeight(self.bounds));
+    NSRect titleRect = NSMakeRect(34, 0, MAX(0, NSWidth(self.bounds) - 60), NSHeight(self.bounds));
     NSSize titleSize = [self.title sizeWithAttributes:@{NSFontAttributeName:titleFont}];
     titleRect.origin.y = NSMidY(self.bounds) - titleSize.height / 2;
     titleRect.size.height = titleSize.height;
@@ -1805,6 +1839,7 @@ static NSColor *KittySidebarSeparatorColor(void) {
 
 @interface KittySidebarDividerHitView : NSView
 @property(assign) KittyAgentsSidebarView *sidebar;
+@property(retain) NSTrackingArea *dividerTrackingArea;
 @end
 
 @interface KittySidebarResizeIndicator : NSView
@@ -1815,18 +1850,52 @@ static NSColor *KittySidebarSeparatorColor(void) {
 
 @implementation KittySidebarDividerHitView
 - (BOOL)acceptsFirstMouse:(NSEvent *)event { (void)event; return YES; }
+- (void)updateTrackingAreas {
+    [super updateTrackingAreas];
+    if (self.dividerTrackingArea) { [self removeTrackingArea:self.dividerTrackingArea]; self.dividerTrackingArea = nil; }
+    self.dividerTrackingArea = [[[NSTrackingArea alloc] initWithRect:NSZeroRect
+        options:NSTrackingMouseEnteredAndExited | NSTrackingMouseMoved | NSTrackingCursorUpdate | NSTrackingActiveAlways | NSTrackingInVisibleRect
+        owner:self userInfo:nil] autorelease];
+    [self addTrackingArea:self.dividerTrackingArea];
+}
 - (void)resetCursorRects {
     [super resetCursorRects];
     NSRect visible = NSIntersectionRect(self.bounds, self.visibleRect);
     if (!NSIsEmptyRect(visible)) [self addCursorRect:visible cursor:[NSCursor resizeUpDownCursor]];
 }
 - (void)cursorUpdate:(NSEvent *)event { (void)event; [[NSCursor resizeUpDownCursor] set]; }
+- (void)mouseEntered:(NSEvent *)event { [self cursorUpdate:event]; }
+- (void)mouseMoved:(NSEvent *)event { [self cursorUpdate:event]; }
+- (void)mouseExited:(NSEvent *)event { (void)event; [[NSCursor arrowCursor] set]; }
+- (void)viewDidMoveToWindow { [super viewDidMoveToWindow]; [self updateTrackingAreas]; }
 - (void)mouseDown:(NSEvent *)event { [self.sidebar mouseDown:event]; }
 - (void)mouseDragged:(NSEvent *)event { [self.sidebar mouseDragged:event]; }
 - (void)mouseUp:(NSEvent *)event { [self.sidebar mouseUp:event]; }
+- (void)dealloc {
+    if (self.dividerTrackingArea) [self removeTrackingArea:self.dividerTrackingArea];
+    [_dividerTrackingArea release];
+    [super dealloc];
+}
 @end
 
 @implementation KittyAgentsSidebarView
+- (NSFont *)sidebarFontOfSize:(CGFloat)size bold:(BOOL)bold { return agents_sidebar_font(size, bold); }
+- (void)setFontFamily:(NSString *)family {
+    NSString *next = family.length ? family : @"system";
+    if ([sidebarFontFamily isEqualToString:next]) return;
+    [sidebarFontFamily release]; sidebarFontFamily = [next copy];
+    if (![kitty_agents_sidebar_font_family isEqualToString:next]) {
+        [kitty_agents_sidebar_font_family release];
+        kitty_agents_sidebar_font_family = [next copy];
+        [kitty_agents_sidebar_font_cache removeAllObjects];
+    }
+    summary.font = agents_sidebar_font(11, YES);
+    agents_header.font = editors_header.font = ([next isEqualToString:@"system"]
+        ? [NSFont systemFontOfSize:11 weight:NSFontWeightSemibold] : agents_sidebar_font(11, YES));
+    [agents_header setNeedsDisplay:YES]; [editors_header setNeedsDisplay:YES];
+    [outline setNeedsDisplay:YES]; [editor_outline setNeedsDisplay:YES];
+    [self setNeedsDisplay:YES];
+}
 - (instancetype)initWithOSWindowID:(unsigned)window_id width:(CGFloat)width cellWidth:(unsigned)cell_width {
     self = [super initWithFrame:NSMakeRect(0, 0, width, 100)];
     if (self) {
@@ -1839,6 +1908,8 @@ static NSColor *KittySidebarSeparatorColor(void) {
         previous_responders = [[NSHashTable weakObjectsHashTable] retain];
         [[NSNotificationCenter defaultCenter] addObserver:self selector:@selector(sharedGroupStateChanged:)
                                                    name:@"KittyAgentsSidebarGroupStateChanged" object:nil];
+        [[NSNotificationCenter defaultCenter] addObserver:self selector:@selector(sharedSectionStateChanged:)
+                                                   name:@"KittyAgentsSidebarSectionStateChanged" object:nil];
         [[NSNotificationCenter defaultCenter] addObserver:self selector:@selector(windowResignedKey:)
                                                    name:NSWindowDidResignKeyNotification object:nil];
         NSVisualEffectView *effect = [[NSVisualEffectView alloc] initWithFrame:self.bounds];
@@ -1847,7 +1918,7 @@ static NSColor *KittySidebarSeparatorColor(void) {
         effect.state = NSVisualEffectStateActive;
         background_view = effect;
         summary = [[NSTextField labelWithString:@"No AI agents"] retain];
-        summary.font = [NSFont boldSystemFontOfSize:11];
+        summary.font = agents_sidebar_font(11, YES);
         summary.alignment = NSTextAlignmentCenter;
         summary.textColor = [NSColor secondaryLabelColor];
         summary.lineBreakMode = NSLineBreakByTruncatingTail;
@@ -1865,8 +1936,8 @@ static NSColor *KittySidebarSeparatorColor(void) {
         ((KittySidebarSectionButton *)agents_header).agentsSection = YES;
         ((KittySidebarSectionButton *)editors_header).agentsSection = NO;
         for (NSButton *header in @[agents_header, editors_header]) {
-            header.bordered = NO; header.alignment = NSTextAlignmentLeft; header.font = [NSFont systemFontOfSize:11 weight:NSFontWeightSemibold];
-            header.contentTintColor = NSColor.secondaryLabelColor; header.imagePosition = NSNoImage;
+            header.bordered = NO; header.alignment = NSTextAlignmentLeft; header.font = agents_sidebar_font(11, YES);
+            header.contentTintColor = NSColor.secondaryLabelColor; header.imagePosition = NSImageLeft;
             header.cell.wraps = NO;
             header.cell.usesSingleLineMode = YES;
             header.cell.truncatesLastVisibleLine = YES;
@@ -1874,9 +1945,11 @@ static NSColor *KittySidebarSeparatorColor(void) {
         }
         agents_header.title = @"Agents: 0 agents · 0 groups(tab)"; agents_header.target = self; agents_header.action = @selector(toggleAgentsSection:);
         agents_header.allowsExpansionToolTips = NO;
-        agents_header.image = nil;
+        agents_header.image = [[NSImage imageWithSystemSymbolName:@"sparkles" accessibilityDescription:nil]
+            imageWithSymbolConfiguration:[NSImageSymbolConfiguration configurationWithHierarchicalColor:KittySidebarSectionTint(YES)]];
         editors_header.title = @"Editors"; editors_header.target = self; editors_header.action = @selector(toggleEditorsSection:);
-        editors_header.image = nil;
+        editors_header.image = [[NSImage imageWithSystemSymbolName:@"chevron.left.forwardslash.chevron.right" accessibilityDescription:nil]
+            imageWithSymbolConfiguration:[NSImageSymbolConfiguration configurationWithHierarchicalColor:KittySidebarSectionTint(NO)]];
         [self updateSectionHeaders];
         [self addSubview:agents_header]; [self addSubview:editors_header];
         scroll_view = [[KittyAgentsScrollView alloc] initWithFrame:NSZeroRect];
@@ -1980,10 +2053,20 @@ static NSColor *KittySidebarSeparatorColor(void) {
     [NSUserDefaults.standardUserDefaults setBool:agents_collapsed forKey:[scope stringByAppendingString:@".agents-collapsed"]];
     [NSUserDefaults.standardUserDefaults setBool:editors_collapsed forKey:[scope stringByAppendingString:@".editors-collapsed"]];
     [NSUserDefaults.standardUserDefaults setDouble:agents_fraction forKey:[scope stringByAppendingString:@".agents-fraction"]];
+    [[NSNotificationCenter defaultCenter] postNotificationName:@"KittyAgentsSidebarSectionStateChanged" object:self];
+}
+- (void)sharedSectionStateChanged:(NSNotification *)notification {
+    if (notification.object == self) return;
+    NSUserDefaults *prefs = NSUserDefaults.standardUserDefaults;
+    NSString *scope = @"kitty.agents-sidebar.sections.v1";
+    agents_collapsed = [prefs boolForKey:[scope stringByAppendingString:@".agents-collapsed"]];
+    editors_collapsed = [prefs boolForKey:[scope stringByAppendingString:@".editors-collapsed"]];
+    CGFloat fraction = [prefs doubleForKey:[scope stringByAppendingString:@".agents-fraction"]];
+    if (isfinite(fraction) && fraction >= 0.12 && fraction <= 0.88) agents_fraction = fraction;
+    [self updateSectionHeaders];
+    [self setFrameSize:self.frame.size];
 }
 - (void)updateSectionHeaders {
-    agents_header.image = editors_header.image = nil;
-    agents_header.imagePosition = editors_header.imagePosition = NSNoImage;
     ((KittySidebarSectionButton *)agents_header).expanded = !agents_collapsed;
     ((KittySidebarSectionButton *)editors_header).expanded = !editors_collapsed;
     [agents_header setNeedsDisplay:YES]; [editors_header setNeedsDisplay:YES];
@@ -3062,7 +3145,7 @@ static NSColor *KittySidebarSeparatorColor(void) {
         [[NSColor labelColor] setStroke];
         [chevron stroke];
         [[self labelForNode:node] drawInRect:NSMakeRect(26, rect.origin.y + 5, MAX(0, rect.size.width - 30), rect.size.height - 10) withAttributes:@{
-            NSFontAttributeName: [NSFont boldSystemFontOfSize:11], NSForegroundColorAttributeName: [NSColor labelColor],
+            NSFontAttributeName: agents_sidebar_font(11, YES), NSForegroundColorAttributeName: [NSColor labelColor],
             NSParagraphStyleAttributeName: paragraph}];
         return;
     }
@@ -3081,7 +3164,7 @@ static NSColor *KittySidebarSeparatorColor(void) {
         [badge_path fill];
         NSMutableParagraphStyle *badge_style = [[[NSMutableParagraphStyle alloc] init] autorelease];
         badge_style.alignment = NSTextAlignmentCenter;
-        NSDictionary *badge_attrs = @{NSFontAttributeName: [NSFont boldSystemFontOfSize:11],
+        NSDictionary *badge_attrs = @{NSFontAttributeName: agents_sidebar_font(11, YES),
             NSForegroundColorAttributeName: [NSColor alternateSelectedControlTextColor], NSParagraphStyleAttributeName: badge_style};
         [@"↔" drawInRect:NSMakeRect(NSMinX(badge) + 2, NSMidY(badge) - 7, badge_width - 4, 16) withAttributes:badge_attrs];
         text_right = NSMinX(badge) - 8;
@@ -3098,11 +3181,11 @@ static NSColor *KittySidebarSeparatorColor(void) {
             [icon drawInRect:NSMakeRect(8 + (18 - size.width) / 2, NSMidY(rect) - size.height / 2, size.width, size.height)
                    fromRect:NSZeroRect operation:NSCompositingOperationSourceOver fraction:1 respectFlipped:YES hints:nil];
         }
-        NSDictionary *attrs = @{NSFontAttributeName:[NSFont boldSystemFontOfSize:12], NSForegroundColorAttributeName:primary,
+        NSDictionary *attrs = @{NSFontAttributeName:agents_sidebar_font(12, YES), NSForegroundColorAttributeName:primary,
             NSParagraphStyleAttributeName:paragraph};
         [entry->label drawInRect:NSMakeRect(34, NSMidY(rect) - 16, MAX(0, text_right - 34), 17) withAttributes:attrs];
         [entry->detail drawInRect:NSMakeRect(34, NSMidY(rect) + 2, MAX(0, text_right - 34), 14) withAttributes:@{
-            NSFontAttributeName:[NSFont systemFontOfSize:10], NSForegroundColorAttributeName:secondary,
+            NSFontAttributeName:agents_sidebar_font(10, NO), NSForegroundColorAttributeName:secondary,
             NSParagraphStyleAttributeName:paragraph}];
         return;
     }
@@ -3120,9 +3203,9 @@ static NSColor *KittySidebarSeparatorColor(void) {
                fromRect:NSZeroRect operation:NSCompositingOperationSourceOver fraction:1 respectFlipped:YES hints:nil];
         text_left = 44;
     }
-    NSDictionary *title_attrs = @{NSFontAttributeName: [NSFont boldSystemFontOfSize:12],
+    NSDictionary *title_attrs = @{NSFontAttributeName: agents_sidebar_font(12, YES),
                                  NSForegroundColorAttributeName: primary, NSParagraphStyleAttributeName: paragraph};
-    NSDictionary *detail_attrs = @{NSFontAttributeName: [NSFont systemFontOfSize:10],
+    NSDictionary *detail_attrs = @{NSFontAttributeName: agents_sidebar_font(10, NO),
                                   NSForegroundColorAttributeName: secondary, NSParagraphStyleAttributeName: paragraph};
     CGFloat width = MAX(0, text_right - text_left);
     [entry->label drawInRect:NSMakeRect(text_left, center - 16, width, 17) withAttributes:title_attrs];
@@ -3130,7 +3213,7 @@ static NSColor *KittySidebarSeparatorColor(void) {
     NSRange separator = [entry->detail rangeOfString:@" · " options:NSBackwardsSearch];
     if (separator.location != NSNotFound) {
         NSUInteger start = NSMaxRange(separator);
-        [detail addAttributes:@{NSForegroundColorAttributeName:state_color, NSFontAttributeName:[NSFont boldSystemFontOfSize:10.5]}
+        [detail addAttributes:@{NSForegroundColorAttributeName:state_color, NSFontAttributeName:agents_sidebar_font(10.5, YES)}
                         range:NSMakeRange(start, entry->detail.length - start)];
     }
     [detail drawInRect:NSMakeRect(text_left, center + 2, width, 14)];
@@ -3163,6 +3246,7 @@ static NSColor *KittySidebarSeparatorColor(void) {
     NSRectFillUsingOperation(NSMakeRect(rail_x, 0.0, rail_width, self.bounds.size.height), NSCompositingOperationSourceOver);
 }
 - (void)dealloc {
+    [sidebarFontFamily release];
     [[NSNotificationCenter defaultCenter] removeObserver:self];
     [resize_indicator removeFromSuperview];
     [resize_indicator release];
@@ -3221,6 +3305,20 @@ cocoa_update_agents_sidebar_opacity(void *ptr, float opacity) {
     if (!window) return;
     KittyAgentsSidebarView *sidebar = objc_getAssociatedObject(window, kitty_agents_sidebar_key);
     [sidebar setBackgroundOpacity:opacity];
+}
+
+void
+cocoa_update_agents_sidebar_font(void *ptr, const char *family) {
+    NSWindow *window = (NSWindow *)ptr;
+    NSString *next = family && *family ? [NSString stringWithUTF8String:family] : @"system";
+    if (!next) next = @"system";
+    KittyAgentsSidebarView *sidebar = objc_getAssociatedObject(window, kitty_agents_sidebar_key);
+    if (sidebar) [sidebar setFontFamily:next];
+    else if (![kitty_agents_sidebar_font_family isEqualToString:next]) {
+        [kitty_agents_sidebar_font_family release];
+        kitty_agents_sidebar_font_family = [next copy];
+        [kitty_agents_sidebar_font_cache removeAllObjects];
+    }
 }
 
 void

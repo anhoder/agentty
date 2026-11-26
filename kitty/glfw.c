@@ -3365,9 +3365,10 @@ set_agents_sidebar(PyObject *self UNUSED, PyObject *args) {
     unsigned cols;
     const char *grouping;
     const char *icons_dir;
+    const char *font_family = "system";
     PyObject *rows;
     PyObject *collapsed_groups;
-    if (!PyArg_ParseTuple(args, "KpIssOO", &osw_id, &enabled, &cols, &grouping, &icons_dir, &rows, &collapsed_groups)) return NULL;
+    if (!PyArg_ParseTuple(args, "KpIssOO|s", &osw_id, &enabled, &cols, &grouping, &icons_dir, &rows, &collapsed_groups, &font_family)) return NULL;
 #ifdef __APPLE__
     OSWindow *osw = os_window_for_id(osw_id);
     if (!osw || !osw->handle) Py_RETURN_NONE;
@@ -3480,6 +3481,7 @@ set_agents_sidebar(PyObject *self UNUSED, PyObject *args) {
         (size_t)collapsed_count,
         (size_t)count,
         kinds);
+    cocoa_update_agents_sidebar_font(glfwGetCocoaWindow(osw->handle), font_family);
     wakeup_main_loop();
     ret = Py_NewRef(Py_None);
 cleanup:

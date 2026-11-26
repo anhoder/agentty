@@ -92,7 +92,7 @@ class TestEditors(BaseTest):
         tm.set_agent_sidebar_rows = set_rows
         tracker = SimpleNamespace(snapshot_for=lambda wid: None)
         boss = SimpleNamespace(active_window=window, agent_tracker=tracker)
-        with patch('kitty.boss.get_options', return_value=SimpleNamespace(agents_sidebar_grouping='agent')):
+        with patch('kitty.boss.get_options', return_value=SimpleNamespace(sidecar_grouping='agent')):
             Boss._refresh_agent_sidebar_scope(boss, (tm,))
             self.ae(tm.agent_sidebar_rows[-1].window_id, 0)
             window.child.foreground_processes = [{'cmdline': ['vi']}]
@@ -192,7 +192,7 @@ class TestEditors(BaseTest):
         row = editor_row(window, True)
         tm = SimpleNamespace(os_window_id=3, agent_sidebar_enabled=True, agent_sidebar_cols=30, agent_sidebar_rows=(row,))
         with patch('kitty.tabs.is_macos', True), patch('kitty.tabs.get_boss', return_value=SimpleNamespace()), \
-                patch('kitty.tabs.get_options', return_value=SimpleNamespace(agents_sidebar_grouping='agent')), \
+                patch('kitty.tabs.get_options', return_value=SimpleNamespace(sidecar_grouping='agent', sidecar_font_family='system')), \
                 patch('kitty.tabs.set_agents_sidebar') as send:
             TabManager.update_native_agents_sidebar(tm)
         serialized = send.call_args.args[5][0]

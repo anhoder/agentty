@@ -3760,7 +3760,7 @@ Note that when using :ref:`auto_color_scheme` this option is overridden by the c
 )
 
 opt(
-    'agents_sidebar_grouping',
+    'sidecar_grouping',
     'time',
     choices=('time', 'agent', 'tab', 'path'),
     long_text="""
@@ -3768,6 +3768,18 @@ Choose how agents are grouped in the native macOS Agents sidebar. :code:`time`
 groups by session age; :code:`agent` groups by agent name; :code:`tab` groups
 by tab sequence number and kitty tab title; and :code:`path` groups by the full
 working directory. The default is :code:`time`.
+""",
+)
+
+opt(
+    'sidecar_font_family',
+    'system',
+    long_text="""
+Choose the font family used for text in the native macOS Agents sidebar. The
+value :code:`system` keeps the macOS system font. Otherwise specify an installed
+font family name or PostScript name. Missing fonts fall back to the system font.
+This affects sidebar text only; it does not change terminal fonts or guarantee
+coverage of every icon glyph.
 """,
 )
 
@@ -4937,12 +4949,12 @@ map(
 
 map(
     'Focus the Agents sidebar or return to the terminal',
-    'focus_agents_sidebar cmd+b focus_agents_sidebar',
+    'focus_sidecar cmd+b focus_sidecar',
     only='macos',
 )
 map(
     'Show or hide the Agents sidebar',
-    'toggle_agents_sidebar cmd+shift+b toggle_agents_sidebar',
+    'toggle_sidecar cmd+shift+b toggle_sidecar',
     only='macos',
 )
 

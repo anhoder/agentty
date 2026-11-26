@@ -53,14 +53,6 @@ class Parser:
     def active_window_title_template(self, val: str, ans: dict[str, typing.Any]) -> None:
         ans['active_window_title_template'] = tab_title_template(val)
 
-    def agents_sidebar_grouping(self, val: str, ans: dict[str, typing.Any]) -> None:
-        val = val.lower()
-        if val not in self.choices_for_agents_sidebar_grouping:
-            raise ValueError(f"The value {val} is not a valid choice for agents_sidebar_grouping")
-        ans["agents_sidebar_grouping"] = val
-
-    choices_for_agents_sidebar_grouping = frozenset(('time', 'agent', 'tab', 'path'))
-
     def allow_cloning(self, val: str, ans: dict[str, typing.Any]) -> None:
         val = val.lower()
         if val not in self.choices_for_allow_cloning:
@@ -1389,6 +1381,17 @@ class Parser:
 
     def show_hyperlink_targets(self, val: str, ans: dict[str, typing.Any]) -> None:
         ans['show_hyperlink_targets'] = show_hyperlink_targets(val)
+
+    def sidecar_font_family(self, val: str, ans: dict[str, typing.Any]) -> None:
+        ans['sidecar_font_family'] = str(val)
+
+    def sidecar_grouping(self, val: str, ans: dict[str, typing.Any]) -> None:
+        val = val.lower()
+        if val not in self.choices_for_sidecar_grouping:
+            raise ValueError(f"The value {val} is not a valid choice for sidecar_grouping")
+        ans["sidecar_grouping"] = val
+
+    choices_for_sidecar_grouping = frozenset(('time', 'agent', 'tab', 'path'))
 
     def single_window_margin_width(self, val: str, ans: dict[str, typing.Any]) -> None:
         ans['single_window_margin_width'] = optional_edge_width(val)

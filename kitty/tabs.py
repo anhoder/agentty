@@ -1965,7 +1965,7 @@ class TabManager:  # {{{
             self.os_window_id,
             self.agent_sidebar_enabled,
             self.agent_sidebar_cols,
-            get_options().agents_sidebar_grouping,
+            get_options().sidecar_grouping,
             agent_icons_dir,
             tuple(
                 (row.window_id, row.group, row.group_key, row.agent, row.title, row.detail, state_code(row.state), row.is_active,
@@ -1973,6 +1973,7 @@ class TabManager:  # {{{
                 for row in self.agent_sidebar_rows
             ),
             tuple(sorted(getattr(boss, 'agent_sidebar_collapsed_groups', ()))),
+            get_options().sidecar_font_family,
         )
 
     def update_native_tab_title(self) -> None:

@@ -385,7 +385,7 @@ class TestAgents(BaseTest):
             2: AgentSnapshot(2, 'omp', AgentState.idle, '', '/tmp'),  # no title yet
         }
         boss = SimpleNamespace(active_window=windows[0], agent_tracker=tracker)
-        with patch('kitty.boss.get_options', return_value=SimpleNamespace(agents_sidebar_grouping='tab')):
+        with patch('kitty.boss.get_options', return_value=SimpleNamespace(sidecar_grouping='tab')):
             Boss._refresh_agent_sidebar_scope(boss, scope)
         by_id = {r.window_id: r for r in scope[0].agent_sidebar_rows}
         self.ae(by_id[1].title, 'opencode · OC | 你好问候')
@@ -419,7 +419,7 @@ class TestAgents(BaseTest):
         tracker = AgentTracker()
         tracker.snapshots = {w.id: AgentSnapshot(w.id, 'omp', AgentState.idle, 'omp', '/tmp') for w in windows}
         boss = SimpleNamespace(active_window=windows[1], agent_tracker=tracker)
-        with patch('kitty.boss.get_options', return_value=SimpleNamespace(agents_sidebar_grouping='tab')):
+        with patch('kitty.boss.get_options', return_value=SimpleNamespace(sidecar_grouping='tab')):
             Boss._refresh_agent_sidebar_scope(boss, scope)
             rows = tuple(r for r in scope[0].agent_sidebar_rows if r.kind == 'agent')
             self.ae([r.window_id for r in rows], [1, 11, *range(2, 11)])
@@ -462,7 +462,7 @@ class TestAgents(BaseTest):
         window = SimpleNamespace(id=1, child=SimpleNamespace(foreground_processes=[{'cmdline': ['/bin/zsh']}]))
         scope = (TabManager([[window]]),)
         boss = SimpleNamespace(active_window=window, agent_tracker=AgentTracker())
-        with patch('kitty.boss.get_options', return_value=SimpleNamespace(agents_sidebar_grouping='time')):
+        with patch('kitty.boss.get_options', return_value=SimpleNamespace(sidecar_grouping='time')):
             Boss._refresh_agent_sidebar_scope(boss, scope)
         rows = scope[0].agent_sidebar_rows
         self.ae(len(rows), 2)
@@ -487,7 +487,7 @@ class TestAgentSidebarActions(BaseTest):
         boss = SimpleNamespace(active_tab_manager=manager, agent_sidebar_enabled=False, all_tab_managers=(manager,),
                                refresh_agent_sidebars=Mock(), agent_sidebar_timer=0)
         with patch('kitty.boss.is_macos', True):
-            Boss.toggle_agents_sidebar(boss)
+            Boss.toggle_sidecar(boss)
         manager.resize.assert_called_once()
         boss.refresh_agent_sidebars.assert_called_once()
     def test_focus_refreshes_sidebar_active_and_project_relation(self):
@@ -593,7 +593,7 @@ class TestAgentSidebarActions(BaseTest):
         boss.mark_window_for_close = boss.closed.append
         boss.close_windows_with_confirmation_msg = lambda *args: ('Running an agent.', 1)
         boss.confirm = confirm
-        for name in ('agents_sidebar_menu', 'agents_sidebar_click', 'agents_sidebar_resize', 'focus_agents_sidebar'):
+        for name in ('agents_sidebar_menu', 'agents_sidebar_click', 'agents_sidebar_resize', 'focus_sidecar'):
             setattr(boss, name, MethodType(getattr(Boss, name), boss))
         return boss, source, sibling, outside, windows
 
@@ -609,20 +609,20 @@ class TestAgentSidebarActions(BaseTest):
         self.set_options()
         mappings = Mappings(global_shortcuts={})
         mappings.keyboard_modes[''].keymap = {
-            SingleKey(GLFW_MOD_SUPER, False, ord('k')): [KeyDefinition(definition='focus_agents_sidebar')],
+            SingleKey(GLFW_MOD_SUPER, False, ord('k')): [KeyDefinition(definition='focus_sidecar')],
             SingleKey(GLFW_MOD_SUPER, False, ord('b')): [KeyDefinition(definition='new_window')],
         }
         actions = []
         boss = SimpleNamespace(
             mappings=mappings, active_window=None,
-            focus_agents_sidebar=lambda: actions.append('focus'),
-            toggle_agents_sidebar=lambda: actions.append('toggle'),
+            focus_sidecar=lambda: actions.append('focus'),
+            toggle_sidecar=lambda: actions.append('toggle'),
         )
         with patch('kitty.keys.get_boss', return_value=boss):
             self.assertFalse(Boss.dispatch_agents_sidebar_shortcut(boss, KeyEvent(ord('b'), mods=GLFW_MOD_SUPER)))
             self.assertTrue(Boss.dispatch_agents_sidebar_shortcut(boss, KeyEvent(ord('k'), mods=GLFW_MOD_SUPER)))
             self.ae(actions, ['focus'])
-            mappings.keyboard_modes[''].keymap[SingleKey(GLFW_MOD_SUPER, False, ord('k'))] = [KeyDefinition(definition='toggle_agents_sidebar')]
+            mappings.keyboard_modes[''].keymap[SingleKey(GLFW_MOD_SUPER, False, ord('k'))] = [KeyDefinition(definition='toggle_sidecar')]
             self.assertTrue(Boss.dispatch_agents_sidebar_shortcut(boss, KeyEvent(ord('k'), mods=GLFW_MOD_SUPER)))
             self.ae(actions, ['focus', 'toggle'])
             boss.dispatch_agents_sidebar_shortcut = lambda ev: Boss.dispatch_agents_sidebar_shortcut(boss, ev)
@@ -826,7 +826,7 @@ class TestAgentTimerLifecycle(BaseTest):
 
         with (
             patch('kitty.boss.add_timer', side_effect=add_timer),
-            patch('kitty.boss.get_options', return_value=SimpleNamespace(agents_sidebar_grouping='tab')),
+            patch('kitty.boss.get_options', return_value=SimpleNamespace(sidecar_grouping='tab')),
             patch('kitty.rc.agent_wait.wake_waiters'),
         ):
             boss.restore_agent_sidebar_state(SimpleNamespace(agent_sidebar_enabled=True, agent_sidebar_cols=30, agent_sidebar_collapsed_groups=()))

@@ -18,7 +18,6 @@ import kitty.options.utils
 from kitty.types import FloatEdges
 import kitty.types
 
-choices_for_agents_sidebar_grouping = typing.Literal['time', 'agent', 'tab', 'path']
 choices_for_allow_cloning = typing.Literal['yes', 'y', 'true', 'no', 'n', 'false', 'ask']
 choices_for_allow_remote_control = typing.Literal['password', 'socket-only', 'socket', 'no', 'n', 'false', 'yes', 'y', 'true']
 choices_for_background_image_layout = typing.Literal['mirror-tiled', 'scaled', 'tiled', 'clamped', 'centered', 'cscaled']
@@ -35,6 +34,7 @@ choices_for_placement_strategy = typing.Literal['top-left', 'top', 'top-right', 
 choices_for_pointer_shape_when_grabbed = choices_for_default_pointer_shape
 choices_for_progress_bar = typing.Literal['left', 'right', 'top', 'bottom', 'hidden']
 choices_for_scrollbar = typing.Literal['scrolled', 'always', 'never', 'hovered', 'scrolled-and-hovered', 'scrolled-or-hovered']
+choices_for_sidecar_grouping = typing.Literal['time', 'agent', 'tab', 'path']
 choices_for_strip_trailing_spaces = typing.Literal['always', 'never', 'smart']
 choices_for_tab_bar_align = typing.Literal['start', 'center', 'end', 'left', 'right']
 choices_for_tab_bar_style = typing.Literal['fade', 'hidden', 'powerline', 'separator', 'slant', 'custom']
@@ -56,7 +56,6 @@ option_names = (
     'active_tab_foreground',
     'active_tab_title_template',
     'active_window_title_template',
-    'agents_sidebar_grouping',
     'allow_cloning',
     'allow_hyperlinks',
     'allow_remote_control',
@@ -472,6 +471,8 @@ option_names = (
     'shell',
     'shell_integration',
     'show_hyperlink_targets',
+    'sidecar_font_family',
+    'sidecar_grouping',
     'single_window_margin_width',
     'single_window_padding_width',
     'startup_session',
@@ -560,7 +561,6 @@ class Options:
     active_tab_foreground: Color = Color(0, 0, 0)
     active_tab_title_template: str | None = None
     active_window_title_template: str = 'none'
-    agents_sidebar_grouping: choices_for_agents_sidebar_grouping = 'time'
     allow_cloning: choices_for_allow_cloning = 'ask'
     allow_hyperlinks: int = 1
     allow_remote_control: choices_for_allow_remote_control = 'no'
@@ -708,6 +708,8 @@ class Options:
     shell: str = '.'
     shell_integration: frozenset[str] = frozenset({'enabled'})
     show_hyperlink_targets: typing.Literal['never', 'always', 'Ctrl', 'Shift', 'Super', 'Alt'] = 'never'
+    sidecar_font_family: str = 'system'
+    sidecar_grouping: choices_for_sidecar_grouping = 'time'
     single_window_margin_width: FloatEdges = FloatEdges(left=-1.0, top=-1.0, right=-1.0, bottom=-1.0)
     single_window_padding_width: FloatEdges = FloatEdges(left=-1.0, top=-1.0, right=-1.0, bottom=-1.0)
     startup_session: str | None = None
@@ -1134,8 +1136,8 @@ if is_macos:
     defaults.map.append(KeyDefinition(trigger=SingleKey(mods=8, key=96), definition='macos_cycle_through_os_windows'))
     defaults.map.append(KeyDefinition(trigger=SingleKey(mods=9, key=96), definition='macos_cycle_through_os_windows_backwards'))
     defaults.map.append(KeyDefinition(trigger=SingleKey(mods=9, key=92), definition='toggle_macos_tab_overview'))
-    defaults.map.append(KeyDefinition(trigger=SingleKey(mods=8, key=98), definition='focus_agents_sidebar'))
-    defaults.map.append(KeyDefinition(trigger=SingleKey(mods=9, key=98), definition='toggle_agents_sidebar'))
+    defaults.map.append(KeyDefinition(trigger=SingleKey(mods=8, key=98), definition='focus_sidecar'))
+    defaults.map.append(KeyDefinition(trigger=SingleKey(mods=9, key=98), definition='toggle_sidecar'))
     defaults.map.append(KeyDefinition(trigger=SingleKey(mods=12, key=32), definition='kitten unicode_input'))
     defaults.map.append(KeyDefinition(trigger=SingleKey(mods=8, key=44), definition='edit_config_file'))
     defaults.map.append(KeyDefinition(trigger=SingleKey(mods=10, key=114), definition='clear_terminal reset active'))
