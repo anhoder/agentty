@@ -174,12 +174,12 @@ def arbitrate(
     """Return the state plus whether a visible idle marker backs it.
 
     A lifecycle report is scoped to the window's current root session. Without
-    that identity, the report cannot be attributed safely and screen rules are
-    the fallback.
+    that identity, only OpenCode's app-tagged native root summary is usable;
+    other reports cannot be attributed safely and screen rules are the fallback.
     """
     if agent is None:
         return AgentState.unknown, False
-    reported = None if agent == 'opencode' and not session_id else _reported_state(program_status, session_id)
+    reported = _reported_state(program_status, session_id, agent)
     if reported is not None and authority_for(agent) is StateAuthority.full_lifecycle:
         return reported, reported is AgentState.idle
     match = detect(agent, screen) if screen is not None else None
@@ -199,9 +199,14 @@ def _is_session_record(record_id: Any, session_id: str) -> bool:
     return record_id == session_id or (isinstance(record_id, str) and record_id.startswith(session_id + '/'))
 
 
-def _reported_state(program_status: Sequence[Mapping[str, Any]], session_id: str = '') -> AgentState | None:
+def _reported_state(program_status: Sequence[Mapping[str, Any]], session_id: str = '', agent: str | None = None) -> AgentState | None:
     if session_id:
         program_status = tuple(record for record in program_status if _is_session_record(record.get('id', ''), session_id))
+    elif agent == 'opencode':
+        # OpenCode v2 emits a native window summary without a session identity.
+        # Only that app-tagged root is attributable; named records can belong
+        # to other sessions in its shared tab strip.
+        program_status = tuple(record for record in program_status if record.get('id', '') == '' and record.get('app') == 'opencode')
     states = {str(record.get('state', '')) for record in program_status}
     if 'blocked' in states:
         return AgentState.blocked
@@ -417,7 +422,7 @@ class AgentTracker:
             screen = None
             manifest = manifest_for(agent) if agent is not None else None
             session_id = session_id_of_window(window, agent) if agent is not None else ''
-            reported = None if agent == 'opencode' and not session_id else _reported_state(window.program_status.as_list(), session_id)
+            reported = _reported_state(window.program_status.as_list(), session_id, agent)
             if manifest is not None and manifest.rules and not (reported is not None and authority_for(agent) is StateAuthority.full_lifecycle):
                 screen_obj = getattr(window, 'screen', None)
                 generation = getattr(screen_obj, 'search_generation', None)

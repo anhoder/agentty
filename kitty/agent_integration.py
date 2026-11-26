@@ -76,8 +76,8 @@ const SOURCE_KEY = "%(source_var)s";
 const SESSION_KEY = "%(session_var)s";
 const tty = process.env.KITTY_WINDOW_TTY;
 let currentSession;
-const childSessions = new Set();
 const lastStates = new Map();
+const providerStates = new Map();
 let writeChain = Promise.resolve();
 let broker;
 let brokerSequence = 0;
@@ -135,7 +135,7 @@ function connectBroker() {
       // Reintroduce known relationships in insertion (parent-first) order.
       for (const [id, parentID] of childParents) reportProviderEvent({ type: "session.created", properties: { info: { id, parentID } } });
       let status;
-      try { status = statusOf(brokerAPI.state.session.status(currentSession)); } catch {}
+      try { status = providerStatus(brokerAPI, currentSession); } catch {}
       if (["busy", "retry", "idle"].includes(status)) reportProviderEvent({ type: "session.status", properties: { sessionID: currentSession, status } }, true);
     });
     // No verified TUI cancellation API: do not advertise turn.cancel, execute
@@ -183,15 +183,12 @@ function reportIdentity(sessionID) {
   write(userVar(ID_KEY, AGENT) + userVar(SOURCE_KEY, SOURCE) + userVar(SESSION_KEY, sessionID));
 }
 
-function statusRecordID(sessionID) {
-  return sessionID === currentSession ? currentSession : `${currentSession}/${sessionID}`;
-}
-
 function reportStatus(sessionID, state, kind) {
   if (!sessionID || !tty) return;
-  const recordID = statusRecordID(sessionID);
-  if (lastStates.get(recordID) === state && !kind) return;
-  lastStates.set(recordID, state);
+  const recordID = `${sessionID}/kitty`;
+  const signature = `${state}:${kind || ""}`;
+  if (lastStates.get(recordID) === signature) return;
+  lastStates.set(recordID, signature);
   const fields = [`id=${recordID}`, `state=${state}`, "app=opencode"];
   if (kind) fields.splice(2, 0, `kind=${kind}`);
   write(`\x1b]7501;${fields.join(":")}\x07`);
@@ -199,96 +196,127 @@ function reportStatus(sessionID, state, kind) {
 
 function clearStatus(sessionID = currentSession) {
   if (!sessionID) return;
-  const recordID = sessionID === currentSession ? currentSession : statusRecordID(sessionID);
+  const recordID = `${sessionID}/kitty`;
   write(`\x1b]7501;state=clear:id=${recordID}\x07`);
-  if (sessionID === currentSession) lastStates.clear();
-  else lastStates.delete(recordID);
+  lastStates.delete(recordID);
 }
 
 function routeSession(api) {
-  const route = api.route.current;
-  return route?.name === "session" && typeof route.params?.sessionID === "string"
-    ? route.params.sessionID : undefined;
+  const route = api.ui.router.current();
+  return route.type === "session" && route.sessionID !== "dummy"
+    ? api.data.session.root(route.sessionID) : undefined;
 }
 
 function statusOf(value) {
   return typeof value === "string" ? value : value?.type;
 }
 
+function providerStatus(api, sessionID) {
+  return api.data.session.status(sessionID) === "running"
+    || api.data.session.pending.list(sessionID).some(item => item.type !== "synthetic") ? "busy" : "idle";
+}
+
+function sessionState(api, sessionID) {
+  if (api.data.session.permission.list(sessionID)?.length) return ["blocked", "permission"];
+  if (api.data.session.form.list(sessionID)?.length) return ["blocked", "question"];
+  if (providerStatus(api, sessionID) === "busy") return ["working"];
+  return [api.data.session.get(sessionID)?.outcome === "failed" ? "error" : "idle"];
+}
+
 function isTrackedSession(sessionID) {
-  return sessionID === currentSession || childSessions.has(sessionID);
+  return sessionID === currentSession || childParents.has(sessionID);
 }
 
 function sync(api) {
   const sessionID = routeSession(api);
-  if (sessionID === currentSession) return;
-  clearStatus(currentSession);
-  childSessions.clear();
-  childParents.clear();
-  currentSession = sessionID;
-  const previousBroker = broker;
-  broker = undefined;
-  previousBroker?.destroy();
-  clearTimeout(brokerTimer);
-  brokerTimer = undefined;
-  brokerAttempts = 0;
-  brokerGap = true;
-  connectBroker();
-  lastStates.clear();
-  reportIdentity(sessionID);
-  const status = sessionID ? statusOf(api.state.session.status(sessionID)) : undefined;
-  if (status === "busy" || status === "retry") reportStatus(sessionID, "working");
-  else if (status === "idle") reportStatus(sessionID, "idle");
+  if (sessionID !== currentSession) {
+    clearStatus(currentSession);
+    childParents.clear();
+    providerStates.clear();
+    currentSession = sessionID;
+    const previousBroker = broker;
+    broker = undefined;
+    previousBroker?.destroy();
+    clearTimeout(brokerTimer);
+    brokerTimer = undefined;
+    brokerAttempts = 0;
+    brokerGap = true;
+    lastStates.clear();
+    reportIdentity(sessionID);
+    connectBroker();
+  }
+  if (!sessionID) return;
+  // The host cache includes children already running when the plugin loads.
+  const family = new Set([sessionID, ...api.data.session.family(sessionID)]);
+  for (const id of childParents.keys()) {
+    if (!family.has(id)) {
+      reportProviderEvent({ type: "session.deleted", properties: { sessionID: id } });
+      childParents.delete(id);
+      providerStates.delete(id);
+    }
+  }
+  for (const id of family) {
+    if (id === sessionID) continue;
+    const parentID = api.data.session.get(id)?.parentID;
+    if (parentID && family.has(parentID) && childParents.get(id) !== parentID) {
+      childParents.set(id, parentID);
+      reportProviderEvent({ type: "session.created", properties: { info: { id, parentID } } });
+    }
+  }
+  let state = "idle", kind;
+  const priority = { idle: 0, error: 1, working: 2, blocked: 3 };
+  for (const id of family) {
+    const status = providerStatus(api, id);
+    if (providerStates.get(id) !== status) {
+      providerStates.set(id, status);
+      reportProviderEvent({ type: "session.status", properties: { sessionID: id, status } });
+    }
+    const [next, nextKind] = sessionState(api, id);
+    if (priority[next] > priority[state]) { state = next; kind = nextKind; }
+  }
+  // One session-scoped aggregate avoids native shared-tab summaries and stale
+  // completed child records overriding work still running elsewhere in the family.
+  reportStatus(sessionID, state, kind);
 }
 
-export default { id: "kitty.opencode.session", tui: async (api) => {
+export default { id: "kitty.opencode.session", setup(api) {
   if (!tty) return;
   brokerAPI = api;
   brokerDisposed = false;
-  const onStatus = (event) => {
-    const properties = event?.properties ?? {};
-    const info = properties.info;
-    const createdID = info?.id;
-    const parentID = info?.parentID;
-    if (event.type === "session.created" && createdID && (parentID === currentSession || childSessions.has(parentID))) {
-      childSessions.add(createdID);
-      childParents.set(createdID, parentID);
-      reportProviderEvent(event);
-      return;
-    }
-    const sessionID = properties.sessionID || createdID;
+  reportIdentity(undefined);
+  const off = api.data.listen(({ details: event }) => {
+    sync(api);
+    const data = event.data;
+    const sessionID = data?.sessionID || data?.form?.sessionID;
     if (!sessionID || !isTrackedSession(sessionID)) return;
-    reportProviderEvent(event);
-    const type = event.type;
-    const status = statusOf(properties.status);
-    if (type === "session.status") {
-      if (status === "busy" || status === "retry") reportStatus(sessionID, "working");
-      else if (status === "idle") reportStatus(sessionID, "idle");
-    } else if (type === "session.idle") reportStatus(sessionID, "idle");
-    else if (type === "permission.asked") reportStatus(sessionID, "blocked", "permission");
-    else if (type === "question.asked") reportStatus(sessionID, "blocked", "question");
-    else if (type === "permission.replied" || type === "question.replied" || type === "question.rejected") reportStatus(sessionID, "working");
-    else if (type === "session.error") reportStatus(sessionID, "error");
-    else if (type === "session.deleted") {
-      clearStatus(sessionID);
-      if (sessionID === currentSession) { childSessions.clear(); childParents.clear(); }
-      else { childSessions.delete(sessionID); childParents.delete(sessionID); }
+    const types = { "form.created": "question.asked", "form.replied": "question.replied", "form.cancelled": "question.rejected",
+      "session.execution.failed": "session.error", "session.execution.succeeded": "session.idle",
+      "session.execution.interrupted": "session.idle" };
+    const type = types[event.type] || event.type;
+    if (event.type === "session.created") {
+      reportProviderEvent({ type, properties: { info: { id: sessionID, parentID: data.parentID } } });
+    } else if (["permission.asked", "permission.replied", "question.asked", "question.replied", "question.rejected", "session.error", "session.idle", "session.deleted"].includes(type)) {
+      const id = data.form?.id || data.id;
+      reportProviderEvent({ type, properties: { sessionID, id, requestID: data.requestID || id } });
     }
-  };
-  const off = ["session.created", "session.status", "session.idle", "permission.asked",
-    "question.asked", "permission.replied", "question.replied", "question.rejected",
-    "session.error", "session.deleted"].map((type) => api.event.on(type, onStatus));
+  });
   sync(api);
   const timer = setInterval(() => sync(api), 100);
-  api.lifecycle.onDispose(() => {
+  return () => {
     brokerDisposed = true;
     clearTimeout(brokerTimer);
     clearInterval(timer);
-    for (const remove of off) remove();
+    off();
     broker?.destroy();
     clearStatus();
     reportIdentity(undefined);
-  });
+    currentSession = undefined;
+    broker = undefined;
+    brokerTimer = undefined;
+    childParents.clear();
+    providerStates.clear();
+    return writeChain;
+  };
 }};
 """
 # Written by the hook, read by kitty/window.py's OSC 1337 handler
@@ -370,7 +398,7 @@ def hook_path(agent: str) -> str:
 def reporter_path(agent: Agent) -> str:
     if agent.integration_kind == 'native':
         return os.path.join(os.path.dirname(agent.config_path()), 'kitty-agent-state.ts')
-    return os.path.join(os.path.dirname(agent.config_path()), 'kitty-agent-state.js')
+    return os.path.join(os.path.dirname(agent.config_path()), 'kitty-agent-state', 'tui.js')
 
 
 def reporter_text(agent: Agent) -> str:
@@ -405,13 +433,12 @@ def owned_reporter(path: str) -> bool:
 
 def opencode_plugin_config(agent: Agent) -> tuple[str, str]:
     base = os.path.dirname(agent.config_path())
-    # OpenCode gives JSONC precedence over JSON. Prefer the active TUI config
-    # so installation cannot silently update an unused fallback file.
-    for filename in ('tui.jsonc', 'tui.json'):
+    # OpenCode gives JSONC precedence over JSON. Update the active CLI config.
+    for filename in ('cli.jsonc', 'cli.json'):
         path = os.path.join(base, filename)
         if os.path.exists(path):
-            return path, 'plugin'
-    return os.path.join(base, 'tui.json'), 'plugin'
+            return path, 'plugins'
+    return os.path.join(base, 'cli.json'), 'plugins'
 
 
 def read_plugin_config(path: str) -> dict[str, Any]:
@@ -433,22 +460,46 @@ def read_plugin_config(path: str) -> dict[str, Any]:
     return data
 
 
-def register_plugin(agent: Agent, remove: bool = False) -> None:
+def legacy_reporter_path(agent: Agent) -> str:
+    return os.path.join(os.path.dirname(agent.config_path()), 'kitty-agent-state.js')
+
+
+def plugin_config_updates(agent: Agent, remove: bool = False) -> list[tuple[str, dict[str, Any]]]:
     path, key = opencode_plugin_config(agent)
-    data = read_plugin_config(path)
-    entries = data.get(key, [])
-    if not isinstance(entries, list):
-        raise SystemExit(f'Cannot use {path}: {key} is not a list')
-    spec = './kitty-agent-state.js'
-    kept = [entry for entry in entries if entry != spec]
-    if not remove:
-        kept.append(spec)
-    if kept == entries:
-        return
-    data[key] = kept
-    if os.path.basename(path) == 'tui.json' and '$schema' not in data:
-        data['$schema'] = 'https://opencode.ai/tui.json'
-    write_json(path, data)
+    configs = [(path, key, './kitty-agent-state', remove)]
+    legacy = legacy_reporter_path(agent)
+    # An unowned legacy file and its registration belong to the user.
+    if not os.path.lexists(legacy) or owned_reporter(legacy):
+        base = os.path.dirname(agent.config_path())
+        for filename in ('tui.jsonc', 'tui.json'):
+            old_config = os.path.join(base, filename)
+            if os.path.lexists(old_config):
+                configs.append((old_config, 'plugin', './kitty-agent-state.js', True))
+    updates = []
+    for path, key, spec, removing in configs:
+        data = read_plugin_config(path)
+        entries = data.get(key, [])
+        if not isinstance(entries, list):
+            raise SystemExit(f'Cannot use {path}: {key} is not a list')
+        kept = [entry for entry in entries if entry != spec]
+        if not removing:
+            kept.append(spec)
+        if kept != entries:
+            data[key] = kept
+            if os.path.basename(path) == 'cli.json' and not os.path.exists(path):
+                data.setdefault('$schema', 'https://opencode.ai/cli.json')
+            updates.append((path, data))
+    return updates
+
+
+def register_plugin(agent: Agent, remove: bool = False) -> None:
+    # Read and validate every affected config before writing any of them.
+    updates = plugin_config_updates(agent, remove)
+    for path, data in updates:
+        write_json(path, data)
+    legacy = legacy_reporter_path(agent)
+    if owned_reporter(legacy):
+        os.remove(legacy)
 
 
 def reporter_is_installed(agent: Agent) -> bool:
@@ -457,7 +508,7 @@ def reporter_is_installed(agent: Agent) -> bool:
     if agent.integration_kind == 'tui-plugin':
         path, key = opencode_plugin_config(agent)
         entries = read_plugin_config(path).get(key, [])
-        return isinstance(entries, list) and './kitty-agent-state.js' in entries
+        return isinstance(entries, list) and './kitty-agent-state' in entries
     return True
 
 
@@ -636,6 +687,21 @@ def inspect_integration(agent: Agent) -> IntegrationInspection:
             if not script_current or registration != expected:
                 return IntegrationInspection('outdated', paths, 'Managed hook or registration differs from generated content')
             return IntegrationInspection('current', paths, 'Managed hook and registration are current')
+        if agent.integration_kind == 'tui-plugin':
+            directory = os.path.dirname(reporter_path(agent))
+            if os.path.lexists(directory):
+                if os.path.islink(directory) or not os.path.isdir(directory):
+                    return IntegrationInspection('conflict', paths, f'Refusing to use an unowned reporter directory: {directory}')
+            reporter = reporter_path(agent)
+            if os.path.islink(reporter) or (os.path.lexists(reporter) and not os.path.isfile(reporter)):
+                return IntegrationInspection('conflict', paths, f'Refusing to overwrite an unowned reporter: {reporter}')
+            legacy = legacy_reporter_path(agent)
+            if os.path.lexists(legacy) and (os.path.islink(legacy) or not owned_reporter(legacy)):
+                return IntegrationInspection('conflict', paths, f'Refusing to migrate an unowned reporter: {legacy}')
+            try:
+                updates = plugin_config_updates(agent)
+            except SystemExit as err:
+                return _inspection_error(paths, err)
         reporter = reporter_path(agent)
         if not os.path.lexists(reporter):
             reporter_current = False
@@ -657,11 +723,12 @@ def inspect_integration(agent: Agent) -> IntegrationInspection:
             entries = data.get(key, [])
             if not isinstance(entries, list):
                 return IntegrationInspection('error', paths, f'Cannot use {plugin_path}: {key} is not a list')
-            registered = './kitty-agent-state.js' in entries
-            if reporter_current and registered:
+            registered = './kitty-agent-state' in entries
+            legacy_owned = owned_reporter(legacy_reporter_path(agent))
+            if reporter_current and registered and not updates and not legacy_owned:
                 return IntegrationInspection('current', paths, 'Managed reporter and plugin registration are current')
             if not reporter_current and not registered:
-                state = 'outdated' if os.path.lexists(reporter) else 'missing'
+                state = 'outdated' if os.path.lexists(reporter) or legacy_owned else 'missing'
                 return IntegrationInspection(state, paths, 'Managed reporter or plugin registration is missing or differs')
             return IntegrationInspection('outdated', paths, 'Managed reporter or plugin registration is missing or differs')
         if reporter_current:
@@ -707,7 +774,7 @@ AGENTS: tuple[Agent, ...] = (
         'opencode',
         'OpenCode',
         '',
-        home_config_path('XDG_CONFIG_HOME', '~/.config', 'opencode/kitty-agent-state.js'),
+        home_config_path('XDG_CONFIG_HOME', '~/.config', 'opencode/cli.json'),
         'tui-plugin',
         config_env=('XDG_CONFIG_HOME', '~/.config'),
     ),
@@ -755,10 +822,17 @@ def uninstall(agent_id: str) -> str:
     agent = agent_by_id(agent_id)
     if agent.integration_kind in ('native', 'tui-plugin'):
         if agent.integration_kind == 'tui-plugin':
+            inspection = inspect_integration(agent)
+            if inspection.state in ('conflict', 'error'):
+                raise SystemExit(inspection.detail)
             register_plugin(agent, remove=True)
         path = reporter_path(agent)
         if owned_reporter(path):
             os.remove(path)
+            if agent.integration_kind == 'tui-plugin':
+                directory = os.path.dirname(path)
+                if not os.listdir(directory):
+                    os.rmdir(directory)
         return f'Removed the kitty session reporter for {agent.name} from {path}'
     if agent.integration_kind != 'hook':
         return f'{agent.name} requires its native integration adapter; kitty has no generic hook to uninstall'

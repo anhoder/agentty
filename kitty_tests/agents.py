@@ -275,6 +275,29 @@ class TestAgents(BaseTest):
         self.ae(state_from_signals('opencode', statuses, screen('neutral'), session_id='root'), AgentState.working)
         self.ae(state_from_signals('opencode', statuses, screen('neutral'), session_id='missing'), AgentState.idle)
 
+    def test_opencode_native_root_status_without_session_identity(self):
+        quiet = screen('Orchestrator · gpt-6.1-sol')
+        for state in ('working', 'blocked', 'idle', 'done', 'error'):
+            with self.subTest(state=state):
+                statuses = [
+                    {'id': '', 'app': 'opencode', 'state': state},
+                    {'id': 'ses_other', 'app': 'opencode', 'state': 'blocked'},
+                ]
+                expected = AgentState.done if state == 'error' else AgentState(state)
+                self.ae(state_from_signals('opencode', statuses, quiet), expected)
+        for statuses in (
+            [{'id': 'ses_other', 'app': 'opencode', 'state': 'working'}],
+            [{'id': '', 'app': 'other', 'state': 'working'}],
+            [{'id': '', 'state': 'working'}],
+        ):
+            with self.subTest(statuses=statuses):
+                self.ae(state_from_signals('opencode', statuses, quiet), AgentState.idle)
+        statuses = [
+            {'id': '', 'app': 'opencode', 'state': 'blocked'},
+            {'id': 'root', 'app': 'opencode', 'state': 'working'},
+        ]
+        self.ae(state_from_signals('opencode', statuses, quiet, session_id='root'), AgentState.working)
+
     # arbitration
 
     def test_full_lifecycle_report_wins(self):
@@ -1022,6 +1045,32 @@ class TestAgentTracker(BaseTest):
         service = AgentService(SimpleNamespace(agent_tracker=tracker))
         self.ae(service.observe(window)['state'], 'idle')
         self.ae(tracker.snapshot_for(window.id).state, AgentState.done)
+
+    def test_opencode_native_status_prevents_false_completion(self):
+        from unittest.mock import Mock
+
+        window = FakeWindow('esc to interrupt')
+        window.child.foreground_processes = [{'cmdline': ['opencode']}]
+        tracker = AgentTracker()
+        tracker.refresh_window(window, now=100.0)
+        self.ae(tracker.snapshot_for(window.id).state, AgentState.working)
+        window.lines = ('Orchestrator · gpt-6.1-sol',)
+        window.status = [
+            {'id': '', 'app': 'opencode', 'state': 'working'},
+            {'id': 'ses_active', 'app': 'opencode', 'state': 'working'},
+        ]
+        window.agent_detection_snapshot = Mock(side_effect=AssertionError('Native status must not need screen detection'))
+        tracker.refresh_window(window, now=101.0)
+        tracker.refresh_window(window, now=102.0)
+        self.ae(tracker.snapshot_for(window.id).state, AgentState.working)
+        self.assertNotIn(window.id, tracker.unseen_done)
+        window.status = [{'id': '', 'app': 'opencode', 'state': 'idle'}]
+        tracker.refresh_window(window, now=103.0)
+        self.ae(tracker.snapshot_for(window.id).state, AgentState.done)
+        window.status = [{'id': '', 'app': 'opencode', 'state': 'working'}]
+        tracker.refresh_window(window, now=104.0)
+        self.ae(tracker.snapshot_for(window.id).state, AgentState.working)
+        self.assertNotIn(window.id, tracker.unseen_done)
 
     def test_full_lifecycle_without_usable_report_still_reads_screen(self):
         from unittest.mock import Mock
