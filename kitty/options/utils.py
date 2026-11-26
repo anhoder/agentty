@@ -219,6 +219,7 @@ def detach_tab_parse(func: str, rest: str) -> FuncArgsType:
 
 @func_with_args(
     'set_background_opacity',
+    'set_background_opacity_all',
     'goto_layout',
     'toggle_layout',
     'toggle_tab',

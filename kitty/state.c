@@ -1656,6 +1656,13 @@ PYWRAP1(pt_to_px) {
     return PyLong_FromLong(pt_to_px(pt, os_window_id));
 }
 
+PYWRAP1(global_background_opacity) {
+    double set_val = -1;
+    PA("|d", &set_val);
+    if (set_val >= 0) OPT(background_opacity) = MIN(1.0, set_val);
+    return PyFloat_FromDouble(OPT(background_opacity));
+}
+
 PYWRAP1(global_font_size) {
     double set_val = -1;
     PA("|d", &set_val);
@@ -2376,6 +2383,7 @@ static PyMethodDef module_methods[] = {
     MW(run_with_activation_token, METH_O),
     MW(change_background_opacity, METH_VARARGS),
     MW(background_opacity_of, METH_O),
+    MW(global_background_opacity, METH_VARARGS),
     MW(update_window_visibility, METH_VARARGS),
     MW(sync_os_window_title, METH_VARARGS),
     MW(get_os_window_title, METH_VARARGS),

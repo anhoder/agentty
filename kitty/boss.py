@@ -110,6 +110,7 @@ from .fast_data_types import (
     get_tab_being_dragged,
     get_window_being_dragged,
     glfw_get_monitor_workarea,
+    global_background_opacity,
     global_font_size,
     grab_keyboard,
     is_layer_shell_supported,
@@ -1951,23 +1952,53 @@ class Boss:
         window = self.window_for_dispatch or self.active_window
         if window is None or not opacity:
             return
+        self._set_background_opacity((window.os_window_id,), opacity)
+
+    @ac(
+        'win',
+        """
+        Set the background opacity for existing and future OS Windows in this kitty process
+
+        Requires :opt:`dynamic_background_opacity` to be enabled in kitty.conf.
+        Relative changes adjust the in-memory default once, then apply the same
+        absolute opacity to every OS Window, including future ones. Use ``default``
+        to restore the configured :opt:`background_opacity`. The default is kept
+        only in memory until config reload or process exit; no configuration
+        files or other kitty processes are changed. For example::
+
+            map f1 set_background_opacity_all +0.1
+            map f2 set_background_opacity_all -0.1
+            map f3 set_background_opacity_all 0.5
+            map f4 set_background_opacity_all default
+        """,
+    )
+    def set_background_opacity_all(self, opacity: str) -> None:
+        if not self.os_window_map or not opacity:
+            return
+        self._set_background_opacity(tuple(self.os_window_map), opacity, all_windows=True)
+
+    def _set_background_opacity(self, os_window_ids: Iterable[int], opacity: str, *, all_windows: bool = False) -> None:
         if not get_options().dynamic_background_opacity:
             self.show_error(
                 _('Cannot change background opacity'),
                 _('You must set the dynamic_background_opacity option in kitty.conf to be able to change background opacity'),
             )
             return
-        os_window_id = window.os_window_id
-        if opacity[0] in '+-':
-            old_opacity = background_opacity_of(os_window_id)
-            if old_opacity is None:
-                return
-            fin_opacity = old_opacity + float(opacity)
-        elif opacity == 'default':
-            fin_opacity = get_options().background_opacity
-        else:
-            fin_opacity = float(opacity)
-        self._set_os_window_background_opacity(os_window_id, fin_opacity)
+        relative = opacity[0] in '+-'
+        value = get_options().background_opacity if opacity == 'default' else float(opacity)
+        if all_windows:
+            value = max(0.0, min(global_background_opacity() + value if relative else value, 1.0))
+            global_background_opacity(value)
+            relative = False
+        for os_window_id in os_window_ids:
+            if relative:
+                old_opacity = background_opacity_of(os_window_id)
+                if old_opacity is None:
+                    continue
+                fin_opacity = old_opacity + value
+            else:
+                fin_opacity = value
+            self._set_os_window_background_opacity(os_window_id, fin_opacity)
 
     @property
     def active_tab_manager(self) -> TabManager | None:

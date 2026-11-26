@@ -705,7 +705,7 @@ typedef struct OSWindow {
     WindowChromeState last_window_chrome;
     struct {
         float alpha;
-        bool os_forces_opaque, supports_transparency;
+        bool supports_transparency;
     } background_opacity;
     FONTS_DATA_HANDLE fonts_data;
     id_type temp_font_group_id;
@@ -753,9 +753,11 @@ typedef struct OSWindow {
     } pointer_map;
 } OSWindow;
 
+bool os_window_has_opaque_fullscreen(OSWindow *w);
+
 static inline float
 effective_os_window_alpha(OSWindow *w) {
-    return (!w->background_opacity.supports_transparency || w->background_opacity.os_forces_opaque) ? 1.f : w->background_opacity.alpha;
+    return (!w->background_opacity.supports_transparency || os_window_has_opaque_fullscreen(w)) ? 1.f : w->background_opacity.alpha;
 }
 
 typedef struct GlobalState {

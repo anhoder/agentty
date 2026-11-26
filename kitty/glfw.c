@@ -2009,6 +2009,18 @@ is_os_window_fullscreen(OSWindow *w) {
     return glfwIsFullscreen(w->handle, flags);
 }
 
+bool
+os_window_has_opaque_fullscreen(OSWindow *w) {
+#ifdef __APPLE__
+    // AppKit can change every native tab's fullscreen state without invoking
+    // its toggle intercept. Read the current state instead of caching intent.
+    return w && w->handle && !w->is_layer_shell && glfwIsFullscreen(w->handle, 1);
+#else
+    (void)w;
+    return false;
+#endif
+}
+
 static bool
 toggle_maximized_for_os_window(OSWindow *w) {
     bool maximized = false;
@@ -2086,8 +2098,6 @@ intercept_cocoa_fullscreen(GLFWwindow *w) {
             osw->before_fullscreen.was_maximized = glfwGetWindowAttrib(w, GLFW_MAXIMIZED);
             osw->before_fullscreen.is_set = true;
         }
-        // In non traditional fullscreen macOS forces the window to opaque
-        osw->background_opacity.os_forces_opaque = !is_fullscreen;
         return false;
     }
     // macOS Split View uses Cocoa fullscreen internally, so the window
@@ -2095,7 +2105,6 @@ intercept_cocoa_fullscreen(GLFWwindow *w) {
     // macos_traditional_fullscreen is enabled. Redirecting to traditional
     // fullscreen would crash in setStyleMask: (see #9572).
     if (glfwIsFullscreen(w, 1)) {
-        global_state.callback_os_window->background_opacity.os_forces_opaque = false;
         return false;
     }
     toggle_fullscreen_for_os_window(global_state.callback_os_window);
