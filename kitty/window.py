@@ -2674,7 +2674,7 @@ class Window:
             cwd = path_from_osc7_url(self.screen.last_reported_cwd) or cwd
         return cwd
 
-    def agent_for_resume(self) -> str:
+    def agent_for_resume(self, processes: Sequence[ProcessDesc] | None = None) -> str:
         """The id of the agent running in this window, if its conversation can be resumed.
 
         Empty unless an agent is running, it reported a session id and its
@@ -2682,7 +2682,9 @@ class Window:
         """
         from .agents import detect_agent, resume_argv_for, session_ref_of_window
 
-        agent = detect_agent(self.child.foreground_processes)
+        if self.at_prompt:
+            return ''
+        agent = detect_agent(self.child.foreground_processes if processes is None else processes)
         if not agent:
             return ''
         return agent if resume_argv_for(agent, session_ref_of_window(self, agent)) else ''
@@ -2716,7 +2718,14 @@ class Window:
                 ans.append('--hold')
             if self.creation_spec.hold_after_ssh:
                 ans.append('--hold-after-ssh')
-        from .agents import AGENT_ID_VAR, AGENT_SESSION_PATH_VAR, AGENT_SESSION_VAR, AGENT_SOURCE_VAR
+        from .agents import (
+            AGENT_ID_VAR, AGENT_SESSION_PATH_VAR, AGENT_SESSION_VAR, AGENT_SOURCE_VAR,
+            detect_agent, known_agent_resume_command,
+        )
+
+        # Use current foreground evidence, not the launch argv or a tracker cache.
+        processes = self.child.foreground_processes
+        resume_agent = Window.agent_for_resume(self, processes)
 
         launch_vars = [k for k, _ in self.creation_spec.user_vars] if self.creation_spec else []
         persistent_vars = {*launch_vars, AGENT_ID_VAR, AGENT_SOURCE_VAR, AGENT_SESSION_VAR, AGENT_SESSION_PATH_VAR}
@@ -2756,7 +2765,17 @@ class Window:
                         if self.screen.last_reported_cwd:
                             set_cwd_in_cmdline(path_from_osc7_url(self.screen.last_reported_cwd), cmd)
         unserialize_data: dict[str, int | float | list[str] | str] = {'id': self.id, 'launch_vars': launch_vars}
-        if not cmd and ser_opts.use_foreground_process:
+        removed_agent_command = False
+        if cmd:
+            creation_agent = detect_agent([{'cmdline': cmd}]) or known_agent_resume_command(cmd, resolved_shell(get_options()))
+            if creation_agent and (resume_agent or self.at_prompt):
+                # An exited agent must not become permanent launch intent. A live
+                # resumable agent uses manifest metadata, so opt-out cannot be
+                # bypassed by raw argv. Without valid resume data, preserve a live
+                # user's command rather than silently discarding it.
+                cmd = []
+                removed_agent_command = True
+        if not cmd and ser_opts.use_foreground_process and not (removed_agent_command or resume_agent):
 
             def make_exe_absolute(cmd: list[str], pid: int) -> None:
                 if cmd and not os.path.isabs(cmd[0]):
@@ -2787,10 +2806,10 @@ class Window:
                             unserialize_data['cmd_at_shell_startup'] = fcmd
         if self.font_size_override is not None:
             unserialize_data['font_size_override'] = self.font_size_override
-        if agent := self.agent_for_resume():
+        if resume_agent:
             # Only the agent's identity is saved. The command that resumes it is built from the manifest when the session is
             # restored, so a saved session never carries a command chosen by an agent. The session id travels in --var.
-            unserialize_data['agent'] = agent
+            unserialize_data['agent'] = resume_agent
         ans.insert(1, unserialize_launch_flag + json.dumps(unserialize_data))
         ans.extend(cmd)
         return ans

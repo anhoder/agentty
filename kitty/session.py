@@ -75,6 +75,9 @@ class WindowSpec:
         self.run_command_at_shell_startup = run_command_at_shell_startup
         self.font_size_override: float | None = None
         self.restored_scrollback = b''
+        # Only present when restoring an agent: execution uses a temporary command
+        # and hold, but future saves must retain the user's original launch intent.
+        self.pre_resume_command: tuple[list[str], bool] | None = None
         if hasattr(launch_spec, 'opts'):  # LaunchSpec
             from .launch import LaunchSpec
 
@@ -190,6 +193,7 @@ class Session:
         spec.opts.cwd = spec.opts.cwd or t.cwd
         startup_command = serialize_data.get('cmd_at_shell_startup', ())
         resume_argv = agent_resume_argv(serialize_data.get('agent'), spec.opts.var, resume_agents)
+        pre_resume_command = None
         if resume_argv:
             from .shell_integration import get_supported_shell_name, join
 
@@ -197,10 +201,12 @@ class Session:
             # Use an explicit command rather than relying on shell integration being enabled.
             shell = resolved_shell(get_options())
             command = join(shell[0], resume_argv) if get_supported_shell_name(shell[0]) else shlex.join(resume_argv)
+            pre_resume_command = (list(spec.args), spec.opts.hold)
             spec.opts.hold = True
             spec = spec._replace(args=[*shell, '-ilc', 'exec ' + command])
             startup_command = ()  # The manifest resume command replaces the previously running command.
         window_spec = WindowSpec(spec, serialized_id=serialize_data['id'], run_command_at_shell_startup=startup_command)
+        window_spec.pre_resume_command = pre_resume_command
         window_spec.font_size_override = font_size_override
         t.windows.append(window_spec)
         t.next_title = None

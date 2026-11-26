@@ -67,6 +67,7 @@ class TestSessions(BaseTest):
                     user_vars={}, padding=EdgeWidths(), margin=EdgeWidths(), override_title=None,
                     font_size_override=15.5 if wid == 3 else None, last_focused_at=float(wid),
                     cwd_for_serialization='/tmp', agent_for_resume=lambda: '',
+                    child=SimpleNamespace(foreground_processes=[]), at_prompt=True,
                     screen=self.create_screen(cols=20, lines=2),
                 )
                 window.as_launch_command = partial(Window.as_launch_command, window)
@@ -1023,6 +1024,277 @@ class TestSessions(BaseTest):
                 patch('kitty.logout_session.monotonic', return_value=now),
             ):
                 self.ae(is_logout_in_progress(), expected)
+
+    def test_agent_resume_creation_spec_roundtrip(self) -> None:
+        from kitty.session import default_save_as_session_opts
+        from kitty.tabs import Tab
+        from kitty.window import EdgeWidths, Window
+
+        session_id = '019a90db-05e8-7c50'
+        encoded = unserialize_launch_flag + json.dumps({'id': 7, 'agent': 'claude'})
+        # Include explicit commands/hold and SSH primitives: these are user intent,
+        # unlike the temporary command and hold used to resume an agent.
+        for original_cmd, original_hold, hold_after_ssh in (
+            ([], False, False), (['/usr/bin/custom', '--flag'], True, False),
+            (['kitten', 'ssh', 'example.test'], False, True),
+        ):
+            for running in (False, True):
+                with self.subTest(cmd=original_cmd, running=running):
+                    opts = self.set_options({'resume_agents_on_restore': True, 'shell': '/bin/sh'})
+                    args = ['launch', encoded, f'--var=KITTY_AGENT_SESSION={session_id}']
+                    if original_hold:
+                        args.append('--hold')
+                    if hold_after_ssh:
+                        args.append('--hold-after-ssh')
+                    args.extend(original_cmd)
+                    (session,) = parse_session(shlex.join(args), opts)
+                    restored = session.tabs[0].windows[0]
+                    self.assertEqual(restored.launch_spec.args[-2:], ['-ilc', f'exec claude --resume {session_id}'])
+                    self.assertTrue(restored.launch_spec.opts.hold)
+                    child = SimpleNamespace(foreground_processes=[{'cmdline': ['claude']}] if running else [])
+                    window = SimpleNamespace(
+                        id=7, os_window_id=1, tab_id=1, child=child,
+                        actions_on_close=[], actions_on_focus_change=[], actions_on_removal=[],
+                        allow_remote_control=False, remote_control_passwords=None,
+                        user_vars={'KITTY_AGENT_SESSION': session_id}, padding=EdgeWidths(), margin=EdgeWidths(),
+                        override_title=None, font_size_override=None, at_prompt=not running,
+                        screen=SimpleNamespace(last_reported_cwd=''),
+                    )
+                    window.agent_for_resume = partial(Window.agent_for_resume, window)
+                    window.ssh_kitten_cmdline = lambda: []
+                    window.last_cmd_cmdline = ''
+                    child.root_pid = child.pid_for_cwd = 1
+                    tab = SimpleNamespace(
+                        args=None, created_in_session_name='', launch_child=Mock(return_value=child),
+                        _add_window=Mock(), windows=Mock(),
+                    )
+
+                    def launch(boss, launch_opts, cmd, **kwargs):
+                        # Keep the real creation-spec path; only replace launch's
+                        # process/target selection boundary and native Window setup.
+                        return Tab.new_window(tab, cmd=cmd, hold=launch_opts.hold, hold_after_ssh=launch_opts.hold_after_ssh)
+
+                    with (
+                        patch('kitty.tabs.get_boss', return_value=Mock()),
+                        patch('kitty.launch.launch', side_effect=launch),
+                        patch('kitty.tabs.Window', return_value=window),
+                        patch('kitty.window.get_window_logo_settings_if_not_default', return_value=None),
+                    ):
+                        Tab._startup(tab, session.tabs[0])
+                        # Execution still receives the generated resume command/hold.
+                        self.assertEqual(tab.launch_child.call_args.kwargs['cmd'], restored.launch_spec.args)
+                        self.assertTrue(tab.launch_child.call_args.kwargs['hold'])
+                        saved = Window.as_launch_command(window, default_save_as_session_opts(), '')
+                    self.assertEqual(window.creation_spec.cmd, original_cmd)
+                    self.assertEqual(window.creation_spec.hold, original_hold)
+                    metadata = json.loads(saved[1][len(unserialize_launch_flag):])
+                    self.assertEqual(metadata.get('agent', ''), 'claude' if running else '')
+                    for enabled in (False, True):
+                        opts = self.set_options({'resume_agents_on_restore': enabled, 'shell': '/bin/sh'})
+                        (again,) = parse_session(shlex.join(saved), opts)
+                        spec = again.tabs[0].windows[0].launch_spec
+                        if running and enabled:
+                            self.assertEqual(spec.args[-2:], ['-ilc', f'exec claude --resume {session_id}'])
+                        else:
+                            self.assertEqual(spec.args, original_cmd)
+                            self.assertEqual(spec.opts.hold, original_hold)
+                        self.assertEqual(spec.opts.hold_after_ssh, hold_after_ssh)
+
+        # Parsing alone has no runtime evidence and must retain legacy tails.
+        # Only a later save may remove an exact known wrapper after agent exit.
+        legacy_cmd = ['/bin/sh', '-ilc', f'exec claude --resume {session_id}']
+        opts = self.set_options({'resume_agents_on_restore': False})
+        (legacy,) = parse_session(shlex.join(['launch', encoded, '--hold', *legacy_cmd]), opts)
+        self.assertEqual(legacy.tabs[0].windows[0].launch_spec.args, legacy_cmd)
+        self.assertTrue(legacy.tabs[0].windows[0].launch_spec.opts.hold)
+
+    def test_direct_agent_creation_spec_roundtrip(self) -> None:
+        from kitty.session import default_save_as_session_opts
+        from kitty.tabs import Tab
+        from kitty.window import EdgeWidths, Window
+
+        session_id = 'synthetic-session-456'
+        original_cmd = ['claude', '--resume', session_id]
+        opts = self.set_options({'resume_agents_on_restore': False, 'shell': '/bin/sh'})
+        (session,) = parse_session(shlex.join(['launch', *original_cmd]), opts)
+        child = SimpleNamespace(foreground_processes=[{'cmdline': ['/bin/sh']}], cmdline=original_cmd, root_pid=1, pid_for_cwd=1)
+        window = SimpleNamespace(
+            id=7, os_window_id=1, tab_id=1, child=child,
+            actions_on_close=[], actions_on_focus_change=[], actions_on_removal=[],
+            allow_remote_control=False, remote_control_passwords=None,
+            user_vars={'KITTY_AGENT_SESSION': session_id}, padding=EdgeWidths(), margin=EdgeWidths(),
+            override_title=None, font_size_override=None, at_prompt=True,
+            screen=SimpleNamespace(last_reported_cwd=''), last_cmd_cmdline='', ssh_kitten_cmdline=lambda: [],
+        )
+        window.agent_for_resume = partial(Window.agent_for_resume, window)
+        tab = SimpleNamespace(
+            args=None, created_in_session_name='', launch_child=Mock(return_value=child),
+            _add_window=Mock(), windows=Mock(),
+        )
+
+        def launch(boss, launch_opts, cmd, **kwargs):
+            return Tab.new_window(tab, cmd=cmd, hold=launch_opts.hold, hold_after_ssh=launch_opts.hold_after_ssh)
+
+        with (
+            patch('kitty.tabs.get_boss', return_value=Mock()),
+            patch('kitty.launch.launch', side_effect=launch),
+            patch('kitty.tabs.Window', return_value=window),
+            patch('kitty.window.get_window_logo_settings_if_not_default', return_value=None),
+        ):
+            Tab._startup(tab, session.tabs[0])
+            self.assertEqual(window.creation_spec.cmd, original_cmd)
+            self.assertEqual(window.agent_for_resume(), '')
+            saved = Window.as_launch_command(window, default_save_as_session_opts(), '')
+        (again,) = parse_session(shlex.join(saved), opts)
+        self.assertEqual(again.tabs[0].windows[0].launch_spec.args, [])
+
+        # Exercise direct/full-path argv and legacy wrapper tails through the
+        # real startup creation-spec path, including pre_resume_command.
+        encoded = unserialize_launch_flag + json.dumps({'id': 7, 'agent': 'claude'})
+        resume_cmd = ['/bin/sh', '-ilc', f'exec claude --resume {session_id}']
+        save_opts = default_save_as_session_opts()
+        save_opts.use_foreground_process = True
+        commands = (
+            (original_cmd, True),
+            (['/opt/synthetic/bin/claude', '--resume', session_id], True),
+            (resume_cmd, True),
+            (['/bin/sh', '-ilc', f'exec claude --resume {session_id}; echo custom'], False),
+            (['/bin/sh', '-ilc', f'exec claude --resume {session_id} > /dev/null'], False),
+            (['/bin/sh', '-ilc', f'exec claude --resume {session_id} --verbose'], False),
+            (['/bin/sh', '-lc', resume_cmd[-1]], False),
+            (['/bin/bash', '-ilc', resume_cmd[-1]], False),
+            (['kitten', 'ssh', 'example.test'], False),
+            (['/usr/bin/custom', '--flag'], False),
+        )
+        for command, known_agent_command in commands:
+            for running, reference, stale_foreground in (
+                (False, session_id, False), (False, '', False), (False, '--invalid', False),
+                (True, session_id, False), (True, '', False), (True, '--invalid', False),
+                (False, session_id, True),
+            ):
+                for enabled in (False, True):
+                    with self.subTest(command=command, running=running, reference=reference, enabled=enabled, stale_foreground=stale_foreground):
+                        opts = self.set_options({'resume_agents_on_restore': enabled, 'shell': '/bin/sh'})
+                        variables = {'KITTY_AGENT_SESSION': reference} if reference else {}
+                        line = shlex.join(['launch', encoded, '--hold', '--hold-after-ssh',
+                                           *(f'--var={k}={v}' for k, v in variables.items()), *command])
+                        # Repeat saves: legacy metadata can generate a new wrapper
+                        # on startup, but its original tail must not survive exit.
+                        for cycle in range(2):
+                            (session,) = parse_session(line, opts)
+                            window.user_vars = variables
+                            window.at_prompt = not running
+                            window.last_cmd_cmdline = shlex.join(original_cmd)
+                            child.foreground_processes = [{'cmdline': ['claude'] if running or stale_foreground else ['/bin/sh']}]
+                            child.cmdline = command  # stale initial argv is not runtime evidence
+                            with (
+                                patch('kitty.tabs.get_boss', return_value=Mock()),
+                                patch('kitty.launch.launch', side_effect=launch),
+                                patch('kitty.tabs.Window', return_value=window),
+                                patch('kitty.window.get_window_logo_settings_if_not_default', return_value=None),
+                            ):
+                                Tab._startup(tab, session.tabs[0])
+                                saved = Window.as_launch_command(window, save_opts, '')
+                            valid_resume = running and reference == session_id
+                            self.assertEqual(window.agent_for_resume(), 'claude' if valid_resume else '')
+                            metadata = json.loads(saved[1][len(unserialize_launch_flag):])
+                            self.assertEqual(metadata.get('agent', ''), 'claude' if valid_resume else '')
+                            if known_agent_command and reference == session_id:
+                                self.assertNotIn('cmd_at_shell_startup', metadata)
+                            line = shlex.join(saved)
+                            (again,) = parse_session(line, opts)
+                            spec = again.tabs[0].windows[0].launch_spec
+                            if valid_resume and enabled:
+                                self.assertEqual(spec.args, resume_cmd)
+                            elif known_agent_command and (valid_resume or not running):
+                                self.assertEqual(spec.args, [])
+                            else:
+                                self.assertEqual(spec.args, command)
+                            self.assertTrue(spec.opts.hold)
+                            self.assertTrue(spec.opts.hold_after_ssh)
+
+        # Legacy resume references belong to the command, not to today's vars.
+        # Fish canonical quoting includes escaped apostrophes and backslashes.
+        from kitty.agents import resume_argv_for
+        from kitty.shell_integration import join
+
+        for agent, old_reference in (
+            ('omp', "/Users/synthetic/sessions/a 'quoted' \\back $dollar; (session).jsonl"),
+            ('opencode', 'old-synthetic-session-456'),
+        ):
+            shell = '/opt/synthetic/fish'
+            canonical = 'exec ' + join(shell, resume_argv_for(agent, old_reference))
+            for variables in ({}, {'KITTY_AGENT_SESSION': 'new-session-789'},
+                              {'KITTY_AGENT_ID': 'claude', 'KITTY_AGENT_SESSION': 'another-agent-session'}):
+                for running in (False, True):
+                    for enabled in (False, True):
+                        with self.subTest(agent=agent, variables=variables, running=running, enabled=enabled):
+                            opts = self.set_options({'resume_agents_on_restore': enabled, 'shell': shell})
+                            command = [shell, '-ilc', canonical]
+                            line = shlex.join(['launch', *command])
+                            for cycle in range(2):
+                                (session,) = parse_session(line, opts)
+                                window.user_vars = variables
+                                window.at_prompt = not running
+                                window.last_cmd_cmdline = canonical
+                                # Stale foreground/initial argv cannot override prompt evidence.
+                                child.foreground_processes = [{'cmdline': [agent]}]
+                                child.cmdline = command
+                                with (
+                                    patch('kitty.tabs.get_boss', return_value=Mock()),
+                                    patch('kitty.launch.launch', side_effect=launch),
+                                    patch('kitty.tabs.Window', return_value=window),
+                                    patch('kitty.window.get_window_logo_settings_if_not_default', return_value=None),
+                                ):
+                                    Tab._startup(tab, session.tabs[0])
+                                    saved = Window.as_launch_command(window, save_opts, '')
+                                line = shlex.join(saved)
+                                metadata = json.loads(saved[1][len(unserialize_launch_flag):])
+                                resumable = running and variables.get('KITTY_AGENT_SESSION') == 'new-session-789'
+                                self.assertEqual(metadata.get('agent', ''), agent if resumable else '')
+                                (again,) = parse_session(line, opts)
+                                if resumable and enabled:
+                                    expected = [shell, '-ilc', 'exec ' + join(shell, resume_argv_for(agent, 'new-session-789'))]
+                                else:
+                                    expected = command if running and not resumable else []
+                                self.assertEqual(again.tabs[0].windows[0].launch_spec.args, expected)
+
+            for tampered in (canonical + '; echo custom', canonical + ' | cat', canonical + ' > /dev/null',
+                             canonical + ' --extra', canonical + " '", canonical.replace('exec ', 'exec  ', 1)):
+                with self.subTest(agent=agent, tampered=tampered):
+                    opts = self.set_options({'resume_agents_on_restore': False, 'shell': shell})
+                    command = [shell, '-ilc', tampered]
+                    (session,) = parse_session(shlex.join(['launch', *command]), opts)
+                    window.user_vars = {}
+                    window.at_prompt = True
+                    with (
+                        patch('kitty.tabs.get_boss', return_value=Mock()),
+                        patch('kitty.launch.launch', side_effect=launch),
+                        patch('kitty.tabs.Window', return_value=window),
+                        patch('kitty.window.get_window_logo_settings_if_not_default', return_value=None),
+                    ):
+                        Tab._startup(tab, session.tabs[0])
+                        saved = Window.as_launch_command(window, save_opts, '')
+                    (again,) = parse_session(shlex.join(saved), opts)
+                    self.assertEqual(again.tabs[0].windows[0].launch_spec.args, command)
+
+        # No session reference: a running explicit agent remains user intent.
+        # No prompt evidence: absence from foreground alone does not prove exit.
+        window.at_prompt = False
+        window.last_cmd_cmdline = ''
+        window.user_vars = {}
+        child.foreground_processes = []
+        with (
+            patch('kitty.tabs.get_boss', return_value=Mock()),
+            patch('kitty.launch.launch', side_effect=launch),
+            patch('kitty.tabs.Window', return_value=window),
+            patch('kitty.window.get_window_logo_settings_if_not_default', return_value=None),
+        ):
+            (session,) = parse_session(shlex.join(['launch', *original_cmd]), opts)
+            Tab._startup(tab, session.tabs[0])
+            saved = Window.as_launch_command(window, default_save_as_session_opts(), '')
+        (again,) = parse_session(shlex.join(saved), opts)
+        self.assertEqual(again.tabs[0].windows[0].launch_spec.args, original_cmd)
 
     def test_agent_resume_in_session(self) -> None:
         encoded = unserialize_launch_flag + '{"id": 7, "agent": "claude"}'

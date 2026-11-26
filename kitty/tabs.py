@@ -444,6 +444,11 @@ class Tab:  # {{{
                 window.restored_scrollback = b''  # free the memory, it is no longer needed
                 if launched_window is not None:
                     launched_window.serialized_id = window.serialized_id
+                    if window.pre_resume_command is not None and launched_window.creation_spec is not None:
+                        # The manifest resume wrapper and forced hold are for this
+                        # execution only, not a new user-authored launch command.
+                        cmd, hold = window.pre_resume_command
+                        launched_window.creation_spec = launched_window.creation_spec._replace(cmd=list(cmd), hold=hold)
             if launched_window is not None:
                 if window.font_size_override is not None:
                     from .fast_data_types import set_window_font_size

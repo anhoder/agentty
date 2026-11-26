@@ -266,6 +266,50 @@ def resume_argv_for(agent: str, session_ref: str) -> tuple[str, ...]:
     return manifest.resume.command_for(session_ref)
 
 
+def known_agent_resume_command(cmd: Sequence[str], shell: Sequence[str]) -> str:
+    """Recognize a canonical manifest resume command, independent of current vars.
+
+    Reconstruct rather than interpret shell text, including shell-specific quoting.
+    Extra commands, redirections and user-authored flags are not resume wrappers.
+    """
+    import shlex
+
+    from .agent_manifest import SESSION_PLACEHOLDER
+    from .shell_integration import get_supported_shell_name, join
+
+    if not shell or len(cmd) != len(shell) + 2 or list(cmd[:-2]) != list(shell) or cmd[-2] != '-ilc':
+        return ''
+    if not cmd[-1].startswith('exec '):
+        return ''
+    shell_name = get_supported_shell_name(shell[0])
+    lexer = shlex.shlex(cmd[-1][5:], posix=True)
+    lexer.whitespace_split = True
+    lexer.commenters = ''
+    if shell_name == 'fish':
+        lexer.escapedquotes = "'"
+    try:
+        argv = tuple(lexer)
+    except ValueError:
+        return ''
+    agent = detect_agent([{'cmdline': argv}])
+    if not agent:
+        return ''
+    manifest = manifest_for(agent)
+    if manifest is None or manifest.resume is None or len(argv) != len(manifest.resume.argv):
+        return ''
+    for template, value in zip(manifest.resume.argv, argv):
+        if SESSION_PLACEHOLDER in template:
+            prefix, _, suffix = template.partition(SESSION_PLACEHOLDER)
+            if not value.startswith(prefix) or not value.endswith(suffix):
+                return ''
+            reference = value[len(prefix):len(value) - len(suffix) if suffix else None]
+            if resume_argv_for(agent, reference) != argv:
+                return ''
+            command = join(shell[0], argv) if shell_name else shlex.join(argv)
+            return agent if cmd[-1] == 'exec ' + command else ''
+    return ''
+
+
 def snapshot_for_window(
     window: Any,
     screen: Screen | None = None,
