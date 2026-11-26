@@ -10,7 +10,7 @@ from contextlib import closing
 
 from kitty.constants import kitty_exe
 
-from .base import BaseTest
+from kitty_tests.base import BaseTest
 
 
 class TestSingleInstance(BaseTest):
