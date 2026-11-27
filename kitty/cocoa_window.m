@@ -633,6 +633,9 @@ cocoa_prepare_pane_animation(void *ptr, monotonic_t now) {
         a->frames = a->next_frames;
         a->next_frames = previous;
         a->count = visible;
+        // Establish stacking before the first frame, including when leaving
+        // stack/zoom. Keep it stable if focus changes during the transition.
+        a->foreground_id = tab->active_window < tab->num_windows ? tab->windows[tab->active_window].id : 0;
         a->active = animate;
         a->started_at = at;
         a->duration = OPT(window_jelly_duration);

@@ -27,6 +27,7 @@ enum {
     BORDERS_PROGRAM,
     GRAPHICS_PROGRAM,
     GRAPHICS_PREMULT_PROGRAM,
+    GRAPHICS_SRGB_PREMULT_PROGRAM,
     GRAPHICS_ALPHA_MASK_PROGRAM,
     GRAPHICS_INDEXED_PROGRAM,
     GRAPHICS_INDEXED_UNSCALED_PROGRAM,
@@ -3215,8 +3216,48 @@ blank_os_window(OSWindow *osw) {
     blank_canvas(effective_os_window_alpha(osw), color, true);
 }
 
+#ifdef __APPLE__
+static void
+prepare_pane_animation_target(OSWindow *w) {
+    PaneAnimation *a = &w->pane_animation;
+    const int width = w->viewport_width, height = w->viewport_height;
+    if (a->texture_id && (a->texture_width != width || a->texture_height != height)) {
+        free_texture(&a->texture_id);
+        if (a->framebuffer_id) free_framebuffer(&a->framebuffer_id);
+        a->content_valid = false;
+    }
+    if (a->texture_id) return;
+    glActiveTexture(GL_TEXTURE0 + GRAPHICS_UNIT);
+    glGenTextures(1, &a->texture_id);
+    glBindTexture(GL_TEXTURE_2D, a->texture_id);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+    glTexImage2D(GL_TEXTURE_2D, 0, global_state.supports_framebuffer_srgb ? GL_SRGB8_ALPHA8 : GL_RGBA8,
+                 width, height, 0, GL_RGBA, GL_UNSIGNED_BYTE, NULL);
+    glGenFramebuffers(1, &a->framebuffer_id);
+    bind_framebuffer_for_output(a->framebuffer_id);
+    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, a->texture_id, 0);
+    const char *error = check_framebuffer_status();
+    if (error) fatal("Cannot create pane animation framebuffer: %s", error);
+    a->texture_width = width;
+    a->texture_height = height;
+}
+#endif
+
+static GLuint
+final_content_framebuffer(OSWindow *w) {
+    return w->pane_animation.active ? w->pane_animation.framebuffer_id : 0;
+}
+
 static void
 start_os_window_rendering(OSWindow *os_window, Tab *tab) {
+#ifdef __APPLE__
+    if (os_window->pane_animation.active) prepare_pane_animation_target(os_window);
+#endif
+    set_framebuffer_to_use_for_output(final_content_framebuffer(os_window));
+    bind_framebuffer_for_output(0);
     // note that during live resize rendering is done in layers
     if (os_window->live_resize.in_progress) blank_os_window(os_window);
     if (os_window->needs_layers) {
@@ -3752,7 +3793,7 @@ run_custom_end_shader(OSWindow *os_window, float sx, float sy, monotonic_t now) 
 
         // Set the output framebuffer
         if (is_last) {
-            set_framebuffer_to_use_for_output(0);
+            set_framebuffer_to_use_for_output(final_content_framebuffer(os_window));
             bind_framebuffer_for_output(0);
         } else if (cg->output_texture != CUSTOM_SHADER_TEXTURE_DEFAULT) {
             // Output to named texture; backbuffer is unchanged for the next group
@@ -3807,54 +3848,48 @@ draw_pane_animation(OSWindow *w, Tab *tab, monotonic_t now) {
     PaneAnimation *a = &w->pane_animation;
     if (!a->active) {
         a->content_valid = false;
-        if (a->texture_id && (uint64_t)a->texture_width * (uint64_t)a->texture_height * 4 > PANE_ANIMATION_TEXTURE_CACHE_BYTES)
+        if (a->texture_id && (uint64_t)a->texture_width * (uint64_t)a->texture_height * 4 > PANE_ANIMATION_TEXTURE_CACHE_BYTES) {
             free_texture(&a->texture_id);
+            if (a->framebuffer_id) free_framebuffer(&a->framebuffer_id);
+        }
         return;
     }
     const int width = w->viewport_width, height = w->viewport_height;
-    if (a->texture_id && (a->texture_width != width || a->texture_height != height)) {
-        free_texture(&a->texture_id);
-        a->content_valid = false;
-    }
-    glActiveTexture(GL_TEXTURE0 + GRAPHICS_UNIT);
-    if (!a->texture_id) {
-        glGenTextures(1, &a->texture_id);
-        glBindTexture(GL_TEXTURE_2D, a->texture_id);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, width, height, 0, GL_RGBA, GL_UNSIGNED_BYTE, NULL);
-        a->texture_width = width;
-        a->texture_height = height;
-    } else glBindTexture(GL_TEXTURE_2D, a->texture_id);
-    // Capture only a freshly rendered final framebuffer, including live cursor,
-    // borders, images and custom shaders. Geometry-only frames never copy their
-    // own composited output back into the source texture.
-    if (!a->reuse_content) {
-        glCopyTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, 0, 0, width, height);
-        a->content_valid = true;
-    }
+    // The final content pass writes directly to this per-window attachment.
+    // Never render the composited animation back into its own source texture.
+    a->content_valid = true;
     a->texture_used_at = monotonic_t_to_s_double(now);
+    set_framebuffer_to_use_for_output(0);
+    bind_framebuffer_for_output(0);
+    set_gpu_viewport(width, height);
+    glActiveTexture(GL_TEXTURE0 + GRAPHICS_UNIT);
+    glBindTexture(GL_TEXTURE_2D, a->texture_id);
     GLboolean srgb = glIsEnabled(GL_FRAMEBUFFER_SRGB);
     glDisable(GL_FRAMEBUFFER_SRGB);
     bind_vertex_array(tab->border_rects.vao_idx);
-    bind_program(GRAPHICS_PREMULT_PROGRAM);
-    glUniform1f(program_uniform_location(GRAPHICS_PREMULT_PROGRAM, "extra_alpha"), 1.f);
-    GLint source = program_uniform_location(GRAPHICS_PREMULT_PROGRAM, "src_rect");
-    GLint destination = program_uniform_location(GRAPHICS_PREMULT_PROGRAM, "dest_rect");
-    if (a->reuse_content) {
-        // Back buffers are not preserved across swaps. Restore the whole source
-        // so the tab bar and pixels outside the animated region remain intact.
-        set_framebuffer_to_use_for_output(0);
-        bind_framebuffer_for_output(0);
-        set_gpu_viewport(width, height);
-        glUniform4f(source, 0, 1, 1, 0);
-        glUniform4f(destination, -1, 1, 1, -1);
-        draw_quad(false, 0);
-    }
+    const int program = global_state.supports_framebuffer_srgb ? GRAPHICS_SRGB_PREMULT_PROGRAM : GRAPHICS_PREMULT_PROGRAM;
+    bind_program(program);
+    glUniform1i(program_uniform_location(program, "image"), GRAPHICS_UNIT);
+    glUniform1f(program_uniform_location(program, "extra_alpha"), 1.f);
+    GLint source = program_uniform_location(program, "src_rect");
+    GLint destination = program_uniform_location(program, "dest_rect");
     Region central = {0}, tab_bar = {0};
     os_window_regions(w, &central, &tab_bar);
+    // Swapped back buffers are undefined. Restore only pixels that will not
+    // immediately be cleared and replaced by the animated central region.
+    glUniform4f(source, 0, 1, 1, 0);
+    glUniform4f(destination, -1, 1, 1, -1);
+    const Viewport outside[] = {
+        {0, 0, width, central.top},
+        {0, central.bottom, width, height - central.bottom},
+        {0, central.top, central.left, central.bottom - central.top},
+        {central.right, central.top, width - central.right, central.bottom - central.top},
+    };
+    for (size_t i = 0; i < arraysz(outside); i++) {
+        if (!outside[i].width || !outside[i].height) continue;
+        enable_scissor_using_top_left_origin(outside[i], height);
+        draw_quad(false, 0);
+    }
     Viewport clip = {central.left, central.top, central.right - central.left, central.bottom - central.top};
     enable_scissor_using_top_left_origin(clip, height);
     color_type bg = OPT(background);
@@ -3862,8 +3897,15 @@ draw_pane_animation(OSWindow *w, Tab *tab, monotonic_t now) {
     glClearColor(((bg >> 16) & 255) / 255.f * alpha, ((bg >> 8) & 255) / 255.f * alpha, (bg & 255) / 255.f * alpha, alpha);
     glClear(GL_COLOR_BUFFER_BIT);
     double elapsed = monotonic_t_to_s_double(now) - a->started_at;
+    size_t foreground = a->count;
     for (size_t i = 0; i < a->count; i++) {
-        const PaneAnimationFrame *frame = a->frames + i;
+        if (a->frames[i].id == a->foreground_id) { foreground = i; break; }
+    }
+    for (size_t i = 0; i < a->count; i++) {
+        // Paint the zoomed/focused pane last without changing layout order.
+        size_t index = foreground == a->count ? i :
+            (i == a->count - 1 ? foreground : i >= foreground ? i + 1 : i);
+        const PaneAnimationFrame *frame = a->frames + index;
         PaneAnimationRect rect = frame->target;
         if (!(rect.width > 0 && rect.height > 0)) continue;
         PaneAnimationRect presentation = pane_animation_sample(frame, elapsed, a->duration);
@@ -3925,7 +3967,7 @@ stop_os_window_content_rendering(OSWindow *os_window, Tab *tab, Window *active_w
             run_custom_end_shader(os_window, sx, sy, now);
         } else {
             // debug_rendering("Custom shaders inactive, falling back to blit\n");
-            set_framebuffer_to_use_for_output(0);
+            set_framebuffer_to_use_for_output(final_content_framebuffer(os_window));
             bind_framebuffer_for_output(0);
             bind_program(BLIT_PROGRAM);
             glActiveTexture(GL_TEXTURE0 + GRAPHICS_UNIT);
@@ -4741,6 +4783,7 @@ init_shaders(PyObject *module) {
     C(BORDERS_PROGRAM);
     C(GRAPHICS_PROGRAM);
     C(GRAPHICS_PREMULT_PROGRAM);
+    C(GRAPHICS_SRGB_PREMULT_PROGRAM);
     C(GRAPHICS_ALPHA_MASK_PROGRAM);
     C(GRAPHICS_INDEXED_PROGRAM);
     C(GRAPHICS_INDEXED_UNSCALED_PROGRAM);

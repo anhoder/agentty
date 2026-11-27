@@ -45,6 +45,7 @@ from kitty.fast_data_types import (
     GRAPHICS_INDEXED_PROGRAM,
     GRAPHICS_INDEXED_UNSCALED_PROGRAM,
     GRAPHICS_PREMULT_PROGRAM,
+    GRAPHICS_SRGB_PREMULT_PROGRAM,
     GRAPHICS_PROGRAM,
     MARK,
     MARK_MASK,
@@ -276,6 +277,7 @@ class LoadShaderPrograms:
             GRAPHICS_PROGRAM: '',
             GRAPHICS_ALPHA_MASK_PROGRAM: 'alpha_mask',
             GRAPHICS_PREMULT_PROGRAM: 'premult',
+            GRAPHICS_SRGB_PREMULT_PROGRAM: 'srgb_premult',
         }.items():
             vert, frag = glsl_shaders('graphics', vname)
             compile_program(prog, (vert,), (frag,), metadata['graphics'], allow_recompile)
@@ -769,6 +771,7 @@ class SlangFile(NamedTuple):
                 yield s()
                 yield s('alpha_mask', is_alpha_mask='true')
                 yield s('premult', texture_is_not_premultiplied='false')
+                yield s('srgb_premult', texture_is_not_premultiplied='false', encode_srgb='true')
             case 'indexed_graphics.slang':
                 yield s()
                 yield s('unscaled', is_scaled='false')

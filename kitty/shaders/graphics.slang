@@ -5,9 +5,11 @@
 import blit_common;
 import alpha_blend;
 import utils;
+import linear2srgb;
 
 extern static const bool is_alpha_mask = false;
 extern static const bool texture_is_not_premultiplied = true;
+extern static const bool encode_srgb = false;
 
 
 struct VSOutput {
@@ -30,6 +32,9 @@ float4
 fragment_main(float2 texcoord: TEXCOORD, uniform float3 amask_fg, uniform float4 amask_bg_premult, uniform float extra_alpha)
     : SV_Target {
     float4 color = image.Sample(texcoord);
+    // Animation targets store final-output values in an sRGB attachment. Undo
+    // the sampler's automatic decode without changing the stored alpha.
+    if (encode_srgb) color.rgb = linear2srgb(color.rgb);
     if (is_alpha_mask) {
         color = float4(amask_fg, color.r);
         color = vec4_premul(color);

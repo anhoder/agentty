@@ -1259,6 +1259,7 @@ render_os_window(OSWindow *w, monotonic_t now, bool scan_for_animated_images) {
     if (a->texture_id && (wrong_size || expired || (!a->active && bytes > PANE_ANIMATION_TEXTURE_CACHE_BYTES))) {
         make_os_window_context_current(w);
         free_texture(&a->texture_id);
+        if (a->framebuffer_id) free_framebuffer(&a->framebuffer_id);
         a->content_valid = false;
     }
     if (a->texture_id)

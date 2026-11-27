@@ -26,11 +26,11 @@ typedef struct {
 typedef struct {
     PaneAnimationFrame *frames, *next_frames;
     size_t count, capacity;
-    uint64_t tab_id;
+    uint64_t tab_id, foreground_id;
     int width, height;
     bool active, content_valid, reuse_content;
     double started_at, duration, texture_used_at;
-    uint32_t texture_id;
+    uint32_t texture_id, framebuffer_id;
     int texture_width, texture_height;
 } PaneAnimation;
 

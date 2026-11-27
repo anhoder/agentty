@@ -357,3 +357,17 @@ P1 实际独立原生实例（锁屏不影响显式 Python 布局调用）得到
 - 未提交、推送或部署；保留接手时已有暂存改动。临时测量结果和截图位于 `build/`，不作为永久诊断 API。GPU pass 纳秒耗时、整机生产 CPU 收益及真实休眠恢复没有实测，未作收益承诺。
 - 清理计数日志后的最终原生 smoke 通过：独立半透明实例完成分屏、快速 retarget、实时内容、framebuffer 截图及正常退出；最终 `macos_displaylink_scheduling` 回归通过（1 项）。已查看清理后 framebuffer，两个 pane 内容均可见。
 - 本轮临时 Python/C/Objective-C 验证源码、基线 dylib 与临时可执行程序已删除，结果 JSON/log/PNG 保留；永久回归保留在 `kitty_tests/`。未执行无关全仓库测试。
+
+## 13. 后续动画合成优化（2026-11-27）
+
+- 已有改动先保存为检查点 `941d947765`，OMP 问答状态和侧栏分组回归通过 `./test.py --module agents`（78 项）。
+- 系统 Python 准备命令仍受 PEP 668 限制；使用 `build/animation-venv` 并在内存中将 CI 的 Slang 安装目录设置为 `build/animation-slang`，同一 CI 准备流程成功。未修改系统 Python 或 CI 源码。
+- 独立 CGL 微基准使用 1280×720 RGBA8 输入，每个 pass 12 个 timer query，提交后读取结果；GL 为 `4.1 Metal - 91.7`。整屏恢复平均 96.851 µs，只恢复顶部 32 像素平均 28.826 µs。复制 pass 返回零，不作为有效耗时。该微基准不是实际窗口帧耗时，也不能外推生产负载收益。
+- 动画的最终内容直接写入每 OS window 的缓存纹理/FBO，不再从最终 framebuffer 整屏复制；普通路径、分层 blit 和自定义 shader 最终输出统一选择该目标。缓存生命周期沿用 64 MiB / 两秒限制，FBO 与纹理一起释放。
+- 支持 framebuffer sRGB 时使用 sRGB attachment 保持直接终端绘制的颜色转换；合成采样显式恢复最终输出编码且保持 alpha。不支持时保留 RGBA8 路径。
+- 每个合成帧仅恢复 central region 外的四个不重叠条带，然后清除 central 并绘制 pane；不假设 swap 后 backbuffer 内容保留。
+- 本轮不引入 pane 级缓存：当前微基准没有证明静态 pane 重绘是瓶颈，新增局部失效还需处理光标、palette、动态图像、边框和整窗 shader；先验证较小的合成改动，再用多 pane 实际输出测量决定。
+- 最后生产代码修改后 `./dev.sh build` 成功；`./test.py --module pane_animation` 两项、`./test.py macos_displaylink_scheduling` 一项通过。像素探针使用真实生成的 graphics shader，覆盖 sRGB/RGBA、双 pane、不透明/半透明、中间色、源/目标裁剪、区域外四边条带、缓存不被合成覆盖及实时内容刷新。
+- 独立配置实例通过分屏、stack/tall 快速切换、持续输出、内部 framebuffer 截图和退出；包含不透明及 `background_opacity=0.75` / `northern-lights` / cursor trail 场景。已查看实际截图。首次探针因 macOS 默认关闭窗口不退出进程而超时，随后仅对独立实例开启 `macos_quit_when_last_window_closed=yes` 后通过，未修改生产行为。
+- 原生日志保留 IMK mach-port、child resize/kill 提示；实例正常退出，无 GL 错误。截图请求强制内容刷新，不作为纯几何帧缓存命中率或高刷帧率证据。没有有效 copy pass GPU 耗时，也没有新旧整帧耗时对照，故不承诺净 GPU/CPU 收益；新增离屏写入及 sRGB 采样转换的成本仍须纳入后续真实负载测量。
+- 证据保留在 `build/animation-{prepare,final-build,final-tests}.log` 和 `build/animation-smoke/`；临时微基准/原生 smoke 源码及微基准可执行程序已清理。未推送或部署安装版。

@@ -180,6 +180,11 @@ Recent major new features
 - macOS: Reuse pane-animation content on geometry-only frames while keeping
   terminal output, cursor changes and palette updates live. Bound cached texture
   retention and precompute spring coefficients when layout targets change.
+- macOS: Render live pane-animation content directly into a per-window texture,
+  avoiding whole-window framebuffer copies. Restore only pixels outside the
+  animated region before compositing panes, preserving colors and transparency.
+- macOS: Keep the zoomed pane in front from the first spring-animation frame,
+  including when restoring a multi-pane layout, so other panes cannot cover it.
 - Stack layout: Defer resizing hidden panes until they become visible, avoiding
   unnecessary scrollback rewrapping when entering stack with many panes.
 - Keep Agents sidebar content refreshes independent of pane layout. Share
