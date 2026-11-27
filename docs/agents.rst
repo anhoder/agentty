@@ -219,6 +219,11 @@ of the window: the title, the OSC 9;4 progress payload, the bottom few
 non-empty lines, the prompt box interior, the text below the last horizontal
 rule, and so on. Every rule is evaluated and the highest-priority match wins.
 
+For oh-my-pi, the ``π !`` attention title and visible Ask forms (including
+collapsed forms) indicate ``blocked`` while an answer is pending. Form detection
+takes priority over idle or working title markers; a normal composer is not
+treated as a question.
+
 Two properties follow from this design and are worth knowing:
 
 * ``working`` requires a visible marker, such as a spinner, an interrupt hint,

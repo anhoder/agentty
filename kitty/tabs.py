@@ -13,6 +13,7 @@ from contextlib import suppress
 from functools import wraps
 from gettext import gettext as _
 from typing import TYPE_CHECKING, Any, Concatenate, Deque, Literal, NamedTuple, Optional, ParamSpec, TypeVar, cast
+from uuid import uuid4
 
 from .agents import AgentSidebarRow, state_code
 from .borders import Border, Borders
@@ -82,6 +83,8 @@ if TYPE_CHECKING:
 
 P = ParamSpec('P')
 T = TypeVar('T')
+
+_tabs_by_sidebar_id: weakref.WeakValueDictionary[str, 'Tab'] = weakref.WeakValueDictionary()
 
 
 def update_tab_bar_visibility(func: Callable[Concatenate['TabManager', P], T]) -> Callable[Concatenate['TabManager', P], T]:
@@ -284,7 +287,14 @@ class Tab:  # {{{
         self.id: int = add_tab(self.os_window_id)
         if not self.id:
             raise Exception(f'No OS window with id {self.os_window_id} found, or tab counter has wrapped')
-        self.sidebar_id = getattr(session_tab, 'sidebar_id', None) or f'tab-{self.id}'
+        sidebar_id = getattr(session_tab, 'sidebar_id', None)
+        # Runtime tab IDs restart with each process; restored IDs can already
+        # own that number. Duplicate IDs in old or reopened sessions also need
+        # a new identity so unrelated tabs never share a sidebar group.
+        while not sidebar_id or sidebar_id in _tabs_by_sidebar_id:
+            sidebar_id = f'tab-{uuid4().hex}'
+        self.sidebar_id = sidebar_id
+        _tabs_by_sidebar_id[sidebar_id] = self
         self.args = tab_manager.args
         self.name = getattr(session_tab, 'name', '')
         self.enabled_layouts = [x.lower() for x in getattr(session_tab, 'enabled_layouts', None) or get_options().enabled_layouts]

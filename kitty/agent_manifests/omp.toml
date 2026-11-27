@@ -2,14 +2,15 @@
 # captures; herdr has no screen manifest for omp because its plugin reports
 # state over herdr's own socket, which kitty cannot consume.
 #
-# Evidence: omp 2026.10 live panes.
+# Evidence: omp 2026.10 live panes and omp 19.2.1 question dialogs.
 #
 # omp sets an OSC title of the form "π <marker> <emoji> <TAG>: <task>". The
-# marker after the pi glyph is the whole signal: ">" at rest, a braille
-# spinner during a turn.
+# marker after the pi glyph is the whole signal: ">" at rest, "!" while
+# waiting for input, a braille spinner during a turn.
 #
 #   idle     "π > 🌐 I18N: Split i18n sync audit prompt"
 #   working  "π ⠙ 👂 HERDR: Align kitty state monitoring with herdr"
+#   blocked  "π ! tmp"
 #
 # Its prompt box header carries the same distinction, and adds elapsed time
 # while a turn runs. This is the fallback when titles are turned off:
@@ -21,16 +22,43 @@
 # The model glyph (◒, ⟳) sits in both states and must never be read as
 # activity.
 id = "omp"
-version = "2026.10.29.1"
-updated_at = "2026-10-29T00:00:00Z"
+version = "2026.11.27.1"
+updated_at = "2026-11-27T00:00:00Z"
 aliases = ["oh-my-pi"]
-# omp does not emit OSC 7501 in kitty, so there is no report to defer to and
-# the screen is the only source. Should it gain lifecycle reporting later,
-# flip this to full_lifecycle.
+# Older omp versions do not emit OSC 7501 in kitty. Keep screen detection for
+# those versions rather than depending on newer native lifecycle reports.
 state_authority = "identity_only"
 
 [resume]
 argv = ["omp", "--resume={session}"]
+
+[[rules]]
+id = "osc_title_blocked"
+state = "blocked"
+priority = 1200
+region = "osc_title"
+visible_blocker = true
+regex = ['^\x{03C0}\s+!(?:\s|$)']
+
+[[rules]]
+id = "ask_form_blocked"
+state = "blocked"
+priority = 1150
+region = "whole_recent"
+visible_blocker = true
+# Match the live Ask card, not labelled tool call/result boxes or prose. The
+# Submit row may be scrolled out of a tall form, so require its closing border.
+line_regex = ['^\s*╭─+\s+Ask(?:\s+·\s+\d+ of \d+ answered)?(?:\s+\(\d+s\))?\s+─+╮\s*$']
+all = [{ line_regex = ['^\s*╰─+╯\s*$'] }]
+
+[[rules]]
+id = "ask_hidden_blocked"
+state = "blocked"
+priority = 1150
+region = "bottom_non_empty_lines(6)"
+visible_blocker = true
+line_regex = ['^\s*Ask(?:\s+·\s+\d+ of \d+ answered)?(?:\s+\(\d+s\))? hidden:.*\s+show\s+·\s+\S+\s+composer\s*$']
+
 [[rules]]
 id = "osc_title_working"
 state = "working"

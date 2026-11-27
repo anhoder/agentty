@@ -9,6 +9,13 @@ To update |kitty|, :doc:`follow the instructions <binary>`.
 Recent major new features
 ---------------------------
 
+- Agents: Keep different tabs in separate sidebar groups after restoring a
+  session and opening new tabs, including sessions with duplicate saved tab IDs.
+
+- Agents: Recognize oh-my-pi question dialogs, including collapsed forms, as
+  blocked rather than idle or completed, using the attention title marker or
+  the visible form when title updates are disabled.
+
 - Make ``set_background_opacity_all`` apply one absolute opacity to all existing
   and future OS windows in the current process. Relative changes adjust the
   in-memory default once rather than each window independently. ``default`` or a

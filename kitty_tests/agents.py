@@ -232,6 +232,33 @@ class TestAgents(BaseTest):
         # The model glyph shows in both states and is not activity
         self.assertNotEqual(detect('omp', rest_box).state.value, 'working')
 
+    def test_omp_question_waiting_is_blocked(self):
+        self.ae(detect('omp', screen(title='π ! tmp')).state.value, 'blocked')
+        form = ('│ Status probe │', '│ ❯ ◉ Yes      │', '│   Submit     │', '╰──────────────╯')
+        for title in ('', 'π > tmp', 'π ⠙ tmp'):
+            for heading in ('╭─ Ask ─────────╮', '╭─ Ask · 1 of 2 answered (30s) ─╮'):
+                with self.subTest(title=title, heading=heading):
+                    snapshot = screen(heading, *form, '╭── π > ⟳ model > /tmp', '╰─', title=title)
+                    match = detect('omp', snapshot)
+                    self.ae((match.state.value, match.rule_id), ('blocked', 'ask_form_blocked'))
+                    self.ae(state_from_signals('omp', [], snapshot, AgentState.working), AgentState.blocked)
+        # A tall form can scroll its Submit row out of view.
+        self.ae(detect('omp', screen('╭─ Ask ─╮', '│ Question │', '╰────────╯')).state.value, 'blocked')
+        hidden = screen('Ask hidden: Status probe · ⌥H/⏎ show · ⎋ composer', '╭── π > ⟳ model > /tmp', '╰─')
+        self.ae(detect('oh-my-pi', hidden).state.value, 'blocked')
+        self.ae(detect('omp', screen('Ask · 1 of 2 answered (30s) hidden: Probe · ⌥H/⏎ show · ⎋ composer')).state.value, 'blocked')
+
+    def test_omp_question_markers_do_not_block_normal_output(self):
+        for lines in (
+            ('Please Ask the user, then Submit the answer.',),
+            ('╭─ Ask · completed (54ms) ─╮', '│ User answers: yes │', '╰──────────────╯'),
+            ('│   Submit     │',),
+            ('Ask hidden: a quoted example without live controls',),
+            ('π ! tmp', '╭── π > ⟳ model > /tmp', '╰─'),
+        ):
+            with self.subTest(lines=lines):
+                self.ae(detect('omp', screen(*lines, title='π > tmp')).state.value, 'idle')
+
     # detection
 
     def test_codex_title_spinner_cycle(self):
@@ -469,6 +496,66 @@ class TestAgents(BaseTest):
             rows = tuple(r for r in scope[1].agent_sidebar_rows if r.kind == 'agent')
             self.assertTrue(all('Renamed by agent' in r.group for r in rows))
             self.ae({r.window_id: r.group_key for r in rows}, before)
+
+    def test_sidebar_restored_and_new_tabs_stay_separate(self):
+        import weakref
+        from types import SimpleNamespace
+        from unittest.mock import patch
+
+        from kitty.boss import Boss
+        from kitty.session import parse_session
+        from kitty.tabs import Tab
+
+        opts = self.set_options({'sidecar_grouping': 'tab'})
+        (session,) = parse_session('new_tab restored\ntab_id tab-2\nlaunch', opts)
+
+        class TabManager(list):
+            args = SimpleNamespace(directory='/tmp')
+            os_window_id = 1
+            os_window_docks = []
+            agent_sidebar_rows = ()
+
+            def set_agent_sidebar_rows(self, rows):
+                self.agent_sidebar_rows = tuple(rows)
+
+        tm = TabManager()
+        with (
+            patch('kitty.tabs._tabs_by_sidebar_id', weakref.WeakValueDictionary()),
+            patch('kitty.tabs.add_tab', side_effect=(1, 2, 3, 4)),
+            patch('kitty.tabs.Borders'),
+            patch.object(Tab, '_set_current_layout'),
+        ):
+            restored = Tab(tm, session.tabs[0], no_initial_window=True)
+            fresh = Tab(tm, no_initial_window=True)
+            fresh.name = 'fresh'
+            duplicate = Tab(tm, session.tabs[0], no_initial_window=True)
+            legacy = Tab(tm, SimpleNamespace(name='legacy'), no_initial_window=True)
+            tm.extend((restored, fresh, duplicate, legacy))
+            self.ae(restored.sidebar_id, 'tab-2')
+
+            windows = [SimpleNamespace(id=i, child=SimpleNamespace(foreground_processes=[])) for i in range(1, 6)]
+            restored.windows.all_windows.extend(windows[:2])
+            for tab, window in zip((fresh, duplicate, legacy), windows[2:]):
+                tab.windows.all_windows.append(window)
+            tracker = AgentTracker()
+            tracker.snapshots = {w.id: AgentSnapshot(w.id, 'omp', AgentState.idle, 'omp', '/tmp') for w in windows}
+            boss = SimpleNamespace(active_window=windows[0], agent_tracker=tracker)
+            with patch('kitty.boss.get_options', return_value=opts):
+                Boss._refresh_agent_sidebar_scope(boss, (tm,))
+                rows = [r for r in tm.agent_sidebar_rows if r.kind == 'agent']
+                self.ae([r.window_id for r in rows], [1, 2, 3, 4, 5])
+                self.ae([r.group for r in rows], ['1: restored', '1: restored', '2: fresh', '3: restored', '4: legacy'])
+                self.ae(rows[0].group_key, 'tab:tab-2')
+                self.ae(rows[0].group_key, rows[1].group_key)
+                self.ae(len({r.group_key for r in rows}), 4)
+
+                before = {r.window_id: r.group_key for r in rows}
+                tm.reverse()
+                restored.name = 'renamed'
+                Boss._refresh_agent_sidebar_scope(boss, (tm,))
+                rows = [r for r in tm.agent_sidebar_rows if r.kind == 'agent']
+                self.ae([r.window_id for r in rows], [5, 4, 3, 1, 2])
+                self.ae({r.window_id: r.group_key for r in rows}, before)
 
     def test_empty_sidebar_has_no_group(self):
         from types import SimpleNamespace
@@ -998,6 +1085,30 @@ class TestAgentTracker(BaseTest):
         tracker.refresh_window(busy, now=100.2)
         self.ae(tracker.snapshot_for(7).state, AgentState.working)
         self.assertNotIn(7, tracker.unseen_done)
+
+    def test_omp_question_wait_does_not_become_unseen_done(self):
+        for initial in (AgentState.working, AgentState.done):
+            with self.subTest(initial=initial):
+                tracker = AgentTracker()
+                window = FakeWindow(title='π ⠙ tmp')
+                window.child.foreground_processes = [{'cmdline': ['omp']}]
+                tracker.refresh_window(window, now=100.0)
+                if initial is AgentState.done:
+                    window.osc_title = 'π > tmp'
+                    tracker.refresh_window(window, now=100.1)
+                self.ae(tracker.snapshot_for(7).state, initial)
+                window.lines = ('Ask hidden: Status probe · ⌥H/⏎ show · ⎋ composer',)
+                window.osc_title = 'π > tmp'
+                tracker.refresh_window(window, now=100.2)
+                self.ae(tracker.snapshot_for(7).state, AgentState.blocked)
+                self.assertNotIn(7, tracker.unseen_done)
+                window.lines = ()
+                window.osc_title = 'π ⠙ tmp'
+                tracker.refresh_window(window, now=100.3)
+                self.ae(tracker.snapshot_for(7).state, AgentState.working)
+                window.osc_title = 'π > tmp'
+                tracker.refresh_window(window, now=100.4)
+                self.ae(tracker.snapshot_for(7).state, AgentState.done)
 
     def test_live_snapshot_reuses_only_unchanged_screen_evidence(self):
         from unittest.mock import Mock
